@@ -179,7 +179,6 @@ def check_trust_level(root_word, uploaded_df):
         return False
     try:
         count_val = match.iloc[0]['출연횟수']
-        # 출연 횟수가 기준(3회) 이상이면 신뢰
         return count_val >= TRUST_THRESHOLD
     except:
         return False
@@ -266,7 +265,6 @@ if analyze_btn and input_text:
             POS_WHITELIST = ['명사', '동사', '형용사', '부사', '관형사', '감탄사', '수사', '대명사']
             blacklist = get_blacklist_from_sheet(sheet_data)
             
-            # [수정] 빈도 계산을 위해 미리 리스트 확보
             all_roots = []
             valid_items = []
             
@@ -291,27 +289,22 @@ if analyze_btn and input_text:
                 pos_map = {'명사': '📦 명사', '동사': '🏃 동사', '형용사': '🎨 형용사', '부사': '⚡ 부사', '관형사': '🔍 관형사', '감탄사': '❗ 감탄사'}
                 item['pos'] = pos_map.get(pos, pos)
                 
-                # 신뢰도 체크 (3회 이상 출현 여부)
+                # 신뢰도 체크 및 상태 표시 (텍스트 추가)
                 is_trusted = check_trust_level(root, uploaded_df)
                 if is_trusted:
-                    item['status'] = '✅' # 자동 (믿을 수 있음)
+                    item['status'] = '✅ 자동' # [변경] 텍스트 추가
                 else:
-                    item['status'] = '📝' # 검토 (처음 보거나 적게 나옴)
+                    item['status'] = '📝 검토' # [변경] 텍스트 추가
                 
                 valid_items.append(item)
                 all_roots.append(root)
             
-            # [수정] 현재 입력창 내 빈도 계산
             root_counts = Counter(all_roots)
             
             for item in valid_items:
-                # '삭제' 체크박스용 컬럼 추가 (기본값 False)
                 item['delete_check'] = False
-                
-                # 빈도 컬럼: 현재 입력창에서 나온 횟수
                 cnt = root_counts[item['root_word']]
                 item['count'] = f"{cnt}회"
-                
                 filtered_results.append(item)
                 
             st.session_state.analysis_result = filtered_results
@@ -324,11 +317,10 @@ if st.session_state.analysis_result:
     
     df_display = pd.DataFrame(st.session_state.analysis_result)
     
-    # [수정] 컬럼 설정 (삭제 체크박스, 상태 Read-only, 빈도 표시)
     column_config = {
         "delete_check": st.column_config.CheckboxColumn("삭제", width="small"),
-        "status": st.column_config.TextColumn("상태", width="small", disabled=True), # 변경불가
-        "count": st.column_config.TextColumn("빈도(현재)", width="small", disabled=True), # 현재 빈도
+        "status": st.column_config.TextColumn("상태", width="medium", disabled=True),
+        "count": st.column_config.TextColumn("빈도(현재)", width="small", disabled=True),
         "original_word": st.column_config.TextColumn("원본 단어", disabled=True),
         "root_word": "원형",
         "origin": st.column_config.SelectboxColumn("분류", options=["🔵 고", "🟢 한", "🔴 외", "🟣 혼"]),
@@ -337,21 +329,18 @@ if st.session_state.analysis_result:
     
     cols = ["delete_check", "status", "count", "original_word", "root_word", "origin", "pos"]
     
-    # 데이터 에디터 표시
     edited_df = st.data_editor(
         df_display[cols] if not df_display.empty else df_display,
         column_config=column_config, 
         use_container_width=True, 
-        num_rows="fixed", # 행 추가/삭제 막음 (체크박스로 처리)
+        num_rows="fixed",
         key="editor"
     )
     
-    # [수정] 삭제 버튼 분리 (표 바로 아래)
     col_del, col_save = st.columns([1, 4])
     
     with col_del:
         if st.button("⛔ 체크한 단어 삭제 및 학습", type="secondary"):
-            # 체크된 항목 찾기
             to_delete = edited_df[edited_df['delete_check'] == True]
             if not to_delete.empty:
                 if sheet:
@@ -366,7 +355,6 @@ if st.session_state.analysis_result:
                             ])
                         sheet.append_rows(rows_to_add)
                         st.toast(f"🗑️ {len(rows_to_add)}개 단어 삭제 학습 완료! 1초 후 반영됩니다.", icon="✅")
-                        # 세션 상태에서도 제거
                         remaining = edited_df[edited_df['delete_check'] == False].to_dict('records')
                         st.session_state.analysis_result = remaining
                         time.sleep(1)
@@ -378,10 +366,8 @@ if st.session_state.analysis_result:
 
     st.markdown("---")
     
-    # 엑셀 저장 버튼
     with col_save:
         if st.button("📥 엑셀 파일 다운로드 (수정사항 학습)", type="primary"):
-            # 삭제 체크된 건 제외하고 나머지로 저장
             final_data = edited_df[edited_df['delete_check'] == False].to_dict('records')
             
             base_df = pd.DataFrame(columns=['구분', '자료', '출연횟수'])
@@ -396,12 +382,10 @@ if st.session_state.analysis_result:
             learning_logs = []
 
             for item in final_data:
-                # 저장용 데이터 정제
                 item['origin'] = clean_value_for_save(item['origin'])
                 item['pos'] = clean_value_for_save(item['pos'])
                 cleaned_data_for_excel.append(item)
                 
-                # 수정 학습 (남아있는 건 모두 'modify'로 기록하여 강화)
                 learning_logs.append({
                     'timestamp': datetime.now().isoformat(),
                     'original_word': item['original_word'],
@@ -412,9 +396,6 @@ if st.session_state.analysis_result:
                     'context': input_text
                 })
 
-            # 엑셀 병합 로직 (원본과 동일)
-            # 현재 입력창 내 빈도(count)가 아니라, 쪽수_빈도 형식 생성을 위해 다시 계산
-            # 주의: 여기서는 '현재 입력창 내 빈도'를 엑셀에 기록하는 것이 원본 로직
             counts = Counter([x['root_word'] for x in cleaned_data_for_excel])
             
             for item in cleaned_data_for_excel:
@@ -447,7 +428,6 @@ if st.session_state.analysis_result:
                 base_df.to_excel(writer, index=False)
             output_excel.seek(0)
             
-            # [학습 데이터 구글 시트 저장]
             if sheet and learning_logs:
                 try:
                     rows_to_add = [list(log.values()) for log in learning_logs]
