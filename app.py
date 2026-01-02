@@ -15,7 +15,7 @@ import time
 # ⚙️ 설정
 # =========================================================
 API_KEY = "AIzaSyCC6oyL7POpbWq2FZrJ2zIJuiosupFQZYk"
-# [요청 반영] 모델명 2.5 버전으로 원복
+# [요청 반영] 모델명 2.5 버전으로 복구
 MODEL_NAME = "gemini-2.5-flash"
 SHEET_NAME = "Korean_DB"
 TRUST_THRESHOLD = 3 
@@ -102,14 +102,13 @@ def generate_prompt_from_sheet(sheet_data):
     return ""
 
 def api_call_direct(prompt):
-    # [요청 반영] 2.5 모델로 호출하되, 에러 발생 시 원문 출력
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={API_KEY.strip()}"
     headers = {'Content-Type': 'application/json'}
     data = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.1}}
     try:
         response = requests.post(url, headers=headers, json=data, timeout=30)
         
-        # [핵심] 성공(200)이 아니면 무조건 에러 메시지 출력
+        # [수정] 응답 코드가 200(성공)이 아니면 에러 메시지를 화면에 띄우도록 반환
         if response.status_code != 200:
             st.error(f"❌ AI 응답 실패 (코드 {response.status_code}): {response.text}")
             return None
@@ -241,7 +240,7 @@ with st.sidebar:
              st.caption("ℹ️ 빈 파일 혹은 양식이 다른 파일입니다.")
     
     if sheet: st.success(f"🌏 두뇌 연결됨 ({len(sheet_data)}건)")
-    else: st.error("❌ 두뇌 연결 실패")
+    else: st.error("❌ 두뇌 연결 실패 (API키는 있지만 시트 권한 확인 필요)")
     
     st.markdown("---")
     with st.expander("➕ AI가 놓친 단어 추가하기"):
@@ -325,7 +324,7 @@ if analyze_btn and input_text:
                 
             st.session_state.analysis_result = filtered_results
         else:
-            # 에러 메시지는 api_call_direct에서 st.error로 출력됨
+            # 에러 메시지는 api_call_direct에서 출력됨
             pass
 
 # 결과 화면
@@ -388,8 +387,7 @@ if st.session_state.analysis_result:
             final_data = edited_df[edited_df['delete_check'] == False].to_dict('records')
             
             base_df = pd.DataFrame(columns=['구분', '자료', '출연횟수'])
-            if uploaded_df is not None: 
-                base_df = uploaded_df.copy()
+            if uploaded_df is not None: base_df = uploaded_df.copy()
 
             for c in base_df.columns:
                 if '쪽수' in c: base_df[c] = base_df[c].astype(object)
@@ -453,8 +451,12 @@ if st.session_state.analysis_result:
                     st.toast(f"✅ 학습 완료: {len(rows_to_add)}건 저장됨.", icon="🧠")
                 except Exception as e: pass
 
+            # [수정] SyntaxError 방지를 위한 안전한 다운로드 버튼 코드
+            mime_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             st.download_button(
                 label="파일 저장하기 (클릭)",
                 data=output_excel,
                 file_name="국어활동_분석결과_최종.xlsx",
-                mime="application/vnd
+                mime=mime_type,
+                type="primary"
+            )
