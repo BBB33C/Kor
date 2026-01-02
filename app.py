@@ -12,11 +12,11 @@ from datetime import datetime
 import time
 
 # =========================================================
-# ⚙️ 설정 (여기가 핵심입니다!)
+# ⚙️ 설정
 # =========================================================
 API_KEY = "AIzaSyCC6oyL7POpbWq2FZrJ2zIJuiosupFQZYk"
-# [수정] 2.5는 클라우드에서 인식 불가. 1.5로 변경해야만 작동함.
-MODEL_NAME = "gemini-1.5-flash" 
+# [요청 반영] 모델명 2.5 버전으로 원복
+MODEL_NAME = "gemini-2.5-flash"
 SHEET_NAME = "Korean_DB"
 TRUST_THRESHOLD = 3 
 
@@ -28,10 +28,8 @@ st.set_page_config(page_title="국어활동 AI 분석기", page_icon="📝", lay
 @st.cache_resource
 def get_google_sheet_client():
     try:
-        # Secrets가 없으면 None 반환 (로컬 테스트용 예외처리)
         if "gcp_service_account" not in st.secrets:
             return None
-            
         scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
         creds_dict = dict(st.secrets["gcp_service_account"])
         if "private_key" in creds_dict:
@@ -39,9 +37,7 @@ def get_google_sheet_client():
         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
         client = gspread.authorize(creds)
         return client
-    except Exception as e:
-        # 연결 실패해도 앱이 죽지 않게 함
-        return None
+    except: return None
 
 def get_sheet_data_fresh():
     client = get_google_sheet_client()
@@ -106,20 +102,23 @@ def generate_prompt_from_sheet(sheet_data):
     return ""
 
 def api_call_direct(prompt):
+    # [요청 반영] 2.5 모델로 호출하되, 에러 발생 시 원문 출력
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={API_KEY.strip()}"
     headers = {'Content-Type': 'application/json'}
     data = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.1}}
     try:
         response = requests.post(url, headers=headers, json=data, timeout=30)
-        if response.status_code == 200:
-            result_json = response.json()
-            if 'candidates' in result_json:
-                text_res = result_json['candidates'][0]['content']['parts'][0]['text']
-                json_match = re.search(r'\[.*\]', text_res, re.DOTALL)
-                if json_match: return json.loads(json_match.group())
-        else:
-            # [디버깅] 에러 원인을 화면에 출력
+        
+        # [핵심] 성공(200)이 아니면 무조건 에러 메시지 출력
+        if response.status_code != 200:
             st.error(f"❌ AI 응답 실패 (코드 {response.status_code}): {response.text}")
+            return None
+            
+        result_json = response.json()
+        if 'candidates' in result_json:
+            text_res = result_json['candidates'][0]['content']['parts'][0]['text']
+            json_match = re.search(r'\[.*\]', text_res, re.DOTALL)
+            if json_match: return json.loads(json_match.group())
         return None
     except Exception as e:
         st.error(f"❌ 서버 통신 오류: {e}")
@@ -242,7 +241,7 @@ with st.sidebar:
              st.caption("ℹ️ 빈 파일 혹은 양식이 다른 파일입니다.")
     
     if sheet: st.success(f"🌏 두뇌 연결됨 ({len(sheet_data)}건)")
-    else: st.error("❌ 두뇌 연결 실패 (API키는 있지만 시트 권한 확인 필요)")
+    else: st.error("❌ 두뇌 연결 실패")
     
     st.markdown("---")
     with st.expander("➕ AI가 놓친 단어 추가하기"):
@@ -282,7 +281,6 @@ if 'analysis_result' not in st.session_state:
 # 분석 실행
 if analyze_btn and input_text:
     with st.spinner("AI가 분석 중입니다..."):
-        # 모델명 에러 등이 있으면 여기서 에러 메시지를 반환하도록 수정함
         raw_results = get_analysis_hybrid(input_text, sheet_data)
         
         if raw_results:
@@ -327,7 +325,7 @@ if analyze_btn and input_text:
                 
             st.session_state.analysis_result = filtered_results
         else:
-            # api_call_direct 함수에서 에러 메시지를 띄웠으므로 여기선 간단히 안내
+            # 에러 메시지는 api_call_direct에서 st.error로 출력됨
             pass
 
 # 결과 화면
@@ -459,6 +457,4 @@ if st.session_state.analysis_result:
                 label="파일 저장하기 (클릭)",
                 data=output_excel,
                 file_name="국어활동_분석결과_최종.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                type="primary"
-            )
+                mime="application/vnd
