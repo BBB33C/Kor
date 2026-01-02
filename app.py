@@ -12,10 +12,16 @@ from datetime import datetime
 import time
 
 # =========================================================
-# ⚙️ 설정
+# ⚙️ 설정 (보안 강화 버전)
 # =========================================================
-API_KEY = "AIzaSyCC6oyL7POpbWq2FZrJ2zIJuiosupFQZYk"
-# [요청 반영] 모델명 2.5 버전으로 복구
+# [핵심 수정] 코드가 아닌 Secrets에서 키를 가져옵니다. 깃허브에 키가 노출되지 않습니다.
+try:
+    API_KEY = st.secrets["GEMINI_API_KEY"]
+except:
+    st.error("🚨 Secrets에 'GEMINI_API_KEY'가 설정되지 않았습니다.")
+    st.stop()
+
+# [요청 반영] 모델명 2.5 버전
 MODEL_NAME = "gemini-2.5-flash"
 SHEET_NAME = "Korean_DB"
 TRUST_THRESHOLD = 3 
@@ -31,9 +37,13 @@ def get_google_sheet_client():
         if "gcp_service_account" not in st.secrets:
             return None
         scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+        # Secrets 딕셔너리를 그대로 가져옴
         creds_dict = dict(st.secrets["gcp_service_account"])
+        
+        # 줄바꿈 문자 처리 (필수)
         if "private_key" in creds_dict:
              creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+        
         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
         client = gspread.authorize(creds)
         return client
@@ -108,7 +118,7 @@ def api_call_direct(prompt):
     try:
         response = requests.post(url, headers=headers, json=data, timeout=30)
         
-        # [수정] 응답 코드가 200(성공)이 아니면 에러 메시지를 화면에 띄우도록 반환
+        # [수정] 응답 코드가 200(성공)이 아니면 에러 메시지 출력
         if response.status_code != 200:
             st.error(f"❌ AI 응답 실패 (코드 {response.status_code}): {response.text}")
             return None
@@ -240,7 +250,7 @@ with st.sidebar:
              st.caption("ℹ️ 빈 파일 혹은 양식이 다른 파일입니다.")
     
     if sheet: st.success(f"🌏 두뇌 연결됨 ({len(sheet_data)}건)")
-    else: st.error("❌ 두뇌 연결 실패 (API키는 있지만 시트 권한 확인 필요)")
+    else: st.error("❌ 두뇌 연결 실패")
     
     st.markdown("---")
     with st.expander("➕ AI가 놓친 단어 추가하기"):
@@ -324,7 +334,7 @@ if analyze_btn and input_text:
                 
             st.session_state.analysis_result = filtered_results
         else:
-            # 에러 메시지는 api_call_direct에서 출력됨
+            # api_call_direct에서 에러가 이미 출력됨.
             pass
 
 # 결과 화면
@@ -451,12 +461,10 @@ if st.session_state.analysis_result:
                     st.toast(f"✅ 학습 완료: {len(rows_to_add)}건 저장됨.", icon="🧠")
                 except Exception as e: pass
 
-            # [수정] SyntaxError 방지를 위한 안전한 다운로드 버튼 코드
-            mime_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             st.download_button(
                 label="파일 저장하기 (클릭)",
                 data=output_excel,
                 file_name="국어활동_분석결과_최종.xlsx",
-                mime=mime_type,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 type="primary"
             )
