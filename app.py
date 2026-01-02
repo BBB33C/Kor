@@ -22,7 +22,7 @@ TRUST_THRESHOLD = 3
 st.set_page_config(page_title="국어활동 AI 분석기", page_icon="📝", layout="wide")
 
 # =========================================================
-# 🔐 구글 시트 연결 (캐시 전략: 연결 유지, 데이터 갱신)
+# 🔐 구글 시트 연결
 # =========================================================
 @st.cache_resource
 def get_google_sheet_client():
@@ -124,6 +124,7 @@ def preprocess_with_morphology(text):
     try:
         okt = Okt()
         pos = okt.pos(text, stem=True)
+        # 엄격한 필터: 명사, 동사, 형용사만 허용
         return [w for w, p in pos if p in ['Noun', 'Verb', 'Adjective'] and len(w) > 1]
     except: return None
 
@@ -131,13 +132,14 @@ def get_analysis_hybrid(text, sheet_data):
     keywords = preprocess_with_morphology(text)
     learning_prompt = generate_prompt_from_sheet(sheet_data)
     
+    # [핵심] '하다' 제거는 규칙으로만 명시하고, 강제 코드는 삭제함. AI가 판단.
     base_instruction = """
     국어학 전문가로서 문맥을 고려하여 실질 형태소(알맹이 단어)를 분석하세요.
     
     [절대 규칙]
-    1. **조사(은/는/이/가/을/를 등), 어미(-다/-고/-면 등), 접사, 문장부호는 분석 결과에서 제외하세요.**
-    2. '명사', '동사', '형용사', '부사', '관형사', '감탄사'만 추출하세요.
-    3. '명사+하다'는 명사를 원형으로 함.
+    1. **조사, 어미, 접사, 문장부호, 부사, 관형사, 감탄사는 분석 결과에서 제외하세요.**
+    2. 오직 '명사', '동사', '형용사'만 추출하세요.
+    3. '명사+하다'는 명사를 원형으로 분석하는 것을 원칙으로 하되, 문맥을 고려하세요.
     4. 어원 분류: '고'(고유어), '한'(한자어), '외'(외래어), '혼'(혼종어)
     
     형식: [{"original_word": "단어", "root_word": "원형", "origin": "고", "pos": "명사"}]
@@ -167,16 +169,29 @@ def add_emoji_to_origin(val):
 
 def clean_value_for_save(val):
     if isinstance(val, str):
-        return val.replace('🔵 ', '').replace('🟢 ', '').replace('🔴 ', '').replace('🟣 ', '').replace('📦 ', '').replace('🏃 ', '').replace('🎨 ', '').replace('⚡ ', '').replace('🔍 ', '').replace('❗ ', '').replace('✅ ', '').replace('⚠️ ', '')
+        return val.replace('🔵 ', '').replace('🟢 ', '').replace('🔴 ', '').replace('🟣 ', '').replace('📦 ', '').replace('🏃 ', '').replace('🎨 ', '').replace('⚡ ', '').replace('🔍 ', '').replace('❗ ', '').replace('✅ ', '').replace('📝 ', '')
     return val
 
-def check_trust_level(root_word, uploaded_df):
-    """신뢰도만 체크 (True/False)"""
-    if uploaded_df is None or '자료' not in uploaded_df.columns:
+def get_problematic_words(sheet_data):
+    problem_roots = set()
+    if not sheet_data: return problem_roots
+    for row in sheet_data:
+        if row.get('action') in ['modify', 'delete', 'add']:
+            if row.get('root_word'): problem_roots.add(str(row.get('root_word')))
+            if row.get('original_word'): problem_roots.add(str(row.get('original_word')))
+    return problem_roots
+
+def check_trust_level_strict(root_word, uploaded_df, problematic_words):
+    """신뢰도 체크: 빈도가 높고(3회 이상) AND 과거에 수정한 적이 없어야 함"""
+    if root_word in problematic_words:
         return False
+
+    if uploaded_df is None: return False
+    if '자료' not in uploaded_df.columns: return False
+    
     match = uploaded_df[uploaded_df['자료'] == root_word]
-    if match.empty:
-        return False
+    if match.empty: return False
+    
     try:
         count_val = match.iloc[0]['출연횟수']
         return count_val >= TRUST_THRESHOLD
@@ -191,6 +206,17 @@ def get_blacklist_from_sheet(sheet_data):
             blacklist.add(row.get('original_word'))
             blacklist.add(row.get('root_word'))
     return blacklist
+
+def load_excel_safely(file):
+    try:
+        df = pd.read_excel(file)
+        if '자료' in df.columns and '출연횟수' in df.columns:
+            return df
+        else:
+            st.toast("⚠️ 파일 양식이 다릅니다. 빈 파일로 시작합니다.", icon="ℹ️")
+            return None
+    except:
+        return None
 
 # =========================================================
 # 🖥️ 메인 화면 로직
@@ -209,9 +235,11 @@ uploaded_df = None
 with st.sidebar:
     st.header("📂 이어하기")
     uploaded_excel = st.file_uploader("작업하던 엑셀 파일", type=['xlsx'])
+    
     if uploaded_excel:
-        try: uploaded_df = pd.read_excel(uploaded_excel)
-        except: pass
+        uploaded_df = load_excel_safely(uploaded_excel)
+        if uploaded_df is not None:
+             st.success(f"📂 파일 로드됨: {len(uploaded_df)}개 단어")
     
     if sheet: st.success(f"🌏 두뇌 연결됨 ({len(sheet_data)}건)")
     else: st.error("❌ 두뇌 연결 실패")
@@ -220,10 +248,10 @@ with st.sidebar:
     # [기능: 수동 추가]
     with st.expander("➕ AI가 놓친 단어 추가하기"):
         with st.form("manual_add_form"):
-            add_orig = st.text_input("원본 단어 (예: 비빔냉면)")
-            add_root = st.text_input("원형 (예: 비빔냉면)")
+            add_orig = st.text_input("원본 단어")
+            add_root = st.text_input("원형")
             add_origin = st.selectbox("분류", ["고", "한", "외", "혼"])
-            add_pos = st.selectbox("품사", ["명사", "동사", "형용사", "부사", "관형사", "감탄사"])
+            add_pos = st.selectbox("품사", ["명사", "동사", "형용사"]) 
             if st.form_submit_button("추가 및 학습"):
                 if add_orig and add_root and sheet:
                     row = [datetime.now().isoformat(), add_orig, add_root, add_origin, add_pos, 'add', '수동추가']
@@ -262,8 +290,9 @@ if analyze_btn and input_text:
             validation_text = input_text.replace(" ", "")
             filtered_results = []
             
-            POS_WHITELIST = ['명사', '동사', '형용사', '부사', '관형사', '감탄사', '수사', '대명사']
+            POS_WHITELIST = ['명사', '동사', '형용사'] 
             blacklist = get_blacklist_from_sheet(sheet_data)
+            problematic_words = get_problematic_words(sheet_data)
             
             all_roots = []
             valid_items = []
@@ -273,28 +302,24 @@ if analyze_btn and input_text:
                 root = item.get('root_word', '')
                 pos = item.get('pos', '')
                 
-                # 기본 필터
                 if original not in validation_text: continue
                 if not pos or pos not in POS_WHITELIST: continue
                 if original in blacklist or root in blacklist: continue
                 
-                # 하다 제거
-                if root.endswith("하다") and pos in ['명사', '동사', '형용사']:
-                     root = root[:-2]
-                     item['root_word'] = root
+                # [변경] 강제로 '하다' 자르는 로직 삭제함.
+                # AI가 프롬프트(규칙 3번)에 따라 알아서 판단한 결과를 존중함.
                 
-                # 데이터 정제
                 if item.get('origin') == '순': item['origin'] = '고'
                 item['origin'] = add_emoji_to_origin(item.get('origin', ''))
-                pos_map = {'명사': '📦 명사', '동사': '🏃 동사', '형용사': '🎨 형용사', '부사': '⚡ 부사', '관형사': '🔍 관형사', '감탄사': '❗ 감탄사'}
+                pos_map = {'명사': '📦 명사', '동사': '🏃 동사', '형용사': '🎨 형용사'}
                 item['pos'] = pos_map.get(pos, pos)
                 
-                # 신뢰도 체크 및 상태 표시 (텍스트 추가)
-                is_trusted = check_trust_level(root, uploaded_df)
+                is_trusted = check_trust_level_strict(root, uploaded_df, problematic_words)
+                
                 if is_trusted:
-                    item['status'] = '✅ 자동' # [변경] 텍스트 추가
+                    item['status'] = '✅ 자동' 
                 else:
-                    item['status'] = '📝 검토' # [변경] 텍스트 추가
+                    item['status'] = '📝 검토' 
                 
                 valid_items.append(item)
                 all_roots.append(root)
@@ -324,7 +349,7 @@ if st.session_state.analysis_result:
         "original_word": st.column_config.TextColumn("원본 단어", disabled=True),
         "root_word": "원형",
         "origin": st.column_config.SelectboxColumn("분류", options=["🔵 고", "🟢 한", "🔴 외", "🟣 혼"]),
-        "pos": st.column_config.SelectboxColumn("품사", options=["📦 명사", "🏃 동사", "🎨 형용사", "⚡ 부사", "🔍 관형사", "❗ 감탄사"])
+        "pos": st.column_config.SelectboxColumn("품사", options=["📦 명사", "🏃 동사", "🎨 형용사"])
     }
     
     cols = ["delete_check", "status", "count", "original_word", "root_word", "origin", "pos"]
@@ -371,7 +396,8 @@ if st.session_state.analysis_result:
             final_data = edited_df[edited_df['delete_check'] == False].to_dict('records')
             
             base_df = pd.DataFrame(columns=['구분', '자료', '출연횟수'])
-            if uploaded_df is not None: base_df = uploaded_df.copy()
+            if uploaded_df is not None: 
+                base_df = uploaded_df.copy()
 
             for c in base_df.columns:
                 if '쪽수' in c: base_df[c] = base_df[c].astype(object)
