@@ -1,1 +1,2 @@
-default-jdk
+default-jre
+openjdk-11-jdk
