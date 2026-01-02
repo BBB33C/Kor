@@ -12,134 +12,108 @@ from collections import Counter
 # =========================================================
 # ⚙️ 설정
 # =========================================================
-API_KEY = "AIzaSyCC6oyL7POpbWq2FZrJ2zIJuiosupFQZYk" # 기존 키 유지
+API_KEY = "AIzaSyCC6oyL7POpbWq2FZrJ2zIJuiosupFQZYk"
 MODEL_NAME = "gemini-2.5-flash"
-SHEET_NAME = "Korean_DB"  # ⚠️ 님이 만든 구글 시트 이름과 똑같아야 함!
+SHEET_NAME = "Korean_DB"  # 구글 시트 이름 확인
 
 st.set_page_config(page_title="국어활동 AI 분석기", page_icon="📝", layout="wide")
 
 # =========================================================
-# 🔐 구글 시트 연결 및 데이터 이사 (Migration)
+# 🔐 구글 시트 연결 (깜빡임 해결: 캐싱 적용 @st.cache_resource)
 # =========================================================
-def get_google_sheet_data():
-    """구글 시트와 연결하고 데이터를 가져옵니다."""
+@st.cache_resource
+def get_google_sheet_client():
+    """구글 연결을 최초 1회만 수행하고 기억합니다."""
     try:
-        # Streamlit Secrets에서 키 가져오기
         scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-        
-        # Secrets 데이터를 딕셔너리로 변환
         creds_dict = dict(st.secrets["gcp_service_account"])
         
-        # [중요] TOML에서 줄바꿈 문자가 깨질 경우를 대비한 방어 코드
         if "private_key" in creds_dict:
              creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
 
         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
         client = gspread.authorize(creds)
-        
-        # 시트 열기
+        return client
+    except Exception as e:
+        return None
+
+def get_sheet_data_cached():
+    """데이터를 가져오되 오류가 나면 None 반환"""
+    client = get_google_sheet_client()
+    if not client: return None, []
+    try:
         sheet = client.open(SHEET_NAME).sheet1
         data = sheet.get_all_records()
         return sheet, data
-    except Exception as e:
-        # 시트 이름이 틀렸거나 권한이 없을 때
-        st.error(f"❌ 구글 시트 연결 실패: {e}")
-        st.info(f"💡 팁: '{SHEET_NAME}' 시트에 '{creds_dict.get('client_email')}' 계정을 '편집자'로 초대했는지 확인하세요.")
+    except:
         return None, []
 
+# 이사(Migration) 로직
 def sync_json_to_sheet_if_empty(sheet, current_data):
-    """
-    [핵심] 시트가 비어있으면, 기존 JSON 파일 내용을 업로드합니다. (최초 1회용)
-    """
     if not sheet: return
-    if len(current_data) > 0:
-        return  # 시트에 이미 데이터가 있으면 패스 (이사 완료됨)
+    if len(current_data) > 0: return 
 
     json_path = "korean_analysis_learning.json"
     if os.path.exists(json_path):
         try:
-            with st.spinner("📦 기존 지능(JSON)을 구글 시트로 이사하는 중입니다..."):
+            with st.spinner("📦 기존 지능을 구글 시트로 이사 중..."):
                 with open(json_path, 'r', encoding='utf-8') as f:
                     local_data = json.load(f)
                 
                 corrections = local_data.get("corrections", [])
-                
                 if corrections:
-                    # 1. 헤더 만들기 (첫 줄)
                     sheet.append_row(["timestamp", "original_word", "root_word", "origin", "pos", "action", "context"])
-                    
-                    # 2. 데이터 변환
                     rows_to_add = []
                     for c in corrections:
-                        # 데이터가 복잡하게 꼬여있을 수 있어 안전하게 가져오기
                         user_cls = c.get('user_classification', {})
                         ai_cls = c.get('ai_classification', {})
-                        
-                        # 사용자 수정본이 있으면 그거 쓰고, 없으면 AI 거 씀
                         root = user_cls.get('root_word') or ai_cls.get('root_word') or ""
                         origin = user_cls.get('origin') or ai_cls.get('origin') or ""
                         pos = user_cls.get('pos') or ai_cls.get('pos') or ""
                         
-                        row = [
-                            c.get('timestamp', ''),
-                            c.get('original_word', ''),
-                            root,
-                            origin,
-                            pos,
-                            c.get('action', ''),
-                            c.get('context', '')
-                        ]
+                        row = [c.get('timestamp', ''), c.get('original_word', ''), root, origin, pos, c.get('action', ''), c.get('context', '')]
                         rows_to_add.append(row)
                     
-                    # 3. 한 번에 업로드
                     if rows_to_add:
                         sheet.append_rows(rows_to_add)
-                        st.success(f"✅ 이사 완료! {len(rows_to_add)}개의 데이터를 구글 시트로 옮겼습니다. 이제 JSON 파일은 없어도 됩니다.")
+                        st.success("✅ 이사 완료! 새로고침합니다.")
                         import time
-                        time.sleep(2) # 성공 메시지 읽을 시간 줌
-                        st.rerun() # 새로고침
+                        time.sleep(1)
+                        st.rerun()
         except Exception as e:
-            st.error(f"이사 중 오류 발생: {e}")
+            st.error(f"이사 중 오류: {e}")
 
 # =========================================================
-# 🧠 AI 학습 프롬프트 생성 (구글 시트 기반)
+# 🧠 AI 및 유틸리티
 # =========================================================
 def generate_prompt_from_sheet(sheet_data):
-    """구글 시트 데이터를 읽어서 AI에게 가르칠 내용을 만듭니다."""
     if not sheet_data: return ""
-    
-    # 1. 시트 데이터를 데이터프레임으로 변환 (다루기 쉽게)
     df = pd.DataFrame(sheet_data)
-    
     if df.empty: return ""
-
-    prompt_lines = []
     
-    # [규칙 1] 제외 단어 (action이 delete인 것)
-    deleted = df[df['action'] == 'delete']
-    for _, row in deleted.tail(5).iterrows(): # 최근 5개만
-        prompt_lines.append(f"- 예외 처리: 문맥 '{row['context']}'에서 '{row['original_word']}'는 분석하지 말고 제외할 것.")
-
-    # [규칙 2] 필수 단어 (action이 add인 것)
-    added = df[df['action'] == 'add']
-    missing_counts = added['original_word'].value_counts().head(5)
-    for word, _ in missing_counts.items():
-        prompt_lines.append(f"- 필수 포함: '{word}'는 분석에서 절대 누락하지 말 것.")
-
-    # [규칙 3] 수정 사항 (action이 modify인 것)
-    # original_word -> root_word 로 매핑 학습
-    modified = df[df['action'] == 'modify']
-    # 자주 틀리는 것 찾기 (같은 단어가 여러 번 수정되었으면 중요함)
-    for _, row in modified.tail(10).iterrows():
-         prompt_lines.append(f"- 주의: '{row['original_word']}'는 원형을 '{row['root_word']}', 분류를 '{row['origin']}', 품사를 '{row['pos']}'로 분석할 것.")
+    prompt_lines = []
+    # 1. 제외 단어
+    if 'action' in df.columns:
+        deleted = df[df['action'] == 'delete']
+        for _, row in deleted.tail(5).iterrows():
+            prompt_lines.append(f"- 예외: '{row['original_word']}'는 분석 제외.")
+        
+        # 2. 필수 단어
+        added = df[df['action'] == 'add']
+        if not added.empty:
+            missing_counts = added['original_word'].value_counts().head(5)
+            for word, _ in missing_counts.items():
+                prompt_lines.append(f"- 필수: '{word}'는 꼭 분석할 것.")
+        
+        # 3. 수정 사항
+        modified = df[df['action'] == 'modify']
+        for _, row in modified.tail(10).iterrows():
+             prompt_lines.append(f"- 주의: '{row['original_word']}' -> 원형:'{row['root_word']}', 분류:'{row['origin']}'")
 
     if prompt_lines:
-         return "\n[사용자 피드백 데이터(우선순위 높음)]:\n" + "\n".join(prompt_lines) + "\n"
+         return "\n[사용자 피드백]:\n" + "\n".join(prompt_lines) + "\n"
     return ""
 
-# =========================================================
-# 🛠️ 기타 유틸리티 (기존과 동일)
-# =========================================================
 def api_call_direct(prompt):
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={API_KEY.strip()}"
     headers = {'Content-Type': 'application/json'}
@@ -171,23 +145,20 @@ def preprocess_with_morphology(text):
 
 def get_analysis_hybrid(text, sheet_data):
     keywords = preprocess_with_morphology(text)
-    
-    # [변경] JSON 대신 구글 시트 데이터로 프롬프트 생성
     learning_prompt = generate_prompt_from_sheet(sheet_data)
     
     base_instruction = """
-    국어학 전문가로서, 아래 문맥을 고려하여 '분석 대상' 단어들의 원형, 어원(고/한/외/혼), 품사를 분석하세요.
+    국어학 전문가로서 문맥을 고려하여 단어를 분석하세요.
     규칙:
     1. 결과는 JSON 배열만 출력.
     2. '명사+하다'는 명사를 원형으로 함.
     3. 어원 분류: '고'(고유어), '한'(한자어), '외'(외래어), '혼'(혼종어)
     형식: [{"original_word": "단어", "root_word": "원형", "origin": "고", "pos": "명사"}]
     """
-    
     if keywords:
-        prompt = f"""{learning_prompt}\n{base_instruction}\n문장: "{text}"\n분석 대상 힌트: {', '.join(keywords)}"""
+        prompt = f"""{learning_prompt}\n{base_instruction}\n문장: "{text}"\n힌트: {', '.join(keywords)}"""
     else:
-        prompt = f"""{learning_prompt}\n{base_instruction}\n다음 문장에서 명사, 동사, 형용사를 추출하여 분석하세요.\n문장: "{text}" """
+        prompt = f"""{learning_prompt}\n{base_instruction}\n문장: "{text}" """
     return api_call_direct(prompt)
 
 def calculate_total_appearances(row):
@@ -202,36 +173,40 @@ def calculate_total_appearances(row):
                 total += 1
     return total
 
-# =========================================================
-# 🖥️ 메인 화면 로직
-# =========================================================
+# 가시성 개선: 이모지 매핑 함수
+def add_emoji_to_origin(val):
+    mapping = {'고': '🔵 고', '한': '🟢 한', '외': '🔴 외', '혼': '🟣 혼'}
+    return mapping.get(val, val)
 
-# 1. 구글 시트 연결 시도
-sheet, sheet_data = get_google_sheet_data()
+def remove_emoji(val):
+    # 저장할 때는 이모지 떼고 글자만 저장
+    if isinstance(val, str):
+        return val.replace('🔵 ', '').replace('🟢 ', '').replace('🔴 ', '').replace('🟣 ', '').replace('📦 ', '').replace('🏃 ', '').replace('🎨 ', '').replace('⚡ ', '').replace('🔍 ', '').replace('❗ ', '')
+    return val
 
-# 2. 최초 1회 이사 (JSON -> Sheet)
+# =========================================================
+# 🖥️ 메인 화면
+# =========================================================
+# 1. 구글 시트 연결 (캐시 사용으로 깜빡임 방지)
+sheet, sheet_data = get_sheet_data_cached()
+
+# 2. 최초 1회 이사
 if sheet:
     sync_json_to_sheet_if_empty(sheet, sheet_data)
-    # 이사 후 데이터가 갱신되었을 수 있으니 다시 읽기
-    if not sheet_data: 
-        sheet_data = sheet.get_all_records()
+    # 이사 후 데이터 갱신이 필요하면 여기서만 다시 로드
+    if not sheet_data:
+        _, sheet_data = get_sheet_data_cached()
 
 st.title("📝 국어활동 AI 분석기")
-st.caption("Google Sheets 연동 버전")
 
-# 사이드바
 with st.sidebar:
-    st.header("📂 이어하기 (선택)")
-    st.markdown("지난번 작업하던 엑셀 파일이 있으면 넣으세요. (없어도 됨)")
+    st.header("📂 이어하기")
     uploaded_excel = st.file_uploader("작업하던 엑셀 파일", type=['xlsx'])
-    
-    # 연결 상태 표시
     if sheet:
-        st.success(f"🌏 구글 시트(두뇌) 연결됨\n데이터: {len(sheet_data)}건")
+        st.success(f"🌏 두뇌 연결됨 ({len(sheet_data)}건)")
     else:
-        st.error("❌ 구글 시트 연결 실패")
+        st.error("❌ 두뇌 연결 실패")
 
-# 메인 입력
 col1, col2 = st.columns([4, 1])
 with col1:
     input_text = st.text_area("분석할 문장을 입력하세요", height=150, placeholder="예: 나는 어제 맛있는 비빔냉면을 먹었다.")
@@ -242,9 +217,9 @@ with col2:
 if 'analysis_result' not in st.session_state:
     st.session_state.analysis_result = None
 
-# 분석 실행
+# 분석 로직
 if analyze_btn and input_text:
-    with st.spinner("AI가 생각 중입니다..."):
+    with st.spinner("AI가 분석 중입니다..."):
         raw_results = get_analysis_hybrid(input_text, sheet_data)
         
         if raw_results:
@@ -254,6 +229,14 @@ if analyze_btn and input_text:
                 original = item.get('original_word', '').replace(" ", "")
                 if original in validation_text:
                     if item.get('origin') == '순': item['origin'] = '고'
+                    
+                    # [가시성] 이모지 부착
+                    item['origin'] = add_emoji_to_origin(item.get('origin', ''))
+                    
+                    # [가시성] 품사 이모지
+                    pos_map = {'명사': '📦 명사', '동사': '🏃 동사', '형용사': '🎨 형용사'}
+                    item['pos'] = pos_map.get(item.get('pos'), item.get('pos'))
+                    
                     filtered_results.append(item)
             st.session_state.analysis_result = filtered_results
         else:
@@ -264,11 +247,13 @@ if st.session_state.analysis_result:
     st.markdown("### 📊 분석 결과 (수정 가능)")
     
     df_display = pd.DataFrame(st.session_state.analysis_result)
+    
+    # [가시성] 색상 구슬이 들어간 선택지 제공
     column_config = {
         "original_word": st.column_config.TextColumn("원본 단어", disabled=True),
         "root_word": "원형",
-        "origin": st.column_config.SelectboxColumn("분류", options=["고", "한", "외", "혼"]),
-        "pos": st.column_config.SelectboxColumn("품사", options=["명사", "동사", "형용사", "부사", "관형사", "감탄사"])
+        "origin": st.column_config.SelectboxColumn("분류 (색상)", options=["🔵 고", "🟢 한", "🔴 외", "🟣 혼"]),
+        "pos": st.column_config.SelectboxColumn("품사", options=["📦 명사", "🏃 동사", "🎨 형용사", "⚡ 부사", "🔍 관형사", "❗ 감탄사"])
     }
     
     edited_df = st.data_editor(
@@ -282,28 +267,31 @@ if st.session_state.analysis_result:
     st.markdown("---")
     
     if st.button("📥 엑셀 파일 다운로드"):
-        # [방어 로직]
+        # 방어 로직
         base_df = pd.DataFrame(columns=['구분', '자료', '출연횟수'])
-        
         if uploaded_excel:
             try:
                 temp_df = pd.read_excel(uploaded_excel)
-                if '자료' in temp_df.columns:
-                    base_df = temp_df
-                else:
-                    st.toast("⚠️ 파일 양식 불일치. 새로 만듭니다.", icon="ℹ️")
-            except:
-                st.toast("⚠️ 파일 오류. 새로 만듭니다.", icon="ℹ️")
+                if '자료' in temp_df.columns: base_df = temp_df
+            except: st.toast("새 문서 생성", icon="ℹ️")
 
         for c in base_df.columns:
             if '쪽수' in c: base_df[c] = base_df[c].astype(object)
             
         new_rows = []
         saved_roots = set()
-        current_data = edited_df.to_dict('records')
-        counts = Counter([x['root_word'] for x in current_data])
         
+        # [중요] 저장 전 이모지 제거 (Clean up)
+        current_data = edited_df.to_dict('records')
+        cleaned_data = []
         for item in current_data:
+            item['origin'] = remove_emoji(item['origin'])
+            item['pos'] = remove_emoji(item['pos'])
+            cleaned_data.append(item)
+
+        counts = Counter([x['root_word'] for x in cleaned_data])
+        
+        for item in cleaned_data:
             root = item['root_word']
             if root in saved_roots: continue
             saved_roots.add(root)
@@ -339,3 +327,25 @@ if st.session_state.analysis_result:
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             type="primary"
         )
+        
+        # [학습] 구글 시트에 수정 내용 반영 (자동 학습)
+        if sheet:
+            try:
+                rows_to_add = []
+                for item in cleaned_data:
+                    # AI가 틀린 것 같아서 사용자가 수정한 경우 기록
+                    # (간소화를 위해 모든 결과를 'confirm' 또는 'modify'로 기록)
+                    row = [
+                        pd.Timestamp.now().isoformat(),
+                        item['original_word'],
+                        item['root_word'],
+                        item['origin'],
+                        item['pos'],
+                        'modify', # 일단 수정/확인됨으로 기록
+                        input_text
+                    ]
+                    rows_to_add.append(row)
+                if rows_to_add:
+                    sheet.append_rows(rows_to_add)
+                    st.toast("✅ AI가 학습했습니다 (구글시트 저장)", icon="🧠")
+            except: pass
