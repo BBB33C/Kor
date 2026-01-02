@@ -9,6 +9,7 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from collections import Counter
 from datetime import datetime
+import time
 
 # =========================================================
 # ⚙️ 설정
@@ -21,10 +22,11 @@ TRUST_THRESHOLD = 3
 st.set_page_config(page_title="국어활동 AI 분석기", page_icon="📝", layout="wide")
 
 # =========================================================
-# 🔐 구글 시트 연결 (캐시 적용)
+# 🔐 구글 시트 연결 (캐시 전략 수정: 연결은 유지, 데이터는 갱신)
 # =========================================================
 @st.cache_resource
 def get_google_sheet_client():
+    """구글 시트 연결 객체만 생성 (오래 걸리므로 캐싱)"""
     try:
         scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
         creds_dict = dict(st.secrets["gcp_service_account"])
@@ -35,7 +37,8 @@ def get_google_sheet_client():
         return client
     except: return None
 
-def get_sheet_data_cached():
+def get_sheet_data_fresh():
+    """데이터는 항상 최신으로 가져옴 (캐시 안 함)"""
     client = get_google_sheet_client()
     if not client: return None, []
     try:
@@ -70,7 +73,6 @@ def sync_json_to_sheet_if_empty(sheet, current_data):
                     if rows_to_add:
                         sheet.append_rows(rows_to_add)
                         st.success("✅ 이사 완료! 새로고침합니다.")
-                        import time
                         time.sleep(1)
                         st.rerun()
         except: pass
@@ -195,10 +197,16 @@ def get_blacklist_from_sheet(sheet_data):
 # =========================================================
 # 🖥️ 메인 화면
 # =========================================================
-sheet, sheet_data = get_sheet_data_cached()
+
+# 1. 데이터 가져오기 (항상 최신)
+sheet, sheet_data = get_sheet_data_fresh()
+
+# 2. 이사 로직
 if sheet:
     sync_json_to_sheet_if_empty(sheet, sheet_data)
-    if not sheet_data: _, sheet_data = get_sheet_data_cached()
+    # 이사 직후엔 데이터가 비어있을 수 있으므로 다시 체크
+    if not sheet_data: 
+        _, sheet_data = get_sheet_data_fresh()
 
 st.title("📝 국어활동 AI 분석기")
 
@@ -214,7 +222,7 @@ with st.sidebar:
     if sheet: st.success(f"🌏 두뇌 연결됨 ({len(sheet_data)}건)")
     else: st.error("❌ 두뇌 연결 실패")
     
-    # [누락 기능 1: 수동 추가]
+    # [기능 1] 수동 추가 (저장 후 즉시 반영 로직 포함)
     st.markdown("---")
     with st.expander("➕ AI가 놓친 단어 추가하기"):
         with st.form("manual_add_form"):
@@ -226,10 +234,11 @@ with st.sidebar:
                 if add_orig and add_root and sheet:
                     row = [datetime.now().isoformat(), add_orig, add_root, add_origin, add_pos, 'add', '수동추가']
                     sheet.append_row(row)
-                    st.toast(f"✅ '{add_orig}' 학습 완료! 다시 분석하면 나옵니다.", icon="🎓")
-                    st.rerun()
+                    st.toast(f"✅ '{add_orig}' 학습 완료! 1초 후 반영됩니다.", icon="🎓")
+                    time.sleep(1)
+                    st.rerun() # 강제 새로고침으로 데이터 갱신
 
-    # [이력 검색]
+    # [기능 2] 이력 검색
     st.markdown("---")
     st.subheader("🔍 이력 검색")
     search_query = st.text_input("궁금한 단어")
@@ -271,7 +280,7 @@ if analyze_btn and input_text:
                 if not pos or pos not in POS_WHITELIST: continue
                 if original in blacklist or root in blacklist: continue
                 
-                # [누락 기능 3: 하다 제거 2중 안전장치]
+                # '하다' 제거 2중 안전장치
                 if root.endswith("하다") and pos in ['명사', '동사', '형용사']:
                      root = root[:-2]
                      item['root_word'] = root
@@ -302,7 +311,7 @@ if st.session_state.analysis_result:
     
     df_display = pd.DataFrame(st.session_state.analysis_result)
     
-    # [누락 기능 2: 삭제 학습 옵션 추가]
+    # [기능 3] 삭제 학습 옵션
     column_config = {
         "status": st.column_config.SelectboxColumn(
             "상태 (변경가능)", 
@@ -344,7 +353,7 @@ if st.session_state.analysis_result:
         learning_logs = []
 
         for item in current_data:
-            # [삭제 학습 처리]
+            # 삭제 학습
             if item['status'] == "⛔ 삭제(학습)":
                 learning_logs.append({
                     'timestamp': datetime.now().isoformat(),
@@ -355,14 +364,13 @@ if st.session_state.analysis_result:
                     'action': 'delete',
                     'context': input_text
                 })
-                continue # 엑셀 저장에서는 제외
+                continue # 엑셀에는 저장 안 함
 
             item['origin'] = clean_value_for_save(item['origin'])
             item['pos'] = clean_value_for_save(item['pos'])
             cleaned_data.append(item)
             
-            # [수정 학습 처리]
-            # (단순화를 위해 모든 유효 데이터를 'modify'로 기록하여 강화 학습)
+            # 수정 학습 (단순 확인이라도 AI 확신을 위해 'modify'로 기록)
             learning_logs.append({
                 'timestamp': datetime.now().isoformat(),
                 'original_word': item['original_word'],
@@ -412,11 +420,13 @@ if st.session_state.analysis_result:
             type="primary"
         )
         
-        # [구글 시트 일괄 저장]
+        # [구글 시트 저장 및 즉시 반영]
         if sheet and learning_logs:
             try:
                 rows_to_add = [list(log.values()) for log in learning_logs]
                 sheet.append_rows(rows_to_add)
-                st.toast(f"✅ 학습 완료: {len(rows_to_add)}건 (삭제 포함)", icon="🧠")
+                st.toast(f"✅ 학습 완료: {len(rows_to_add)}건. 1초 후 반영됩니다.", icon="🧠")
+                time.sleep(1)
+                st.rerun() # 중요: 저장 후 새로고침해야 블랙리스트가 적용됨
             except Exception as e:
                 st.error(f"학습 저장 실패: {e}")
