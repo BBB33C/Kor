@@ -12,10 +12,11 @@ from datetime import datetime
 import time
 
 # =========================================================
-# ⚙️ 설정
+# ⚙️ 설정 (여기가 핵심입니다!)
 # =========================================================
 API_KEY = "AIzaSyCC6oyL7POpbWq2FZrJ2zIJuiosupFQZYk"
-MODEL_NAME = "gemini-2.5-flash"
+# [수정] 2.5는 클라우드에서 인식 불가. 1.5로 변경해야만 작동함.
+MODEL_NAME = "gemini-1.5-flash" 
 SHEET_NAME = "Korean_DB"
 TRUST_THRESHOLD = 3 
 
@@ -27,6 +28,10 @@ st.set_page_config(page_title="국어활동 AI 분석기", page_icon="📝", lay
 @st.cache_resource
 def get_google_sheet_client():
     try:
+        # Secrets가 없으면 None 반환 (로컬 테스트용 예외처리)
+        if "gcp_service_account" not in st.secrets:
+            return None
+            
         scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
         creds_dict = dict(st.secrets["gcp_service_account"])
         if "private_key" in creds_dict:
@@ -34,7 +39,9 @@ def get_google_sheet_client():
         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
         client = gspread.authorize(creds)
         return client
-    except: return None
+    except Exception as e:
+        # 연결 실패해도 앱이 죽지 않게 함
+        return None
 
 def get_sheet_data_fresh():
     client = get_google_sheet_client()
@@ -110,8 +117,13 @@ def api_call_direct(prompt):
                 text_res = result_json['candidates'][0]['content']['parts'][0]['text']
                 json_match = re.search(r'\[.*\]', text_res, re.DOTALL)
                 if json_match: return json.loads(json_match.group())
+        else:
+            # [디버깅] 에러 원인을 화면에 출력
+            st.error(f"❌ AI 응답 실패 (코드 {response.status_code}): {response.text}")
         return None
-    except: return None
+    except Exception as e:
+        st.error(f"❌ 서버 통신 오류: {e}")
+        return None
 
 try:
     from konlpy.tag import Okt
@@ -124,7 +136,6 @@ def preprocess_with_morphology(text):
     try:
         okt = Okt()
         pos = okt.pos(text, stem=True)
-        # 엄격한 필터: 명사, 동사, 형용사만 허용
         return [w for w, p in pos if p in ['Noun', 'Verb', 'Adjective'] and len(w) > 1]
     except: return None
 
@@ -132,21 +143,18 @@ def get_analysis_hybrid(text, sheet_data):
     keywords = preprocess_with_morphology(text)
     learning_prompt = generate_prompt_from_sheet(sheet_data)
     
-    # [핵심] '하다' 제거는 규칙으로만 명시하고, 강제 코드는 삭제함. AI가 판단.
     base_instruction = """
     국어학 전문가로서 문맥을 고려하여 실질 형태소(알맹이 단어)를 분석하세요.
-    
     [절대 규칙]
-    1. **조사, 어미, 접사, 문장부호, 부사, 관형사, 감탄사는 분석 결과에서 제외하세요.**
+    1. 조사, 어미, 접사, 문장부호, 부사, 관형사, 감탄사는 제외하세요.
     2. 오직 '명사', '동사', '형용사'만 추출하세요.
-    3. '명사+하다'는 명사를 원형으로 분석하는 것을 원칙으로 하되, 문맥을 고려하세요.
+    3. '명사+하다'는 명사를 원형으로 하되, 문맥을 고려하세요.
     4. 어원 분류: '고'(고유어), '한'(한자어), '외'(외래어), '혼'(혼종어)
-    
     형식: [{"original_word": "단어", "root_word": "원형", "origin": "고", "pos": "명사"}]
     """
     
     if keywords:
-        prompt = f"""{learning_prompt}\n{base_instruction}\n문장: "{text}"\n중점 분석 대상(힌트): {', '.join(keywords)}"""
+        prompt = f"""{learning_prompt}\n{base_instruction}\n문장: "{text}"\n힌트: {', '.join(keywords)}"""
     else:
         prompt = f"""{learning_prompt}\n{base_instruction}\n문장: "{text}" """
     return api_call_direct(prompt)
@@ -182,21 +190,15 @@ def get_problematic_words(sheet_data):
     return problem_roots
 
 def check_trust_level_strict(root_word, uploaded_df, problematic_words):
-    """신뢰도 체크: 빈도가 높고(3회 이상) AND 과거에 수정한 적이 없어야 함"""
-    if root_word in problematic_words:
-        return False
-
+    if root_word in problematic_words: return False
     if uploaded_df is None: return False
     if '자료' not in uploaded_df.columns: return False
-    
     match = uploaded_df[uploaded_df['자료'] == root_word]
     if match.empty: return False
-    
     try:
         count_val = match.iloc[0]['출연횟수']
         return count_val >= TRUST_THRESHOLD
-    except:
-        return False
+    except: return False
 
 def get_blacklist_from_sheet(sheet_data):
     blacklist = set()
@@ -213,16 +215,12 @@ def load_excel_safely(file):
         if '자료' in df.columns and '출연횟수' in df.columns:
             return df
         else:
-            st.toast("⚠️ 파일 양식이 다릅니다. 빈 파일로 시작합니다.", icon="ℹ️")
             return None
-    except:
-        return None
+    except: return None
 
 # =========================================================
 # 🖥️ 메인 화면 로직
 # =========================================================
-
-# 1. 데이터 준비
 sheet, sheet_data = get_sheet_data_fresh()
 if sheet:
     sync_json_to_sheet_if_empty(sheet, sheet_data)
@@ -240,12 +238,13 @@ with st.sidebar:
         uploaded_df = load_excel_safely(uploaded_excel)
         if uploaded_df is not None:
              st.success(f"📂 파일 로드됨: {len(uploaded_df)}개 단어")
+        else:
+             st.caption("ℹ️ 빈 파일 혹은 양식이 다른 파일입니다.")
     
     if sheet: st.success(f"🌏 두뇌 연결됨 ({len(sheet_data)}건)")
-    else: st.error("❌ 두뇌 연결 실패")
+    else: st.error("❌ 두뇌 연결 실패 (API키는 있지만 시트 권한 확인 필요)")
     
     st.markdown("---")
-    # [기능: 수동 추가]
     with st.expander("➕ AI가 놓친 단어 추가하기"):
         with st.form("manual_add_form"):
             add_orig = st.text_input("원본 단어")
@@ -256,11 +255,10 @@ with st.sidebar:
                 if add_orig and add_root and sheet:
                     row = [datetime.now().isoformat(), add_orig, add_root, add_origin, add_pos, 'add', '수동추가']
                     sheet.append_row(row)
-                    st.toast(f"✅ '{add_orig}' 추가 완료! 1초 후 반영됩니다.", icon="🎓")
+                    st.toast(f"✅ '{add_orig}' 추가 완료! 잠시 후 반영됩니다.", icon="🎓")
                     time.sleep(1)
                     st.rerun()
 
-    # [기능: 이력 검색]
     st.markdown("---")
     st.subheader("🔍 이력 검색")
     search_query = st.text_input("궁금한 단어")
@@ -284,6 +282,7 @@ if 'analysis_result' not in st.session_state:
 # 분석 실행
 if analyze_btn and input_text:
     with st.spinner("AI가 분석 중입니다..."):
+        # 모델명 에러 등이 있으면 여기서 에러 메시지를 반환하도록 수정함
         raw_results = get_analysis_hybrid(input_text, sheet_data)
         
         if raw_results:
@@ -306,9 +305,6 @@ if analyze_btn and input_text:
                 if not pos or pos not in POS_WHITELIST: continue
                 if original in blacklist or root in blacklist: continue
                 
-                # [변경] 강제로 '하다' 자르는 로직 삭제함.
-                # AI가 프롬프트(규칙 3번)에 따라 알아서 판단한 결과를 존중함.
-                
                 if item.get('origin') == '순': item['origin'] = '고'
                 item['origin'] = add_emoji_to_origin(item.get('origin', ''))
                 pos_map = {'명사': '📦 명사', '동사': '🏃 동사', '형용사': '🎨 형용사'}
@@ -316,16 +312,13 @@ if analyze_btn and input_text:
                 
                 is_trusted = check_trust_level_strict(root, uploaded_df, problematic_words)
                 
-                if is_trusted:
-                    item['status'] = '✅ 자동' 
-                else:
-                    item['status'] = '📝 검토' 
+                if is_trusted: item['status'] = '✅ 자동' 
+                else: item['status'] = '📝 검토' 
                 
                 valid_items.append(item)
                 all_roots.append(root)
             
             root_counts = Counter(all_roots)
-            
             for item in valid_items:
                 item['delete_check'] = False
                 cnt = root_counts[item['root_word']]
@@ -334,7 +327,8 @@ if analyze_btn and input_text:
                 
             st.session_state.analysis_result = filtered_results
         else:
-            st.error("분석 결과가 없습니다.")
+            # api_call_direct 함수에서 에러 메시지를 띄웠으므로 여기선 간단히 안내
+            pass
 
 # 결과 화면
 if st.session_state.analysis_result:
@@ -379,7 +373,7 @@ if st.session_state.analysis_result:
                                 "", "", 'delete', input_text
                             ])
                         sheet.append_rows(rows_to_add)
-                        st.toast(f"🗑️ {len(rows_to_add)}개 단어 삭제 학습 완료! 1초 후 반영됩니다.", icon="✅")
+                        st.toast(f"🗑️ {len(rows_to_add)}개 단어 삭제 학습 완료! 잠시 후 반영됩니다.", icon="✅")
                         remaining = edited_df[edited_df['delete_check'] == False].to_dict('records')
                         st.session_state.analysis_result = remaining
                         time.sleep(1)
