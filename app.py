@@ -12,16 +12,17 @@ from datetime import datetime
 import time
 
 # =========================================================
-# ⚙️ 설정 (보안 강화 버전)
+# ⚙️ 설정
 # =========================================================
-# [핵심 수정] 코드가 아닌 Secrets에서 키를 가져옵니다. 깃허브에 키가 노출되지 않습니다.
+# [주의] Secrets에 GEMINI_API_KEY가 등록되어 있어야 합니다.
 try:
-    API_KEY = st.secrets["GEMINI_API_KEY"]
+    if "GEMINI_API_KEY" in st.secrets:
+        API_KEY = st.secrets["GEMINI_API_KEY"]
+    else:
+        API_KEY = "AIzaSyCC6oyL7POpbWq2FZrJ2zIJuiosupFQZYk" # (비상용)
 except:
-    st.error("🚨 Secrets에 'GEMINI_API_KEY'가 설정되지 않았습니다.")
-    st.stop()
+    API_KEY = "AIzaSyCC6oyL7POpbWq2FZrJ2zIJuiosupFQZYk"
 
-# [요청 반영] 모델명 2.5 버전
 MODEL_NAME = "gemini-2.5-flash"
 SHEET_NAME = "Korean_DB"
 TRUST_THRESHOLD = 3 
@@ -37,13 +38,9 @@ def get_google_sheet_client():
         if "gcp_service_account" not in st.secrets:
             return None
         scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-        # Secrets 딕셔너리를 그대로 가져옴
         creds_dict = dict(st.secrets["gcp_service_account"])
-        
-        # 줄바꿈 문자 처리 (필수)
         if "private_key" in creds_dict:
              creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
-        
         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
         client = gspread.authorize(creds)
         return client
@@ -118,7 +115,6 @@ def api_call_direct(prompt):
     try:
         response = requests.post(url, headers=headers, json=data, timeout=30)
         
-        # [수정] 응답 코드가 200(성공)이 아니면 에러 메시지 출력
         if response.status_code != 200:
             st.error(f"❌ AI 응답 실패 (코드 {response.status_code}): {response.text}")
             return None
@@ -250,7 +246,7 @@ with st.sidebar:
              st.caption("ℹ️ 빈 파일 혹은 양식이 다른 파일입니다.")
     
     if sheet: st.success(f"🌏 두뇌 연결됨 ({len(sheet_data)}건)")
-    else: st.error("❌ 두뇌 연결 실패")
+    else: st.error("❌ 두뇌 연결 실패 (API키는 있지만 시트 권한 확인 필요)")
     
     st.markdown("---")
     with st.expander("➕ AI가 놓친 단어 추가하기"):
@@ -334,7 +330,6 @@ if analyze_btn and input_text:
                 
             st.session_state.analysis_result = filtered_results
         else:
-            # api_call_direct에서 에러가 이미 출력됨.
             pass
 
 # 결과 화면
@@ -392,8 +387,14 @@ if st.session_state.analysis_result:
 
     st.markdown("---")
     
+    # 엑셀 파일 저장용 상태 변수
+    if 'excel_buffer' not in st.session_state:
+        st.session_state.excel_buffer = None
+
     with col_save:
-        if st.button("📥 엑셀 파일 다운로드 (수정사항 학습)", type="primary"):
+        # [수정] 버튼 이름 변경: "엑셀에 저장 (수정사항 학습)"
+        # 이 버튼은 처리만 하고 다운로드는 밑에서 하게 함
+        if st.button("💾 엑셀에 저장 (수정사항 학습)", type="primary"):
             final_data = edited_df[edited_df['delete_check'] == False].to_dict('records')
             
             base_df = pd.DataFrame(columns=['구분', '자료', '출연횟수'])
@@ -454,17 +455,24 @@ if st.session_state.analysis_result:
                 base_df.to_excel(writer, index=False)
             output_excel.seek(0)
             
+            # 생성된 엑셀 파일을 세션 스테이트에 저장 (다운로드 버튼이 쓸 수 있게)
+            st.session_state.excel_buffer = output_excel
+            
             if sheet and learning_logs:
                 try:
                     rows_to_add = [list(log.values()) for log in learning_logs]
                     sheet.append_rows(rows_to_add)
                     st.toast(f"✅ 학습 완료: {len(rows_to_add)}건 저장됨.", icon="🧠")
                 except Exception as e: pass
+            
+            st.success("✅ 저장이 완료되었습니다! 아래 버튼을 눌러 다운로드하세요.")
 
-            st.download_button(
-                label="파일 저장하기 (클릭)",
-                data=output_excel,
-                file_name="국어활동_분석결과_최종.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                type="primary"
-            )
+    # [수정] 다운로드 버튼은 처리가 완료되었을 때만 표시
+    if st.session_state.excel_buffer:
+        st.download_button(
+            label="📥 엑셀파일 다운로드하기",
+            data=st.session_state.excel_buffer,
+            file_name="국어활동_분석결과_최종.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="secondary"
+        )
