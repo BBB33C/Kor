@@ -14,7 +14,6 @@ import time
 # =========================================================
 # ⚙️ 설정
 # =========================================================
-# [주의] Secrets에 GEMINI_API_KEY가 등록되어 있어야 합니다.
 try:
     if "GEMINI_API_KEY" in st.secrets:
         API_KEY = st.secrets["GEMINI_API_KEY"]
@@ -113,7 +112,8 @@ def api_call_direct(prompt):
     headers = {'Content-Type': 'application/json'}
     data = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.1}}
     try:
-        response = requests.post(url, headers=headers, json=data, timeout=30)
+        # [1단계 해결] 타임아웃을 30초 -> 300초(5분)로 대폭 상향
+        response = requests.post(url, headers=headers, json=data, timeout=300)
         
         if response.status_code != 200:
             st.error(f"❌ AI 응답 실패 (코드 {response.status_code}): {response.text}")
@@ -126,7 +126,7 @@ def api_call_direct(prompt):
             if json_match: return json.loads(json_match.group())
         return None
     except Exception as e:
-        st.error(f"❌ 서버 통신 오류: {e}")
+        st.error(f"❌ 서버 통신 오류 (타임아웃 등): {e}")
         return None
 
 try:
@@ -232,6 +232,12 @@ if sheet:
 
 st.title("📝 국어활동 AI 분석기")
 
+# 세션 상태 초기화 (제일 먼저)
+if 'analysis_result' not in st.session_state:
+    st.session_state.analysis_result = None
+if 'excel_buffer' not in st.session_state:
+    st.session_state.excel_buffer = None
+
 uploaded_df = None
 
 with st.sidebar:
@@ -246,9 +252,11 @@ with st.sidebar:
              st.caption("ℹ️ 빈 파일 혹은 양식이 다른 파일입니다.")
     
     if sheet: st.success(f"🌏 두뇌 연결됨 ({len(sheet_data)}건)")
-    else: st.error("❌ 두뇌 연결 실패 (API키는 있지만 시트 권한 확인 필요)")
+    else: st.error("❌ 두뇌 연결 실패")
     
     st.markdown("---")
+    
+    # [2단계 해결] 수동 추가 시 현재 결과 리스트에도 즉시 반영
     with st.expander("➕ AI가 놓친 단어 추가하기"):
         with st.form("manual_add_form"):
             add_orig = st.text_input("원본 단어")
@@ -257,9 +265,32 @@ with st.sidebar:
             add_pos = st.selectbox("품사", ["명사", "동사", "형용사"]) 
             if st.form_submit_button("추가 및 학습"):
                 if add_orig and add_root and sheet:
+                    # 1. 시트에 저장
                     row = [datetime.now().isoformat(), add_orig, add_root, add_origin, add_pos, 'add', '수동추가']
                     sheet.append_row(row)
-                    st.toast(f"✅ '{add_orig}' 추가 완료! 잠시 후 반영됩니다.", icon="🎓")
+                    
+                    # 2. 현재 화면의 리스트(세션 상태)에도 강제 주입
+                    if st.session_state.analysis_result is not None:
+                        # 품사 포맷팅
+                        pos_map_manual = {'명사': '📦 명사', '동사': '🏃 동사', '형용사': '🎨 형용사'}
+                        formatted_pos = pos_map_manual.get(add_pos, add_pos)
+                        
+                        # 분류 포맷팅
+                        formatted_origin = add_emoji_to_origin(add_origin)
+                        
+                        new_item = {
+                            'original_word': add_orig,
+                            'root_word': add_root,
+                            'origin': formatted_origin,
+                            'pos': formatted_pos,
+                            'status': '✅ 수동', # 수동 추가 표시
+                            'count': '1회',     # 기본값 1회
+                            'delete_check': False
+                        }
+                        # 리스트에 추가
+                        st.session_state.analysis_result.append(new_item)
+                    
+                    st.toast(f"✅ '{add_orig}' 추가 완료! 리스트에 즉시 반영됩니다.", icon="🎓")
                     time.sleep(1)
                     st.rerun()
 
@@ -279,9 +310,6 @@ with col1:
 with col2:
     page_num = st.text_input("쪽수", value="1")
     analyze_btn = st.button("🚀 분석 실행", use_container_width=True)
-
-if 'analysis_result' not in st.session_state:
-    st.session_state.analysis_result = None
 
 # 분석 실행
 if analyze_btn and input_text:
@@ -387,13 +415,7 @@ if st.session_state.analysis_result:
 
     st.markdown("---")
     
-    # 엑셀 파일 저장용 상태 변수
-    if 'excel_buffer' not in st.session_state:
-        st.session_state.excel_buffer = None
-
     with col_save:
-        # [수정] 버튼 이름 변경: "엑셀에 저장 (수정사항 학습)"
-        # 이 버튼은 처리만 하고 다운로드는 밑에서 하게 함
         if st.button("💾 엑셀에 저장 (수정사항 학습)", type="primary"):
             final_data = edited_df[edited_df['delete_check'] == False].to_dict('records')
             
@@ -455,7 +477,6 @@ if st.session_state.analysis_result:
                 base_df.to_excel(writer, index=False)
             output_excel.seek(0)
             
-            # 생성된 엑셀 파일을 세션 스테이트에 저장 (다운로드 버튼이 쓸 수 있게)
             st.session_state.excel_buffer = output_excel
             
             if sheet and learning_logs:
@@ -467,7 +488,6 @@ if st.session_state.analysis_result:
             
             st.success("✅ 저장이 완료되었습니다! 아래 버튼을 눌러 다운로드하세요.")
 
-    # [수정] 다운로드 버튼은 처리가 완료되었을 때만 표시
     if st.session_state.excel_buffer:
         st.download_button(
             label="📥 엑셀파일 다운로드하기",
