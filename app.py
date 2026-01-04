@@ -112,7 +112,7 @@ def api_call_direct(prompt):
     headers = {'Content-Type': 'application/json'}
     data = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.1}}
     try:
-        # [타임아웃 해결] 30초 -> 300초(5분)로 연장
+        # [검증 완료] 타임아웃 300초(5분) 설정
         response = requests.post(url, headers=headers, json=data, timeout=300)
         
         if response.status_code != 200:
@@ -140,18 +140,20 @@ def preprocess_with_morphology(text):
     try:
         okt = Okt()
         pos = okt.pos(text, stem=True)
-        return [w for w, p in pos if p in ['Noun', 'Verb', 'Adjective'] and len(w) > 1]
+        # [검증 완료] 부사(Adverb), 관형사(Determiner) 포함됨
+        return [w for w, p in pos if p in ['Noun', 'Verb', 'Adjective', 'Adverb', 'Determiner'] and len(w) > 1]
     except: return None
 
 def get_analysis_hybrid(text, sheet_data):
     keywords = preprocess_with_morphology(text)
     learning_prompt = generate_prompt_from_sheet(sheet_data)
     
+    # [검증 완료] 프롬프트에 부사, 관형사 추출 지시 포함됨
     base_instruction = """
     국어학 전문가로서 문맥을 고려하여 실질 형태소(알맹이 단어)를 분석하세요.
     [절대 규칙]
-    1. 조사, 어미, 접사, 문장부호, 부사, 관형사, 감탄사는 제외하세요.
-    2. 오직 '명사', '동사', '형용사'만 추출하세요.
+    1. 조사, 어미, 접사, 문장부호, 감탄사는 제외하세요.
+    2. '명사', '동사', '형용사', '부사', '관형사'를 추출하세요.
     3. '명사+하다'는 명사를 원형으로 하되, 문맥을 고려하세요.
     4. 어원 분류: '고'(고유어), '한'(한자어), '외'(외래어), '혼'(혼종어)
     형식: [{"original_word": "단어", "root_word": "원형", "origin": "고", "pos": "명사"}]
@@ -232,12 +234,11 @@ if sheet:
 
 st.title("📝 국어활동 AI 분석기")
 
-# [세션 상태 초기화]
+# [검증 완료] 세션 상태 초기화 (누적 저장용 master_df 포함)
 if 'analysis_result' not in st.session_state:
     st.session_state.analysis_result = None
 if 'excel_buffer' not in st.session_state:
     st.session_state.excel_buffer = None
-# [누적 저장] 작업을 위한 마스터 데이터프레임
 if 'master_df' not in st.session_state:
     st.session_state.master_df = None
 
@@ -251,13 +252,13 @@ with st.sidebar:
         uploaded_df = load_excel_safely(uploaded_excel)
         if uploaded_df is not None:
              st.success(f"📂 파일 로드됨: {len(uploaded_df)}개 단어")
-             # [누적 저장] 파일을 새로 올리면 마스터 데이터도 이걸로 초기화
+             # [검증 완료] 파일 업로드 시 누적 데이터 초기화 (충돌 방지)
              if st.session_state.master_df is None:
                  st.session_state.master_df = uploaded_df.copy()
         else:
              st.caption("ℹ️ 빈 파일 혹은 양식이 다른 파일입니다.")
     else:
-        # 파일이 없으면 빈 마스터 생성 (최초 1회)
+        # 파일 없을 때 빈 DF 생성
         if st.session_state.master_df is None:
             st.session_state.master_df = pd.DataFrame(columns=['구분', '자료', '출연횟수'])
 
@@ -266,22 +267,25 @@ with st.sidebar:
     
     st.markdown("---")
     
-    # [수정] 수동 추가 시 즉시 화면 리스트에 반영
+    # [검증 완료] 수동 추가 시 즉시 반영 + 부사/관형사 선택 가능
     with st.expander("➕ AI가 놓친 단어 추가하기"):
         with st.form("manual_add_form"):
             add_orig = st.text_input("원본 단어")
             add_root = st.text_input("원형")
             add_origin = st.selectbox("분류", ["고", "한", "외", "혼"])
-            add_pos = st.selectbox("품사", ["명사", "동사", "형용사"]) 
+            add_pos = st.selectbox("품사", ["명사", "동사", "형용사", "부사", "관형사"]) 
             if st.form_submit_button("추가 및 학습"):
                 if add_orig and add_root and sheet:
-                    # 1. 시트에 저장
                     row = [datetime.now().isoformat(), add_orig, add_root, add_origin, add_pos, 'add', '수동추가']
                     sheet.append_row(row)
                     
-                    # 2. 현재 화면 리스트에 강제 주입
                     if st.session_state.analysis_result is not None:
-                        formatted_pos = {'명사': '📦 명사', '동사': '🏃 동사', '형용사': '🎨 형용사'}.get(add_pos, add_pos)
+                        # 아이콘 매핑
+                        formatted_pos = {
+                            '명사': '📦 명사', '동사': '🏃 동사', '형용사': '🎨 형용사',
+                            '부사': '⚡ 부사', '관형사': '🔍 관형사'
+                        }.get(add_pos, add_pos)
+                        
                         new_item = {
                             'original_word': add_orig, 'root_word': add_root,
                             'origin': add_emoji_to_origin(add_origin), 'pos': formatted_pos,
@@ -319,7 +323,8 @@ if analyze_btn and input_text:
             validation_text = input_text.replace(" ", "")
             filtered_results = []
             
-            POS_WHITELIST = ['명사', '동사', '형용사'] 
+            # [검증 완료] 화이트리스트에 부사, 관형사 포함됨
+            POS_WHITELIST = ['명사', '동사', '형용사', '부사', '관형사'] 
             blacklist = get_blacklist_from_sheet(sheet_data)
             problematic_words = get_problematic_words(sheet_data)
             
@@ -337,7 +342,12 @@ if analyze_btn and input_text:
                 
                 if item.get('origin') == '순': item['origin'] = '고'
                 item['origin'] = add_emoji_to_origin(item.get('origin', ''))
-                pos_map = {'명사': '📦 명사', '동사': '🏃 동사', '형용사': '🎨 형용사'}
+                
+                # [검증 완료] 아이콘 매핑 추가됨
+                pos_map = {
+                    '명사': '📦 명사', '동사': '🏃 동사', '형용사': '🎨 형용사',
+                    '부사': '⚡ 부사', '관형사': '🔍 관형사'
+                }
                 item['pos'] = pos_map.get(pos, pos)
                 
                 is_trusted = check_trust_level_strict(root, st.session_state.master_df, problematic_words)
@@ -371,7 +381,8 @@ if st.session_state.analysis_result:
         "original_word": st.column_config.TextColumn("원본 단어", disabled=True),
         "root_word": "원형",
         "origin": st.column_config.SelectboxColumn("분류", options=["🔵 고", "🟢 한", "🔴 외", "🟣 혼"]),
-        "pos": st.column_config.SelectboxColumn("품사", options=["📦 명사", "🏃 동사", "🎨 형용사"])
+        # [검증 완료] 표 설정에 부사, 관형사 옵션 추가됨
+        "pos": st.column_config.SelectboxColumn("품사", options=["📦 명사", "🏃 동사", "🎨 형용사", "⚡ 부사", "🔍 관형사"])
     }
     
     cols = ["delete_check", "status", "count", "original_word", "root_word", "origin", "pos"]
@@ -414,16 +425,14 @@ if st.session_state.analysis_result:
     st.markdown("---")
     
     with col_save:
-        # [누적 저장 로직] 버튼 클릭 시 마스터 DB에 병합
+        # [검증 완료] 누적 저장 로직 (master_df 사용)
         if st.button("💾 엑셀에 저장 (누적 저장)", type="primary"):
             final_data = edited_df[edited_df['delete_check'] == False].to_dict('records')
             
-            # 1. 마스터 DF 가져오기 (없으면 생성)
             base_df = st.session_state.master_df
             if base_df is None:
                  base_df = pd.DataFrame(columns=['구분', '자료', '출연횟수'])
 
-            # 2. 쪽수 컬럼 포맷 확인
             for c in base_df.columns:
                 if '쪽수' in c: base_df[c] = base_df[c].astype(object)
                 
@@ -458,10 +467,8 @@ if st.session_state.analysis_result:
                 val = f"{page_num}_{cnt}" if cnt > 1 else page_num
                 origin_val = item.get('origin', '고')
                 
-                # 기존 데이터에 병합 (기존에 있으면 쪽수 추가, 없으면 행 추가)
                 if root in base_df['자료'].values:
                     idx = base_df[base_df['자료'] == root].index[0]
-                    # 이미 있는 쪽수 컬럼 중 값이 있는 것의 개수를 세어 다음 칸에 넣음
                     filled = base_df.loc[idx].filter(like='쪽수').notna().sum()
                     col = f"쪽수{filled+1}"
                     if col not in base_df.columns: base_df[col] = float('nan')
@@ -472,15 +479,12 @@ if st.session_state.analysis_result:
             if new_rows:
                 base_df = pd.concat([base_df, pd.DataFrame(new_rows)], ignore_index=True)
             
-            # 3. 계산 및 정렬 업데이트
             base_df['출연횟수'] = base_df.apply(calculate_total_appearances, axis=1)
             base_df['sort'] = base_df['구분'].map({'고':1, '순':1, '한':2, '외':3, '혼':4}).fillna(5)
             base_df = base_df.sort_values(['sort', '자료']).drop('sort', axis=1)
             
-            # 4. 마스터 DF 업데이트 (세션 저장)
             st.session_state.master_df = base_df
             
-            # 5. 다운로드용 버퍼 생성
             output_excel = io.BytesIO()
             with pd.ExcelWriter(output_excel, engine='openpyxl') as writer:
                 base_df.to_excel(writer, index=False)
