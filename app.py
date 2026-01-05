@@ -23,7 +23,7 @@ except:
     API_KEY = "AIzaSyCC6oyL7POpbWq2FZrJ2zIJuiosupFQZYk"
 
 MODEL_NAME = "gemini-2.5-flash"
-SHEET_NAME = "Korean_DB" # 엑셀 파일 이름
+SHEET_NAME = "Korean_DB" 
 TRUST_THRESHOLD = 3 
 
 st.set_page_config(page_title="국어활동 AI 분석기", page_icon="📝", layout="wide")
@@ -170,6 +170,7 @@ def get_analysis_hybrid(text, sheet_data, mode_key):
         - 국립국어원 표준 맞춤법과 두음법칙을 준수하세요.
         """
 
+    # [수정 완료] JSON 예시의 중괄호를 {{ }}로 이중 처리하여 f-string 오류 완벽 해결
     base_instruction = f"""
     {role_definition}
     {mode_instruction}
@@ -188,12 +189,13 @@ def get_analysis_hybrid(text, sheet_data, mode_key):
     - 추출 대상 품사: '명사', '동사', '형용사', '부사', '관형사'
     - 어원 분류: '고'(고유어), '한'(한자어), '외'(외래어), '혼'(혼종어)
     
-    형식: [{"original_word": "문장에_나온_그대로", "root_word": "기본형", "origin": "고", "pos": "명사"}]
+    형식: [{{"original_word": "문장에_나온_그대로", "root_word": "기본형", "origin": "고", "pos": "명사"}}]
     """
     
     chunks = split_text_smartly(text)
     all_results = []
     
+    # UI 제거됨 (st.status 등의 시각적 요소 없음)
     for i, chunk in enumerate(chunks):
         if not chunk.strip(): continue
         
@@ -375,7 +377,7 @@ with col2:
 # ---------------------------------------------------------
 if analyze_btn and input_text:
     with st.spinner(f"{mode_selection} 모드로 분석 중입니다..."):
-        # get_analysis_hybrid에 MODE_KEY 전달
+        # [수정] UI 요소 전달 제거 (pure function call)
         raw_results = get_analysis_hybrid(input_text, sheet_data, MODE_KEY)
         
         if raw_results:
@@ -545,40 +547,3 @@ if st.session_state.analysis_result:
                     filled = base_df.loc[idx].filter(like='쪽수').notna().sum()
                     col = f"쪽수{filled+1}"
                     if col not in base_df.columns: base_df[col] = float('nan')
-                    base_df.at[idx, col] = val
-                else:
-                    new_rows.append({'구분': origin_val, '자료': root, '쪽수1': val})
-            
-            if new_rows:
-                base_df = pd.concat([base_df, pd.DataFrame(new_rows)], ignore_index=True)
-            
-            base_df['출연횟수'] = base_df.apply(calculate_total_appearances, axis=1)
-            base_df['sort'] = base_df['구분'].map({'고':1, '순':1, '한':2, '외':3, '혼':4}).fillna(5)
-            base_df = base_df.sort_values(['sort', '자료']).drop('sort', axis=1)
-            
-            st.session_state.master_df = base_df
-            
-            output_excel = io.BytesIO()
-            with pd.ExcelWriter(output_excel, engine='openpyxl') as writer:
-                base_df.to_excel(writer, index=False)
-            output_excel.seek(0)
-            
-            st.session_state.excel_buffer = output_excel
-            
-            if sheet and learning_logs:
-                try:
-                    rows_to_add = [list(log.values()) for log in learning_logs]
-                    sheet.append_rows(rows_to_add)
-                    st.toast(f"✅ 학습 완료: {len(rows_to_add)}건 저장됨. ({MODE_KEY})", icon="🧠")
-                except Exception as e: pass
-            
-            st.success("✅ 누적 저장 완료! (1, 2, ... 쪽 내용이 모두 합쳐졌습니다.)")
-
-    if st.session_state.excel_buffer:
-        st.download_button(
-            label="📥 엑셀파일 다운로드하기 (전체 내용)",
-            data=st.session_state.excel_buffer,
-            file_name="국어활동_분석결과_통합.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            type="secondary"
-        )
