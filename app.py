@@ -36,7 +36,8 @@ try:
 except:
     API_KEY = "AIzaSyCC6oyL7POpbWq2FZrJ2zIJuiosupFQZYk"
 
-MODEL_NAME = "gemini-2.5-flash"
+MODEL_NAME = "gemini-2.0-flash-exp" # 최신 모델 권장 (또는 gemini-1.5-flash)
+# 만약 2.0이 안 되면 "gemini-1.5-flash"로 변경하세요.
 SHEET_NAME = "Korean_DB" 
 TRUST_THRESHOLD = 3 
 
@@ -121,16 +122,23 @@ def api_call_direct(prompt):
         st.error(f"❌ 서버 통신 오류: {e}")
         return None
 
+# [핵심 업데이트] 프롬프트 강화: 말풍선 분리 및 세로쓰기 인식
 def api_call_vision_ocr(image_bytes):
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={API_KEY.strip()}"
     headers = {'Content-Type': 'application/json'}
     base64_image = base64.b64encode(image_bytes).decode('utf-8')
+    
+    # [강화된 프롬프트]
     prompt_text = """
     이 이미지에 있는 텍스트를 보이는 그대로 추출해주세요.
-    - 북한 문화어 표기(두음법칙 미적용 등)가 있다면 수정하지 말고 그대로 적으세요.
-    - 페이지의 머리말이나 쪽수 번호는 제외하고 본문 내용만 적으세요.
-    - 문단 구분은 줄바꿈으로 해주세요.
+    
+    [중요한 형식 규칙]
+    1. **공간 분리 준수:** 말풍선, 단락, 표 등으로 시각적으로 분리된 텍스트 덩어리는 반드시 **줄바꿈(Enter)**으로 명확히 구분하세요. 문장이 섞이지 않게 하세요.
+    2. **세로쓰기 대응:** 글자가 세로로(위에서 아래로) 쓰여 있다면, 자연스러운 독해 순서(보통 우측 상단에서 좌측 하단)에 맞춰 순서대로 추출하세요.
+    3. **북한 표기 유지:** 두음법칙을 적용하지 않은 표기(예: 로동, 녀자)가 있다면 수정하지 말고 그대로 적으세요.
+    4. **노이즈 제거:** 페이지의 쪽수 번호나 머리말/꼬리말은 본문과 섞이지 않도록 제외하거나 맨 마지막에 따로 적으세요.
     """
+    
     data = {"contents": [{"parts": [{"text": prompt_text}, {"inline_data": {"mime_type": "image/png", "data": base64_image}}]}], "generationConfig": {"temperature": 0.1}}
     try:
         response = requests.post(url, headers=headers, json=data, timeout=300)
@@ -167,16 +175,14 @@ def split_text_smartly(text, chunk_size=1000):
     if current_chunk: chunks.append(current_chunk.strip())
     return chunks
 
-# [핵심] PDF/이미지 통합 추출기 (상단 크롭 제거 적용)
+# PDF/이미지 통합 추출기 (상단 보존)
 def extract_text_unified(file_obj, page_index):
     file_type = file_obj.type
     
-    # 1. 이미지 파일
     if "image" in file_type:
         try: return api_call_vision_ocr(file_obj.getvalue())
         except Exception as e: return f"이미지 읽기 오류: {e}"
         
-    # 2. PDF 파일
     elif "pdf" in file_type:
         if PLUMBER_AVAILABLE:
             try:
@@ -184,10 +190,8 @@ def extract_text_unified(file_obj, page_index):
                     if page_index < 0 or page_index >= len(pdf.pages): return ""
                     page = pdf.pages[page_index]
                     width, height = page.width, page.height
-                    
-                    # [수정됨] 상단 0% (보존), 하단 10% 제거 (쪽수만 제거)
+                    # 상단 0% (보존), 하단 10% 제거
                     crop_box = (0, 0, width, height * 0.9)
-                    
                     try: cropped = page.crop(crop_box); text = cropped.extract_text()
                     except: text = page.extract_text()
                     if text and len(text.strip()) > 30: return text
@@ -199,28 +203,27 @@ def extract_text_unified(file_obj, page_index):
                 if page_index < 0 or page_index >= len(doc): return ""
                 page = doc[page_index]
                 rect = page.rect
-                
-                # [수정됨] 이미지 모드에서도 동일하게 상단 보존
+                # 이미지 모드에서도 상단 보존
                 clip_rect = fitz.Rect(0, 0, rect.width, rect.height * 0.9)
-                
                 pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), clip=clip_rect)
                 return api_call_vision_ocr(pix.tobytes("png"))
             except Exception as e: return f"PDF 변환 오류: {e}"
         return "PDF를 읽을 수 없습니다. (라이브러리 설치 확인 필요)"
     return "지원하지 않는 파일 형식입니다."
 
-# 미리보기용 이미지 생성 함수
-def get_page_image(file_obj, page_index):
+# [수정] 미리보기용 이미지 생성 (스크롤 뷰어용 Bytes 반환)
+def get_page_image_bytes(file_obj, page_index):
     file_type = file_obj.type
     if "image" in file_type:
-        return file_obj 
+        return file_obj.getvalue() # Bytes 반환
     elif "pdf" in file_type and FITZ_AVAILABLE:
         try:
             doc = fitz.open(stream=file_obj.getvalue(), filetype="pdf")
             if page_index < 0 or page_index >= len(doc): return None
             page = doc[page_index]
+            # 해상도 1.5배 (선명하게)
             pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5)) 
-            return pix.tobytes("png")
+            return pix.tobytes("png") # Bytes 반환
         except: return None
     return None
 
@@ -360,7 +363,7 @@ if 'uploaded_file' not in st.session_state: st.session_state.uploaded_file = Non
 if 'total_pages' not in st.session_state: st.session_state.total_pages = 0
 if 'current_page_idx' not in st.session_state: st.session_state.current_page_idx = 0
 if 'start_page_offset' not in st.session_state: st.session_state.start_page_offset = 1 
-if 'manual_page_input' not in st.session_state: st.session_state.manual_page_input = "1" # 이미지용 수동 입력
+if 'manual_page_input' not in st.session_state: st.session_state.manual_page_input = "1" 
 
 uploaded_df = None
 with st.sidebar:
@@ -433,14 +436,12 @@ with col_up:
             st.session_state.total_pages = 1
         st.rerun()
 
-# [핵심] 쪽수 입력 UI 이원화
-# PDF일 때는 상단 오프셋 / 이미지일 때는 상단 숨김
 is_pdf_mode = st.session_state.uploaded_file and "pdf" in st.session_state.uploaded_file.type
 
 with col_set:
     if is_pdf_mode:
         st.write("") 
-        new_offset = st.number_input("교과서 시작 쪽수 (첫장=몇쪽?)", min_value=1, value=st.session_state.start_page_offset, help="PDF의 첫 번째 장이 실제 교과서 몇 쪽인지 설정하세요. 자동으로 계산됩니다.")
+        new_offset = st.number_input("교과서 시작 쪽수", min_value=1, value=st.session_state.start_page_offset, help="PDF의 첫 번째 장이 실제 교과서 몇 쪽인지 설정하세요.")
         if new_offset != st.session_state.start_page_offset:
             st.session_state.start_page_offset = new_offset
             st.rerun()
@@ -449,13 +450,12 @@ with col_set:
 extracted_text = ""
 
 if st.session_state.uploaded_file:
-    # 현재 저장될 쪽수 계산 (PDF는 자동, 이미지는 사용자 입력 대기)
     if is_pdf_mode:
         current_save_page = str(st.session_state.current_page_idx + st.session_state.start_page_offset)
     else:
-        current_save_page = st.session_state.manual_page_input # 나중에 하단에서 입력받음
+        current_save_page = st.session_state.manual_page_input
 
-    # 네비게이션 (PDF만)
+    # 네비게이션
     if is_pdf_mode and st.session_state.total_pages > 1:
         c_prev, c_info, c_next = st.columns([1, 2, 1])
         with c_prev:
@@ -473,17 +473,36 @@ if st.session_state.uploaded_file:
         with c_info:
             st.markdown(f"<div style='text-align:center; padding-top:10px;'><b>PDF {st.session_state.current_page_idx + 1}/{st.session_state.total_pages}장 (현재 {current_save_page}쪽)</b></div>", unsafe_allow_html=True)
 
-    # 좌우 분할
     view_col1, view_col2 = st.columns([1, 1])
     
+    # [핵심] 왼쪽: 스크롤 가능한 이미지 뷰어
     with view_col1:
-        st.caption("📷 원본 미리보기")
-        page_img = get_page_image(st.session_state.uploaded_file, st.session_state.current_page_idx)
-        if page_img:
-            st.image(page_img, use_container_width=True)
+        st.caption("📷 원본 미리보기 (휠로 스크롤 가능)")
+        
+        # 이미지 Bytes 가져오기
+        img_bytes = get_page_image_bytes(st.session_state.uploaded_file, st.session_state.current_page_idx)
+        
+        if img_bytes:
+            # Base64로 인코딩하여 HTML에 삽입
+            b64_img = base64.b64encode(img_bytes).decode('utf-8')
+            
+            # CSS 스타일이 적용된 HTML 컨테이너
+            html_code = f"""
+            <div style="
+                height: 600px; 
+                overflow-y: auto; 
+                border: 1px solid #ddd; 
+                border-radius: 5px; 
+                padding: 10px;
+                background-color: #f9f9f9;">
+                <img src="data:image/png;base64,{b64_img}" style="width: 100%; display: block;">
+            </div>
+            """
+            st.markdown(html_code, unsafe_allow_html=True)
         else:
-            st.info("미리보기를 불러올 수 없습니다. (라이브러리 확인)")
+            st.info("미리보기를 불러올 수 없습니다.")
 
+    # [핵심] 오른쪽: 텍스트 에디터
     with view_col2:
         st.caption("📝 추출 텍스트 (수정 가능)")
         with st.spinner("텍스트 읽는 중..."):
@@ -493,20 +512,17 @@ if st.session_state.uploaded_file:
         input_text = st.text_area(
             "분석 대상", 
             value=extracted_text if extracted_text else "",
-            height=400,
+            height=600, # 이미지 창 높이(600px)와 맞춤
             label_visibility="collapsed"
         )
         
-        # 하단 설정 (이미지일 때만 쪽수 입력창 표시)
         col_p, col_b = st.columns([1, 2])
         with col_p:
-            if not is_pdf_mode: # 이미지 모드일 때만 보임
+            if not is_pdf_mode: 
                 manual_page = st.text_input("저장될 쪽수 입력", value=st.session_state.manual_page_input, key="manual_page_setter")
                 if manual_page != st.session_state.manual_page_input:
                     st.session_state.manual_page_input = manual_page
-                    # rerun은 굳이 안 해도 됨 (다음 클릭 시 반영)
             else:
-                # PDF 모드일 땐 입력창 없음 (자동 계산된 값만 내부적으로 사용)
                 st.info(f"💾 **{current_save_page}쪽**으로 저장됩니다.")
 
         with col_b:
@@ -517,7 +533,7 @@ else:
     analyze_btn = False
     input_text = ""
 
-# 분석 로직
+# 분석 로직 (기존 동일)
 if analyze_btn and input_text:
     with st.spinner(f"{mode_selection} 모드로 분석 중입니다..."):
         raw_results = get_analysis_hybrid(input_text, sheet_data, MODE_KEY)
@@ -644,7 +660,6 @@ if st.session_state.analysis_result:
             except: pass
         return True
 
-    # 현재 로직에 맞는 저장될 쪽수 값 가져오기
     if is_pdf_mode:
         final_page_str = str(st.session_state.current_page_idx + st.session_state.start_page_offset)
     else:
@@ -653,7 +668,6 @@ if st.session_state.analysis_result:
     with btn_col2:
         if st.button("💾 저장하고 다음 쪽(▶) 이동", type="primary", use_container_width=True):
             if save_logic(edited_df, final_page_str):
-                # PDF일 때만 이동
                 if is_pdf_mode and st.session_state.current_page_idx < st.session_state.total_pages - 1:
                     st.session_state.current_page_idx += 1
                     st.session_state.analysis_result = None
