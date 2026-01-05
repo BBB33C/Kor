@@ -162,7 +162,7 @@ def split_text_smartly(text, chunk_size=1000):
     
     return chunks
 
-def get_analysis_hybrid(text, sheet_data, status_container=None):
+def get_analysis_hybrid(text, sheet_data):
     learning_prompt = generate_prompt_from_sheet(sheet_data)
     
     # [수정된 프롬프트: 강제 분리 규칙 제거 -> 사용자 자율성 극대화]
@@ -190,13 +190,11 @@ def get_analysis_hybrid(text, sheet_data, status_container=None):
     chunks = split_text_smartly(text)
     all_results = []
     
+    progress_bar = st.progress(0)
     total_chunks = len(chunks)
     
     for i, chunk in enumerate(chunks):
         if not chunk.strip(): continue
-        
-        if status_container:
-            status_container.write(f"🤖 1단계: AI 분석 중... (Chunk {i+1}/{total_chunks})")
         
         keywords = preprocess_with_morphology(chunk)
         if keywords:
@@ -208,8 +206,10 @@ def get_analysis_hybrid(text, sheet_data, status_container=None):
         if chunk_result:
             all_results.extend(chunk_result)
             
+        progress_bar.progress((i + 1) / total_chunks)
         time.sleep(0.1) 
         
+    progress_bar.empty()
     return all_results
 
 def calculate_total_appearances(row):
@@ -358,14 +358,12 @@ with col2:
     analyze_btn = st.button("🚀 분석 실행", use_container_width=True)
 
 # ---------------------------------------------------------
-# 🚀 분석 실행 및 그룹화 로직 (Trust Logic 적용됨)
+# 🚀 분석 실행 및 그룹화 로직 (UI 복구 완료)
 # ---------------------------------------------------------
 if analyze_btn and input_text:
-    with st.status("🚀 분석 시스템 가동 중...", expanded=True) as status:
-        
-        # [Step 1] AI 분석 (status 객체 전달)
-        # 1단계 메시지는 함수 내부에서 출력됨
-        raw_results = get_analysis_hybrid(input_text, sheet_data, status)
+    with st.spinner("AI가 분석 중입니다..."):
+        # UI 요소(status) 전달 없이 순수 데이터만 요청
+        raw_results = get_analysis_hybrid(input_text, sheet_data)
         
         if raw_results:
             validation_text = input_text.replace(" ", "")
@@ -373,12 +371,7 @@ if analyze_btn and input_text:
             blacklist = get_blacklist_from_sheet(sheet_data)
             problematic_words = get_problematic_words(sheet_data)
             
-            # [Step 2] 4칙 적용 (업데이트된 규칙: 사용자 학습 > 표준 원형)
-            status.write("⚖️ 2단계: [규칙 서열 적용] 1.사용자학습 > 2.표준원형 > 3.명사통합")
-            time.sleep(0.5) 
-
-            # [Step 3] 필터링 및 그룹화
-            status.write("🔍 3단계: [3회 교차 검증] 데이터 무결성 및 그룹화 처리 중...")
+            # [Step 1] 기본 필터링
             pre_filtered_items = []
             for item in raw_results:
                 original = item.get('original_word', '').replace(" ", "")
@@ -400,6 +393,7 @@ if analyze_btn and input_text:
                 
                 pre_filtered_items.append(item)
             
+            # [Step 2] 그룹화 (Root 기준 중복 통합)
             grouped_data = {} 
             for item in pre_filtered_items:
                 root = item['root_word']
@@ -411,11 +405,8 @@ if analyze_btn and input_text:
                         'originals': []
                     }
                 grouped_data[root]['originals'].append(item['original_word'])
-            time.sleep(0.5)
 
-            status.write("✅ 분석 완료!")
-            
-            # 최종 리스트 생성
+            # [Step 3] 최종 리스트 생성 (포맷팅)
             final_results = []
             for root, info in grouped_data.items():
                 orig_counts = Counter(info['originals'])
@@ -424,11 +415,11 @@ if analyze_btn and input_text:
                 total_cnt = sum(orig_counts.values())
                 
                 is_trusted = check_trust_level_strict(root, st.session_state.master_df, problematic_words)
-                status_label = '✅ 자동' if is_trusted else '📝 검토'
+                status = '✅ 자동' if is_trusted else '📝 검토'
                 
                 final_results.append({
                     'delete_check': False,
-                    'status': status_label,
+                    'status': status,
                     'count': f"{total_cnt}회",
                     'original_word': formatted_original,
                     'root_word': root,
