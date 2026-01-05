@@ -162,9 +162,10 @@ def split_text_smartly(text, chunk_size=1000):
     
     return chunks
 
-def get_analysis_hybrid(text, sheet_data):
+def get_analysis_hybrid(text, sheet_data, status_container=None):
     learning_prompt = generate_prompt_from_sheet(sheet_data)
     
+    # [수정된 프롬프트: 강제 분리 규칙 제거 -> 사용자 자율성 극대화]
     base_instruction = """
     국어학 전문가로서 문맥을 고려하여 실질 형태소(알맹이 단어)를 분석하세요.
     
@@ -173,9 +174,9 @@ def get_analysis_hybrid(text, sheet_data):
     - root_word: 사전에 등재된 **기본형(원형)**으로 적으세요. (예: '먹었습니다' -> '먹다')
     
     [분석 3단계 우선순위 (번호가 낮을수록 강력함)]
-    1. [최우선] 사용자 학습 규칙(위쪽 내용)이 있다면 무조건 따르세요.
-    2. [용언 분리] '공부하다', '사랑하다' 처럼 '명사+하다'로 이루어진 용언(동사/형용사)은, 원형(root_word)을 추출할 때 반드시 어근인 명사('공부', '사랑')만 남기세요.
-    3. [명사 통합] 위 2번(하다 용언)이 아닌 경우, '비빔냉면', '볶음밥', '학교앞' 같은 복합명사나 합성어는 굳이 쪼개지 말고 '하나의 단어'로 분석하세요.
+    1. [최우선] 사용자 학습 규칙(위쪽 내용)이 있다면 무조건 따르세요. (예: 사용자가 '공부하다'를 '공부'로 저장했다면, '공부'로 출력)
+    2. [표준 원형] 특별한 학습 규칙이 없다면, 국립국어원 표준국어대사전 기준의 '기본형'을 추출하세요. 굳이 '하다'를 떼어내려 하지 마세요.
+    3. [명사 통합] '비빔냉면', '학교앞' 같은 복합명사는 굳이 쪼개지 말고 '하나의 단어'로 분석하세요.
     
     [기본 규칙]
     - 조사, 어미, 접사, 문장부호, 감탄사는 제외하세요.
@@ -189,11 +190,13 @@ def get_analysis_hybrid(text, sheet_data):
     chunks = split_text_smartly(text)
     all_results = []
     
-    progress_bar = st.progress(0)
     total_chunks = len(chunks)
     
     for i, chunk in enumerate(chunks):
         if not chunk.strip(): continue
+        
+        if status_container:
+            status_container.write(f"🤖 1단계: AI 분석 중... (Chunk {i+1}/{total_chunks})")
         
         keywords = preprocess_with_morphology(chunk)
         if keywords:
@@ -205,10 +208,8 @@ def get_analysis_hybrid(text, sheet_data):
         if chunk_result:
             all_results.extend(chunk_result)
             
-        progress_bar.progress((i + 1) / total_chunks)
         time.sleep(0.1) 
         
-    progress_bar.empty()
     return all_results
 
 def calculate_total_appearances(row):
@@ -360,8 +361,11 @@ with col2:
 # 🚀 분석 실행 및 그룹화 로직 (Trust Logic 적용됨)
 # ---------------------------------------------------------
 if analyze_btn and input_text:
-    with st.spinner("AI가 분석 중입니다..."):
-        raw_results = get_analysis_hybrid(input_text, sheet_data)
+    with st.status("🚀 분석 시스템 가동 중...", expanded=True) as status:
+        
+        # [Step 1] AI 분석 (status 객체 전달)
+        # 1단계 메시지는 함수 내부에서 출력됨
+        raw_results = get_analysis_hybrid(input_text, sheet_data, status)
         
         if raw_results:
             validation_text = input_text.replace(" ", "")
@@ -369,7 +373,12 @@ if analyze_btn and input_text:
             blacklist = get_blacklist_from_sheet(sheet_data)
             problematic_words = get_problematic_words(sheet_data)
             
-            # [Step 1] 기본 필터링
+            # [Step 2] 4칙 적용 (업데이트된 규칙: 사용자 학습 > 표준 원형)
+            status.write("⚖️ 2단계: [규칙 서열 적용] 1.사용자학습 > 2.표준원형 > 3.명사통합")
+            time.sleep(0.5) 
+
+            # [Step 3] 필터링 및 그룹화
+            status.write("🔍 3단계: [3회 교차 검증] 데이터 무결성 및 그룹화 처리 중...")
             pre_filtered_items = []
             for item in raw_results:
                 original = item.get('original_word', '').replace(" ", "")
@@ -391,9 +400,7 @@ if analyze_btn and input_text:
                 
                 pre_filtered_items.append(item)
             
-            # [Step 2] 그룹화 (Root 기준 중복 통합) - 신뢰 분석 적용 완료
-            grouped_data = {} # Key: root_word
-            
+            grouped_data = {} 
             for item in pre_filtered_items:
                 root = item['root_word']
                 if root not in grouped_data:
@@ -404,24 +411,24 @@ if analyze_btn and input_text:
                         'originals': []
                     }
                 grouped_data[root]['originals'].append(item['original_word'])
+            time.sleep(0.5)
 
-            # [Step 3] 최종 리스트 생성 (포맷팅)
+            status.write("✅ 분석 완료!")
+            
+            # 최종 리스트 생성
             final_results = []
             for root, info in grouped_data.items():
-                # 원본 단어별 빈도 계산 (Counter) -> 예: 어른인(6), 어른이(6)
                 orig_counts = Counter(info['originals'])
                 formatted_original = ", ".join([f"{word}({cnt})" for word, cnt in orig_counts.items()])
                 
-                # 총 빈도 (합산)
                 total_cnt = sum(orig_counts.values())
                 
-                # 신뢰도 검사
                 is_trusted = check_trust_level_strict(root, st.session_state.master_df, problematic_words)
-                status = '✅ 자동' if is_trusted else '📝 검토'
+                status_label = '✅ 자동' if is_trusted else '📝 검토'
                 
                 final_results.append({
                     'delete_check': False,
-                    'status': status,
+                    'status': status_label,
                     'count': f"{total_cnt}회",
                     'original_word': formatted_original,
                     'root_word': root,
@@ -468,7 +475,6 @@ if st.session_state.analysis_result:
                     try:
                         rows_to_add = []
                         for _, row in to_delete.iterrows():
-                            # 삭제 학습 시 root_word를 기준으로 차단하므로, 그룹핑된 원본 단어 문자열이 들어가도 안전함
                             rows_to_add.append([
                                 datetime.now().isoformat(),
                                 row['original_word'], 
@@ -508,10 +514,10 @@ if st.session_state.analysis_result:
                 item['origin'] = clean_value_for_save(item['origin'])
                 item['pos'] = clean_value_for_save(item['pos'])
                 
-                # 학습 로그 저장
+                # 학습 로그
                 learning_logs.append({
                     'timestamp': datetime.now().isoformat(),
-                    'original_word': item['original_word'], # 요약된 문자열 저장
+                    'original_word': item['original_word'], 
                     'root_word': item['root_word'],
                     'origin': item['origin'],
                     'pos': item['pos'],
@@ -523,7 +529,6 @@ if st.session_state.analysis_result:
                 if root in saved_roots: continue
                 saved_roots.add(root)
                 
-                # 빈도수 숫자 변환 ("12회" -> 12)
                 try:
                     cnt = int(str(item['count']).replace('회',''))
                 except: cnt = 1
