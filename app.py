@@ -36,8 +36,7 @@ try:
 except:
     API_KEY = "AIzaSyCC6oyL7POpbWq2FZrJ2zIJuiosupFQZYk"
 
-MODEL_NAME = "gemini-2.0-flash-exp" # 최신 모델 권장 (또는 gemini-1.5-flash)
-# 만약 2.0이 안 되면 "gemini-1.5-flash"로 변경하세요.
+MODEL_NAME = "gemini-2.0-flash-exp" 
 SHEET_NAME = "Korean_DB" 
 TRUST_THRESHOLD = 3 
 
@@ -76,6 +75,35 @@ def get_sheet_data_fresh(mode_key):
     except Exception as e:
         st.error(f"구글 시트 연결 오류: {e}")
         return None, []
+
+# [신규] 구글 시트 전송 재시도(Retry) 헬퍼 함수
+def send_data_with_retry(sheet_obj, data, is_multiple=False):
+    """
+    네트워크 불안정이나 연결 끊김 시 3번까지 재시도하는 함수
+    data: 리스트 형태 (단건 or 다건)
+    is_multiple: append_rows(True) 인지 append_row(False) 인지
+    """
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            # 데이터 정제 (JSON 오류 방지용 문자열 변환)
+            if is_multiple:
+                # 2차원 리스트
+                clean_data = [[str(item) for item in row] for row in data]
+                sheet_obj.append_rows(clean_data)
+            else:
+                # 1차원 리스트
+                clean_data = [str(item) for item in data]
+                sheet_obj.append_row(clean_data)
+            return True # 성공 시 바로 종료
+        except Exception as e:
+            if attempt < max_retries - 1:
+                time.sleep(1) # 1초 대기 후 재시도
+                continue
+            else:
+                st.error(f"❌ 데이터 전송 실패: {str(e)}")
+                return False
+    return False
 
 # =========================================================
 # 🧠 AI 및 전처리 로직
@@ -122,13 +150,11 @@ def api_call_direct(prompt):
         st.error(f"❌ 서버 통신 오류: {e}")
         return None
 
-# [핵심 업데이트] 프롬프트 강화: 말풍선 분리 및 세로쓰기 인식
 def api_call_vision_ocr(image_bytes):
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={API_KEY.strip()}"
     headers = {'Content-Type': 'application/json'}
     base64_image = base64.b64encode(image_bytes).decode('utf-8')
     
-    # [강화된 프롬프트]
     prompt_text = """
     이 이미지에 있는 텍스트를 보이는 그대로 추출해주세요.
     
@@ -175,7 +201,6 @@ def split_text_smartly(text, chunk_size=1000):
     if current_chunk: chunks.append(current_chunk.strip())
     return chunks
 
-# PDF/이미지 통합 추출기 (상단 보존)
 def extract_text_unified(file_obj, page_index):
     file_type = file_obj.type
     
@@ -190,7 +215,6 @@ def extract_text_unified(file_obj, page_index):
                     if page_index < 0 or page_index >= len(pdf.pages): return ""
                     page = pdf.pages[page_index]
                     width, height = page.width, page.height
-                    # 상단 0% (보존), 하단 10% 제거
                     crop_box = (0, 0, width, height * 0.9)
                     try: cropped = page.crop(crop_box); text = cropped.extract_text()
                     except: text = page.extract_text()
@@ -203,7 +227,6 @@ def extract_text_unified(file_obj, page_index):
                 if page_index < 0 or page_index >= len(doc): return ""
                 page = doc[page_index]
                 rect = page.rect
-                # 이미지 모드에서도 상단 보존
                 clip_rect = fitz.Rect(0, 0, rect.width, rect.height * 0.9)
                 pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), clip=clip_rect)
                 return api_call_vision_ocr(pix.tobytes("png"))
@@ -211,19 +234,17 @@ def extract_text_unified(file_obj, page_index):
         return "PDF를 읽을 수 없습니다. (라이브러리 설치 확인 필요)"
     return "지원하지 않는 파일 형식입니다."
 
-# [수정] 미리보기용 이미지 생성 (스크롤 뷰어용 Bytes 반환)
 def get_page_image_bytes(file_obj, page_index):
     file_type = file_obj.type
     if "image" in file_type:
-        return file_obj.getvalue() # Bytes 반환
+        return file_obj.getvalue() 
     elif "pdf" in file_type and FITZ_AVAILABLE:
         try:
             doc = fitz.open(stream=file_obj.getvalue(), filetype="pdf")
             if page_index < 0 or page_index >= len(doc): return None
             page = doc[page_index]
-            # 해상도 1.5배 (선명하게)
             pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5)) 
-            return pix.tobytes("png") # Bytes 반환
+            return pix.tobytes("png") 
         except: return None
     return None
 
@@ -392,10 +413,11 @@ with st.sidebar:
             add_pos = st.selectbox("품사", ["명사", "동사", "형용사", "부사", "관형사"]) 
             if st.form_submit_button("추가 및 학습"):
                 if add_orig and add_root and sheet:
+                    # [수정] 재시도 로직 적용
                     row = [datetime.now().isoformat(), add_orig, add_root, add_origin, add_pos, 'add', '수동추가']
-                    sheet.append_row(row)
-                    st.toast(f"✅ 추가 완료!", icon="🎓")
-                    st.rerun()
+                    if send_data_with_retry(sheet, row, is_multiple=False):
+                        st.toast(f"✅ 추가 완료!", icon="🎓")
+                        st.rerun()
 
     st.markdown("---")
     st.subheader("🔍 이력 검색")
@@ -475,26 +497,13 @@ if st.session_state.uploaded_file:
 
     view_col1, view_col2 = st.columns([1, 1])
     
-    # [핵심] 왼쪽: 스크롤 가능한 이미지 뷰어
     with view_col1:
         st.caption("📷 원본 미리보기 (휠로 스크롤 가능)")
-        
-        # 이미지 Bytes 가져오기
         img_bytes = get_page_image_bytes(st.session_state.uploaded_file, st.session_state.current_page_idx)
-        
         if img_bytes:
-            # Base64로 인코딩하여 HTML에 삽입
             b64_img = base64.b64encode(img_bytes).decode('utf-8')
-            
-            # CSS 스타일이 적용된 HTML 컨테이너
             html_code = f"""
-            <div style="
-                height: 600px; 
-                overflow-y: auto; 
-                border: 1px solid #ddd; 
-                border-radius: 5px; 
-                padding: 10px;
-                background-color: #f9f9f9;">
+            <div style="height: 600px; overflow-y: auto; border: 1px solid #ddd; border-radius: 5px; padding: 10px; background-color: #f9f9f9;">
                 <img src="data:image/png;base64,{b64_img}" style="width: 100%; display: block;">
             </div>
             """
@@ -502,7 +511,6 @@ if st.session_state.uploaded_file:
         else:
             st.info("미리보기를 불러올 수 없습니다.")
 
-    # [핵심] 오른쪽: 텍스트 에디터
     with view_col2:
         st.caption("📝 추출 텍스트 (수정 가능)")
         with st.spinner("텍스트 읽는 중..."):
@@ -512,7 +520,7 @@ if st.session_state.uploaded_file:
         input_text = st.text_area(
             "분석 대상", 
             value=extracted_text if extracted_text else "",
-            height=600, # 이미지 창 높이(600px)와 맞춤
+            height=600,
             label_visibility="collapsed"
         )
         
@@ -533,7 +541,7 @@ else:
     analyze_btn = False
     input_text = ""
 
-# 분석 로직 (기존 동일)
+# 분석 및 결과 처리
 if analyze_btn and input_text:
     with st.spinner(f"{mode_selection} 모드로 분석 중입니다..."):
         raw_results = get_analysis_hybrid(input_text, sheet_data, MODE_KEY)
@@ -576,7 +584,6 @@ if analyze_btn and input_text:
                 
             st.session_state.analysis_result = final_results
 
-# 결과 화면
 if st.session_state.analysis_result:
     st.markdown("---")
     st.markdown("### 📊 분석 결과")
@@ -600,15 +607,14 @@ if st.session_state.analysis_result:
         if st.button("⛔ 체크 삭제", type="secondary"):
             to_delete = edited_df[edited_df['delete_check'] == True]
             if not to_delete.empty and sheet:
-                try:
-                    rows_to_add = [[datetime.now().isoformat(), row['original_word'], row['root_word'], "", "", 'delete', input_text] for _, row in to_delete.iterrows()]
-                    sheet.append_rows(rows_to_add)
+                rows_to_add = [[datetime.now().isoformat(), row['original_word'], row['root_word'], "", "", 'delete', input_text] for _, row in to_delete.iterrows()]
+                # [수정] 재시도 로직 적용
+                if send_data_with_retry(sheet, rows_to_add, is_multiple=True):
                     st.toast(f"🗑️ 삭제 학습 완료!", icon="✅")
                     remaining = edited_df[edited_df['delete_check'] == False].to_dict('records')
                     st.session_state.analysis_result = remaining
                     time.sleep(1)
                     st.rerun()
-                except: st.error("삭제 오류")
 
     def save_logic(df_to_save, page_str):
         final_data = df_to_save[df_to_save['delete_check'] == False].to_dict('records')
@@ -656,8 +662,10 @@ if st.session_state.analysis_result:
         st.session_state.excel_buffer = output_excel
 
         if sheet and learning_logs:
-            try: sheet.append_rows([list(log.values()) for log in learning_logs])
-            except: pass
+            # [수정] 재시도 로직 적용 (단, 저장은 학습 로그 실패해도 엑셀 저장은 유지)
+            rows = [list(log.values()) for log in learning_logs]
+            send_data_with_retry(sheet, rows, is_multiple=True)
+            
         return True
 
     if is_pdf_mode:
