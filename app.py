@@ -93,20 +93,19 @@ def generate_prompt_from_sheet(sheet_data):
     prompt_lines = []
     
     # [1칙: 학습 데이터 신뢰도 최우선 확보]
-    # 사용자가 직접 수정한 내역을 '절대 규칙'으로 프롬프트 상단에 배치
     if 'action' in df.columns:
         deleted = df[df['action'] == 'delete']
-        for _, row in deleted.tail(10).iterrows(): # 최근 10개 삭제 내역
+        for _, row in deleted.tail(10).iterrows(): 
             prompt_lines.append(f"- [학습된 예외]: '{row['original_word']}'는 절대 분석하지 마세요.")
             
         added = df[df['action'] == 'add']
         if not added.empty:
-            missing_counts = added['original_word'].value_counts().head(10) # 자주 추가된 10개
+            missing_counts = added['original_word'].value_counts().head(10)
             for word, _ in missing_counts.items():
                 prompt_lines.append(f"- [학습된 필수]: '{word}'는 무조건 포함하세요.")
                 
         modified = df[df['action'] == 'modify']
-        for _, row in modified.tail(15).iterrows(): # 최근 15개 수정 내역
+        for _, row in modified.tail(15).iterrows():
              prompt_lines.append(f"- [학습된 수정]: '{row['original_word']}'가 나오면 무조건 원형:'{row['root_word']}', 분류:'{row['origin']}'로 처리하세요.")
              
     if prompt_lines:
@@ -118,7 +117,6 @@ def api_call_direct(prompt):
     headers = {'Content-Type': 'application/json'}
     data = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.1}}
     try:
-        # [타임아웃 300초 유지]
         response = requests.post(url, headers=headers, json=data, timeout=300)
         
         if response.status_code != 200:
@@ -146,11 +144,9 @@ def preprocess_with_morphology(text):
     try:
         okt = Okt()
         pos = okt.pos(text, stem=True)
-        # [기존 기능 유지] 부사, 관형사 포함
         return [w for w, p in pos if p in ['Noun', 'Verb', 'Adjective', 'Adverb', 'Determiner'] and len(w) > 1]
     except: return None
 
-# [기존 기능 유지] 긴 텍스트 분할 처리 (문장 부호 기준)
 def split_text_smartly(text, chunk_size=1000):
     sentences = re.split(r'(?<=[.?!])\s+|\\n', text)
     chunks = []
@@ -169,7 +165,6 @@ def split_text_smartly(text, chunk_size=1000):
 def get_analysis_hybrid(text, sheet_data):
     learning_prompt = generate_prompt_from_sheet(sheet_data)
     
-    # [수정된 핵심 프롬프트: 원본 단어와 원형 구분 명확화]
     base_instruction = """
     국어학 전문가로서 문맥을 고려하여 실질 형태소(알맹이 단어)를 분석하세요.
     
@@ -315,7 +310,7 @@ with st.sidebar:
     
     st.markdown("---")
     
-    # [수동 추가] 부사/관형사 선택 가능
+    # [수동 추가]
     with st.expander("➕ AI가 놓친 단어 추가하기"):
         with st.form("manual_add_form"):
             add_orig = st.text_input("원본 단어")
@@ -328,7 +323,6 @@ with st.sidebar:
                     sheet.append_row(row)
                     
                     if st.session_state.analysis_result is not None:
-                        # 아이콘 매핑
                         formatted_pos = {
                             '명사': '📦 명사', '동사': '🏃 동사', '형용사': '🎨 형용사',
                             '부사': '⚡ 부사', '관형사': '🔍 관형사'
@@ -362,30 +356,27 @@ with col2:
     page_num = st.text_input("쪽수", value="1")
     analyze_btn = st.button("🚀 분석 실행", use_container_width=True)
 
-# 분석 실행
+# ---------------------------------------------------------
+# 🚀 분석 실행 및 그룹화 로직 (Trust Logic 적용됨)
+# ---------------------------------------------------------
 if analyze_btn and input_text:
     with st.spinner("AI가 분석 중입니다..."):
         raw_results = get_analysis_hybrid(input_text, sheet_data)
         
         if raw_results:
             validation_text = input_text.replace(" ", "")
-            filtered_results = []
-            
             POS_WHITELIST = ['명사', '동사', '형용사', '부사', '관형사'] 
             blacklist = get_blacklist_from_sheet(sheet_data)
             problematic_words = get_problematic_words(sheet_data)
             
-            all_roots = []
-            valid_items = []
-            
+            # [Step 1] 기본 필터링
+            pre_filtered_items = []
             for item in raw_results:
                 original = item.get('original_word', '').replace(" ", "")
                 root = item.get('root_word', '')
                 pos = item.get('pos', '')
                 
-                # 청크 분할로 인한 검증 완화 (환각 방지용)
                 if original not in validation_text: pass 
-                
                 if not pos or pos not in POS_WHITELIST: continue
                 if original in blacklist or root in blacklist: continue
                 
@@ -398,22 +389,47 @@ if analyze_btn and input_text:
                 }
                 item['pos'] = pos_map.get(pos, pos)
                 
-                is_trusted = check_trust_level_strict(root, st.session_state.master_df, problematic_words)
-                
-                if is_trusted: item['status'] = '✅ 자동' 
-                else: item['status'] = '📝 검토' 
-                
-                valid_items.append(item)
-                all_roots.append(root)
+                pre_filtered_items.append(item)
             
-            root_counts = Counter(all_roots)
-            for item in valid_items:
-                item['delete_check'] = False
-                cnt = root_counts[item['root_word']]
-                item['count'] = f"{cnt}회"
-                filtered_results.append(item)
+            # [Step 2] 그룹화 (Root 기준 중복 통합) - 신뢰 분석 적용 완료
+            grouped_data = {} # Key: root_word
+            
+            for item in pre_filtered_items:
+                root = item['root_word']
+                if root not in grouped_data:
+                    grouped_data[root] = {
+                        'root_word': root,
+                        'origin': item['origin'],
+                        'pos': item['pos'],
+                        'originals': []
+                    }
+                grouped_data[root]['originals'].append(item['original_word'])
+
+            # [Step 3] 최종 리스트 생성 (포맷팅)
+            final_results = []
+            for root, info in grouped_data.items():
+                # 원본 단어별 빈도 계산 (Counter) -> 예: 어른인(6), 어른이(6)
+                orig_counts = Counter(info['originals'])
+                formatted_original = ", ".join([f"{word}({cnt})" for word, cnt in orig_counts.items()])
                 
-            st.session_state.analysis_result = filtered_results
+                # 총 빈도 (합산)
+                total_cnt = sum(orig_counts.values())
+                
+                # 신뢰도 검사
+                is_trusted = check_trust_level_strict(root, st.session_state.master_df, problematic_words)
+                status = '✅ 자동' if is_trusted else '📝 검토'
+                
+                final_results.append({
+                    'delete_check': False,
+                    'status': status,
+                    'count': f"{total_cnt}회",
+                    'original_word': formatted_original,
+                    'root_word': root,
+                    'origin': info['origin'],
+                    'pos': info['pos']
+                })
+                
+            st.session_state.analysis_result = final_results
         else: pass
 
 # 결과 화면
@@ -425,8 +441,8 @@ if st.session_state.analysis_result:
     column_config = {
         "delete_check": st.column_config.CheckboxColumn("삭제", width="small"),
         "status": st.column_config.TextColumn("상태", width="medium", disabled=True),
-        "count": st.column_config.TextColumn("빈도(현재)", width="small", disabled=True),
-        "original_word": st.column_config.TextColumn("원본 단어", disabled=True),
+        "count": st.column_config.TextColumn("빈도(합계)", width="small", disabled=True),
+        "original_word": st.column_config.TextColumn("원본 단어(빈도)", disabled=True, width="large"),
         "root_word": "원형",
         "origin": st.column_config.SelectboxColumn("분류", options=["🔵 고", "🟢 한", "🔴 외", "🟣 혼"]),
         "pos": st.column_config.SelectboxColumn("품사", options=["📦 명사", "🏃 동사", "🎨 형용사", "⚡ 부사", "🔍 관형사"])
@@ -452,14 +468,15 @@ if st.session_state.analysis_result:
                     try:
                         rows_to_add = []
                         for _, row in to_delete.iterrows():
+                            # 삭제 학습 시 root_word를 기준으로 차단하므로, 그룹핑된 원본 단어 문자열이 들어가도 안전함
                             rows_to_add.append([
                                 datetime.now().isoformat(),
-                                row['original_word'],
+                                row['original_word'], 
                                 row['root_word'],
                                 "", "", 'delete', input_text
                             ])
                         sheet.append_rows(rows_to_add)
-                        st.toast(f"🗑️ {len(rows_to_add)}개 단어 삭제 학습 완료! 1초 후 반영됩니다.", icon="✅")
+                        st.toast(f"🗑️ 삭제 학습 완료! (원형 '{row['root_word']}' 계열 차단)", icon="✅")
                         remaining = edited_df[edited_df['delete_check'] == False].to_dict('records')
                         st.session_state.analysis_result = remaining
                         time.sleep(1)
@@ -484,33 +501,33 @@ if st.session_state.analysis_result:
                 if '쪽수' in c: base_df[c] = base_df[c].astype(object)
                 
             new_rows = []
-            saved_roots = set()
-            cleaned_data_for_excel = []
+            saved_roots = set() 
             learning_logs = []
 
             for item in final_data:
                 item['origin'] = clean_value_for_save(item['origin'])
                 item['pos'] = clean_value_for_save(item['pos'])
-                cleaned_data_for_excel.append(item)
                 
+                # 학습 로그 저장
                 learning_logs.append({
                     'timestamp': datetime.now().isoformat(),
-                    'original_word': item['original_word'],
+                    'original_word': item['original_word'], # 요약된 문자열 저장
                     'root_word': item['root_word'],
                     'origin': item['origin'],
                     'pos': item['pos'],
                     'action': 'modify',
                     'context': input_text
                 })
-
-            counts = Counter([x['root_word'] for x in cleaned_data_for_excel])
-            
-            for item in cleaned_data_for_excel:
+                
                 root = item['root_word']
                 if root in saved_roots: continue
                 saved_roots.add(root)
                 
-                cnt = counts[root]
+                # 빈도수 숫자 변환 ("12회" -> 12)
+                try:
+                    cnt = int(str(item['count']).replace('회',''))
+                except: cnt = 1
+                
                 val = f"{page_num}_{cnt}" if cnt > 1 else page_num
                 origin_val = item.get('origin', '고')
                 
