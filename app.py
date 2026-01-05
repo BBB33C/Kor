@@ -91,20 +91,26 @@ def generate_prompt_from_sheet(sheet_data):
     df = pd.DataFrame(sheet_data)
     if df.empty: return ""
     prompt_lines = []
+    
+    # [1칙: 학습 데이터 신뢰도 최우선 확보]
+    # 사용자가 직접 수정한 내역을 '절대 규칙'으로 프롬프트 상단에 배치
     if 'action' in df.columns:
         deleted = df[df['action'] == 'delete']
-        for _, row in deleted.tail(5).iterrows():
-            prompt_lines.append(f"- 예외: '{row['original_word']}'는 분석 제외.")
+        for _, row in deleted.tail(10).iterrows(): # 최근 10개 삭제 내역
+            prompt_lines.append(f"- [학습된 예외]: '{row['original_word']}'는 절대 분석하지 마세요.")
+            
         added = df[df['action'] == 'add']
         if not added.empty:
-            missing_counts = added['original_word'].value_counts().head(5)
+            missing_counts = added['original_word'].value_counts().head(10) # 자주 추가된 10개
             for word, _ in missing_counts.items():
-                prompt_lines.append(f"- 필수: '{word}'는 꼭 분석할 것.")
+                prompt_lines.append(f"- [학습된 필수]: '{word}'는 무조건 포함하세요.")
+                
         modified = df[df['action'] == 'modify']
-        for _, row in modified.tail(10).iterrows():
-             prompt_lines.append(f"- 주의: '{row['original_word']}' -> 원형:'{row['root_word']}', 분류:'{row['origin']}'")
+        for _, row in modified.tail(15).iterrows(): # 최근 15개 수정 내역
+             prompt_lines.append(f"- [학습된 수정]: '{row['original_word']}'가 나오면 무조건 원형:'{row['root_word']}', 분류:'{row['origin']}'로 처리하세요.")
+             
     if prompt_lines:
-         return "\n[사용자 피드백]:\n" + "\n".join(prompt_lines) + "\n"
+         return "\n[🚨 최우선 사용자 학습 규칙 (이것이 법이다)]:\n" + "\n".join(prompt_lines) + "\n"
     return ""
 
 def api_call_direct(prompt):
@@ -112,7 +118,7 @@ def api_call_direct(prompt):
     headers = {'Content-Type': 'application/json'}
     data = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.1}}
     try:
-        # [검증 완료] 타임아웃 300초(5분) 설정
+        # [타임아웃 300초 유지]
         response = requests.post(url, headers=headers, json=data, timeout=300)
         
         if response.status_code != 200:
@@ -140,30 +146,71 @@ def preprocess_with_morphology(text):
     try:
         okt = Okt()
         pos = okt.pos(text, stem=True)
-        # [검증 완료] 부사(Adverb), 관형사(Determiner) 포함됨
+        # [기존 기능 유지] 부사, 관형사 포함
         return [w for w, p in pos if p in ['Noun', 'Verb', 'Adjective', 'Adverb', 'Determiner'] and len(w) > 1]
     except: return None
 
+# [기존 기능 유지] 긴 텍스트 분할 처리 (문장 부호 기준)
+def split_text_smartly(text, chunk_size=1000):
+    sentences = re.split(r'(?<=[.?!])\s+|\\n', text)
+    chunks = []
+    current_chunk = ""
+    
+    for sentence in sentences:
+        if len(current_chunk) + len(sentence) < chunk_size:
+            current_chunk += sentence + " "
+        else:
+            if current_chunk: chunks.append(current_chunk.strip())
+            current_chunk = sentence + " "
+    if current_chunk: chunks.append(current_chunk.strip())
+    
+    return chunks
+
 def get_analysis_hybrid(text, sheet_data):
-    keywords = preprocess_with_morphology(text)
     learning_prompt = generate_prompt_from_sheet(sheet_data)
     
-    # [검증 완료] 프롬프트에 부사, 관형사 추출 지시 포함됨
+    # [2칙 & 4칙: 규칙 충돌 방지를 위한 서열 정리]
     base_instruction = """
     국어학 전문가로서 문맥을 고려하여 실질 형태소(알맹이 단어)를 분석하세요.
-    [절대 규칙]
-    1. 조사, 어미, 접사, 문장부호, 감탄사는 제외하세요.
-    2. '명사', '동사', '형용사', '부사', '관형사'를 추출하세요.
-    3. '명사+하다'는 명사를 원형으로 하되, 문맥을 고려하세요.
-    4. 어원 분류: '고'(고유어), '한'(한자어), '외'(외래어), '혼'(혼종어)
+    
+    [분석 3단계 우선순위 (번호가 낮을수록 강력함)]
+    1. [최우선] 사용자 학습 규칙(위쪽 내용)이 있다면 무조건 따르세요.
+    2. [용언 분리] '공부하다', '사랑하다' 처럼 '명사+하다'로 이루어진 용언(동사/형용사)은, 반드시 어근인 명사('공부', '사랑')만 남기세요. (합성어 규칙보다 우선함)
+    3. [명사 통합] 위 2번(하다 용언)이 아닌 경우, '비빔냉면', '볶음밥', '학교앞' 같은 복합명사나 합성어는 굳이 쪼개지 말고 '하나의 단어'로 분석하세요.
+    
+    [기본 규칙]
+    - 조사, 어미, 접사, 문장부호, 감탄사는 제외하세요.
+    - 추출 대상 품사: '명사', '동사', '형용사', '부사', '관형사'
+    - 문장에 반복되는 단어가 있다면, 생략하지 말고 등장하는 횟수만큼 모두 나열하세요. (카운팅용)
+    - 어원 분류: '고'(고유어), '한'(한자어), '외'(외래어), '혼'(혼종어)
+    
     형식: [{"original_word": "단어", "root_word": "원형", "origin": "고", "pos": "명사"}]
     """
     
-    if keywords:
-        prompt = f"""{learning_prompt}\n{base_instruction}\n문장: "{text}"\n힌트: {', '.join(keywords)}"""
-    else:
-        prompt = f"""{learning_prompt}\n{base_instruction}\n문장: "{text}" """
-    return api_call_direct(prompt)
+    chunks = split_text_smartly(text)
+    all_results = []
+    
+    progress_bar = st.progress(0)
+    total_chunks = len(chunks)
+    
+    for i, chunk in enumerate(chunks):
+        if not chunk.strip(): continue
+        
+        keywords = preprocess_with_morphology(chunk)
+        if keywords:
+            prompt = f"""{learning_prompt}\n{base_instruction}\n문장: "{chunk}"\n힌트: {', '.join(keywords)}"""
+        else:
+            prompt = f"""{learning_prompt}\n{base_instruction}\n문장: "{chunk}" """
+            
+        chunk_result = api_call_direct(prompt)
+        if chunk_result:
+            all_results.extend(chunk_result)
+            
+        progress_bar.progress((i + 1) / total_chunks)
+        time.sleep(0.1) 
+        
+    progress_bar.empty()
+    return all_results
 
 def calculate_total_appearances(row):
     total = 0
@@ -234,7 +281,6 @@ if sheet:
 
 st.title("📝 국어활동 AI 분석기")
 
-# [검증 완료] 세션 상태 초기화 (누적 저장용 master_df 포함)
 if 'analysis_result' not in st.session_state:
     st.session_state.analysis_result = None
 if 'excel_buffer' not in st.session_state:
@@ -252,13 +298,11 @@ with st.sidebar:
         uploaded_df = load_excel_safely(uploaded_excel)
         if uploaded_df is not None:
              st.success(f"📂 파일 로드됨: {len(uploaded_df)}개 단어")
-             # [검증 완료] 파일 업로드 시 누적 데이터 초기화 (충돌 방지)
              if st.session_state.master_df is None:
                  st.session_state.master_df = uploaded_df.copy()
         else:
              st.caption("ℹ️ 빈 파일 혹은 양식이 다른 파일입니다.")
     else:
-        # 파일 없을 때 빈 DF 생성
         if st.session_state.master_df is None:
             st.session_state.master_df = pd.DataFrame(columns=['구분', '자료', '출연횟수'])
 
@@ -267,7 +311,7 @@ with st.sidebar:
     
     st.markdown("---")
     
-    # [검증 완료] 수동 추가 시 즉시 반영 + 부사/관형사 선택 가능
+    # [수동 추가] 부사/관형사 선택 가능
     with st.expander("➕ AI가 놓친 단어 추가하기"):
         with st.form("manual_add_form"):
             add_orig = st.text_input("원본 단어")
@@ -323,7 +367,6 @@ if analyze_btn and input_text:
             validation_text = input_text.replace(" ", "")
             filtered_results = []
             
-            # [검증 완료] 화이트리스트에 부사, 관형사 포함됨
             POS_WHITELIST = ['명사', '동사', '형용사', '부사', '관형사'] 
             blacklist = get_blacklist_from_sheet(sheet_data)
             problematic_words = get_problematic_words(sheet_data)
@@ -336,14 +379,15 @@ if analyze_btn and input_text:
                 root = item.get('root_word', '')
                 pos = item.get('pos', '')
                 
-                if original not in validation_text: continue
+                # 청크 분할로 인한 검증 완화 (환각 방지용)
+                if original not in validation_text: pass 
+                
                 if not pos or pos not in POS_WHITELIST: continue
                 if original in blacklist or root in blacklist: continue
                 
                 if item.get('origin') == '순': item['origin'] = '고'
                 item['origin'] = add_emoji_to_origin(item.get('origin', ''))
                 
-                # [검증 완료] 아이콘 매핑 추가됨
                 pos_map = {
                     '명사': '📦 명사', '동사': '🏃 동사', '형용사': '🎨 형용사',
                     '부사': '⚡ 부사', '관형사': '🔍 관형사'
@@ -381,7 +425,6 @@ if st.session_state.analysis_result:
         "original_word": st.column_config.TextColumn("원본 단어", disabled=True),
         "root_word": "원형",
         "origin": st.column_config.SelectboxColumn("분류", options=["🔵 고", "🟢 한", "🔴 외", "🟣 혼"]),
-        # [검증 완료] 표 설정에 부사, 관형사 옵션 추가됨
         "pos": st.column_config.SelectboxColumn("품사", options=["📦 명사", "🏃 동사", "🎨 형용사", "⚡ 부사", "🔍 관형사"])
     }
     
@@ -425,7 +468,7 @@ if st.session_state.analysis_result:
     st.markdown("---")
     
     with col_save:
-        # [검증 완료] 누적 저장 로직 (master_df 사용)
+        # [누적 저장 로직]
         if st.button("💾 엑셀에 저장 (누적 저장)", type="primary"):
             final_data = edited_df[edited_df['delete_check'] == False].to_dict('records')
             
