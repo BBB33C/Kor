@@ -36,7 +36,7 @@ try:
 except:
     API_KEY = "AIzaSyCC6oyL7POpbWq2FZrJ2zIJuiosupFQZYk"
 
-MODEL_NAME = "gemini-2.0-flash-exp" 
+MODEL_NAME = "gemini-2.0-flash-exp"
 SHEET_NAME = "Korean_DB" 
 TRUST_THRESHOLD = 3 
 
@@ -76,29 +76,20 @@ def get_sheet_data_fresh(mode_key):
         st.error(f"구글 시트 연결 오류: {e}")
         return None, []
 
-# [신규] 구글 시트 전송 재시도(Retry) 헬퍼 함수
 def send_data_with_retry(sheet_obj, data, is_multiple=False):
-    """
-    네트워크 불안정이나 연결 끊김 시 3번까지 재시도하는 함수
-    data: 리스트 형태 (단건 or 다건)
-    is_multiple: append_rows(True) 인지 append_row(False) 인지
-    """
     max_retries = 3
     for attempt in range(max_retries):
         try:
-            # 데이터 정제 (JSON 오류 방지용 문자열 변환)
             if is_multiple:
-                # 2차원 리스트
                 clean_data = [[str(item) for item in row] for row in data]
                 sheet_obj.append_rows(clean_data)
             else:
-                # 1차원 리스트
                 clean_data = [str(item) for item in data]
                 sheet_obj.append_row(clean_data)
-            return True # 성공 시 바로 종료
+            return True
         except Exception as e:
             if attempt < max_retries - 1:
-                time.sleep(1) # 1초 대기 후 재시도
+                time.sleep(1)
                 continue
             else:
                 st.error(f"❌ 데이터 전송 실패: {str(e)}")
@@ -154,17 +145,14 @@ def api_call_vision_ocr(image_bytes):
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={API_KEY.strip()}"
     headers = {'Content-Type': 'application/json'}
     base64_image = base64.b64encode(image_bytes).decode('utf-8')
-    
     prompt_text = """
     이 이미지에 있는 텍스트를 보이는 그대로 추출해주세요.
-    
     [중요한 형식 규칙]
     1. **공간 분리 준수:** 말풍선, 단락, 표 등으로 시각적으로 분리된 텍스트 덩어리는 반드시 **줄바꿈(Enter)**으로 명확히 구분하세요. 문장이 섞이지 않게 하세요.
     2. **세로쓰기 대응:** 글자가 세로로(위에서 아래로) 쓰여 있다면, 자연스러운 독해 순서(보통 우측 상단에서 좌측 하단)에 맞춰 순서대로 추출하세요.
     3. **북한 표기 유지:** 두음법칙을 적용하지 않은 표기(예: 로동, 녀자)가 있다면 수정하지 말고 그대로 적으세요.
     4. **노이즈 제거:** 페이지의 쪽수 번호나 머리말/꼬리말은 본문과 섞이지 않도록 제외하거나 맨 마지막에 따로 적으세요.
     """
-    
     data = {"contents": [{"parts": [{"text": prompt_text}, {"inline_data": {"mime_type": "image/png", "data": base64_image}}]}], "generationConfig": {"temperature": 0.1}}
     try:
         response = requests.post(url, headers=headers, json=data, timeout=300)
@@ -203,11 +191,9 @@ def split_text_smartly(text, chunk_size=1000):
 
 def extract_text_unified(file_obj, page_index):
     file_type = file_obj.type
-    
     if "image" in file_type:
         try: return api_call_vision_ocr(file_obj.getvalue())
         except Exception as e: return f"이미지 읽기 오류: {e}"
-        
     elif "pdf" in file_type:
         if PLUMBER_AVAILABLE:
             try:
@@ -220,7 +206,6 @@ def extract_text_unified(file_obj, page_index):
                     except: text = page.extract_text()
                     if text and len(text.strip()) > 30: return text
             except: pass
-            
         if FITZ_AVAILABLE:
             try:
                 doc = fitz.open(stream=file_obj.getvalue(), filetype="pdf")
@@ -413,7 +398,6 @@ with st.sidebar:
             add_pos = st.selectbox("품사", ["명사", "동사", "형용사", "부사", "관형사"]) 
             if st.form_submit_button("추가 및 학습"):
                 if add_orig and add_root and sheet:
-                    # [수정] 재시도 로직 적용
                     row = [datetime.now().isoformat(), add_orig, add_root, add_origin, add_pos, 'add', '수동추가']
                     if send_data_with_retry(sheet, row, is_multiple=False):
                         st.toast(f"✅ 추가 완료!", icon="🎓")
@@ -566,29 +550,26 @@ if analyze_btn and input_text:
                 item['pos'] = pos_map.get(pos, pos)
                 pre_filtered_items.append(item)
             
-            grouped_data = {} 
-            for item in pre_filtered_items:
-                root = item['root_word']
-                if root not in grouped_data:
-                    grouped_data[root] = {'root_word': root, 'origin': item['origin'], 'pos': item['pos'], 'originals': []}
-                grouped_data[root]['originals'].append(item['original_word'])
-
-            final_results = []
-            for root, info in grouped_data.items():
-                orig_counts = Counter(info['originals'])
-                formatted_original = ", ".join([f"{word}({cnt})" for word, cnt in orig_counts.items()])
-                total_cnt = sum(orig_counts.values())
-                is_trusted = check_trust_level_strict(root, st.session_state.master_df, problematic_words)
-                status = '✅ 자동' if is_trusted else '📝 검토'
-                final_results.append({'delete_check': False, 'status': status, 'count': f"{total_cnt}회", 'original_word': formatted_original, 'root_word': root, 'origin': info['origin'], 'pos': info['pos']})
-                
-            st.session_state.analysis_result = final_results
+            # 여기서 그룹화 제거하고 Raw Data로 편집기로 넘김 (그래야 개별 수정 가능)
+            st.session_state.analysis_result = pre_filtered_items
 
 if st.session_state.analysis_result:
     st.markdown("---")
     st.markdown("### 📊 분석 결과")
+    
+    # [수정됨] DataFrame 생성 (Raw Data 상태)
     df_display = pd.DataFrame(st.session_state.analysis_result)
     
+    # [수정됨] 빈도(Count)는 미리 보여줄 수 없으므로(개별 항목이므로) 일단 제거하거나 '1'로 표시
+    if 'count' not in df_display.columns:
+        df_display['count'] = 1
+        
+    if 'delete_check' not in df_display.columns:
+        df_display['delete_check'] = False
+        
+    if 'status' not in df_display.columns:
+        df_display['status'] = '📝 검토'
+
     column_config = {
         "delete_check": st.column_config.CheckboxColumn("삭제", width="small"),
         "status": st.column_config.TextColumn("상태", disabled=True),
@@ -598,7 +579,8 @@ if st.session_state.analysis_result:
         "origin": st.column_config.SelectboxColumn("분류", options=["🔵 고", "🟢 한", "🔴 외", "🟣 혼"]),
         "pos": st.column_config.SelectboxColumn("품사", options=["📦 명사", "🏃 동사", "🎨 형용사", "⚡ 부사", "🔍 관형사"])
     }
-    cols = ["delete_check", "status", "count", "original_word", "root_word", "origin", "pos"]
+    cols = ["delete_check", "status", "original_word", "root_word", "origin", "pos"] # count 제외하고 보여줌 (오해 방지)
+    
     edited_df = st.data_editor(df_display[cols] if not df_display.empty else df_display, column_config=column_config, use_container_width=True, num_rows="fixed", key="editor")
     
     btn_col1, btn_col2, btn_col3 = st.columns([1, 2, 2])
@@ -608,61 +590,93 @@ if st.session_state.analysis_result:
             to_delete = edited_df[edited_df['delete_check'] == True]
             if not to_delete.empty and sheet:
                 rows_to_add = [[datetime.now().isoformat(), row['original_word'], row['root_word'], "", "", 'delete', input_text] for _, row in to_delete.iterrows()]
-                # [수정] 재시도 로직 적용
                 if send_data_with_retry(sheet, rows_to_add, is_multiple=True):
                     st.toast(f"🗑️ 삭제 학습 완료!", icon="✅")
+                    # 삭제된 행 제외하고 갱신
                     remaining = edited_df[edited_df['delete_check'] == False].to_dict('records')
                     st.session_state.analysis_result = remaining
                     time.sleep(1)
                     st.rerun()
 
+    # [핵심 수정] 저장 로직 (Pre-Aggregation 적용)
     def save_logic(df_to_save, page_str):
-        final_data = df_to_save[df_to_save['delete_check'] == False].to_dict('records')
+        # 1. 학습 로그 기록 (개별 데이터 기준)
+        valid_rows = df_to_save[df_to_save['delete_check'] == False].copy()
+        
+        learning_logs = []
+        for _, row in valid_rows.iterrows():
+            # 저장용 클리닝
+            c_origin = clean_value_for_save(row['origin'])
+            c_pos = clean_value_for_save(row['pos'])
+            
+            learning_logs.append({
+                'timestamp': datetime.now().isoformat(),
+                'original_word': row['original_word'],
+                'root_word': row['root_word'],
+                'origin': c_origin,
+                'pos': c_pos,
+                'action': 'modify',
+                'context': input_text
+            })
+            
+        # 2. 엑셀 저장용 데이터 통합 (GroupBy)
+        # 같은 root_word끼리 묶어서 count 합산
+        # 숫자형 카운트 컬럼 생성 (기본 1)
+        valid_rows['numeric_count'] = 1 
+        
+        # 그룹화: root_word 기준
+        aggregated_df = valid_rows.groupby('root_word', as_index=False).agg({
+            'numeric_count': 'sum',
+            'original_word': lambda x: ', '.join(x.unique()), # 원본 단어들 병합
+            'origin': 'first', # 분류는 첫번째 것 따름
+            'pos': 'first'     # 품사도 첫번째 것 따름
+        })
+        
+        # 3. 마스터 DF 업데이트 (통합된 데이터 사용)
         base_df = st.session_state.master_df
         if base_df is None: base_df = pd.DataFrame(columns=['구분', '자료', '출연횟수'])
+        # 쪽수 컬럼 Object 타입 변환
         for c in base_df.columns:
             if '쪽수' in c: base_df[c] = base_df[c].astype(object)
+            
+        new_rows_for_excel = []
         
-        new_rows = []
-        learning_logs = []
-        saved_roots = set()
-
-        for item in final_data:
-            item['origin'] = clean_value_for_save(item['origin'])
-            item['pos'] = clean_value_for_save(item['pos'])
-            learning_logs.append({'timestamp': datetime.now().isoformat(), 'original_word': item['original_word'], 'root_word': item['root_word'], 'origin': item['origin'], 'pos': item['pos'], 'action': 'modify', 'context': input_text})
-            
+        for _, item in aggregated_df.iterrows():
             root = item['root_word']
-            if root in saved_roots: continue
-            saved_roots.add(root)
+            cnt = item['numeric_count']
+            origin_val = clean_value_for_save(item['origin'])
             
-            try: cnt = int(str(item['count']).replace('회',''))
-            except: cnt = 1
+            # 쪽수_빈도 표기 (예: 5쪽_3)
             val = f"{page_str}_{cnt}" if cnt > 1 else page_str
-            origin_val = item.get('origin', '고')
             
             if root in base_df['자료'].values:
                 idx = base_df[base_df['자료'] == root].index[0]
+                # 빈 쪽수 컬럼 찾기
                 filled = base_df.loc[idx].filter(like='쪽수').notna().sum()
                 col = f"쪽수{filled+1}"
                 if col not in base_df.columns: base_df[col] = float('nan')
                 base_df.at[idx, col] = val
             else:
-                new_rows.append({'구분': origin_val, '자료': root, '쪽수1': val})
-        
-        if new_rows: base_df = pd.concat([base_df, pd.DataFrame(new_rows)], ignore_index=True)
+                new_rows_for_excel.append({'구분': origin_val, '자료': root, '쪽수1': val})
+                
+        if new_rows_for_excel:
+            base_df = pd.concat([base_df, pd.DataFrame(new_rows_for_excel)], ignore_index=True)
+            
+        # 총 횟수 재계산
         base_df['출연횟수'] = base_df.apply(calculate_total_appearances, axis=1)
+        # 정렬
         base_df['sort'] = base_df['구분'].map({'고':1, '순':1, '한':2, '외':3, '혼':4}).fillna(5)
         base_df = base_df.sort_values(['sort', '자료']).drop('sort', axis=1)
         st.session_state.master_df = base_df
         
+        # 엑셀 버퍼 생성
         output_excel = io.BytesIO()
         with pd.ExcelWriter(output_excel, engine='openpyxl') as writer: base_df.to_excel(writer, index=False)
         output_excel.seek(0)
         st.session_state.excel_buffer = output_excel
 
+        # 4. 학습 데이터 전송 (개별 로그 사용)
         if sheet and learning_logs:
-            # [수정] 재시도 로직 적용 (단, 저장은 학습 로그 실패해도 엑셀 저장은 유지)
             rows = [list(log.values()) for log in learning_logs]
             send_data_with_retry(sheet, rows, is_multiple=True)
             
