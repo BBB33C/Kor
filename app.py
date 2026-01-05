@@ -36,7 +36,7 @@ try:
 except:
     API_KEY = "AIzaSyCC6oyL7POpbWq2FZrJ2zIJuiosupFQZYk"
 
-MODEL_NAME = "gemini-2.0-flash-exp" 
+MODEL_NAME = "gemini-2.0-flash-exp" # 최신 모델
 SHEET_NAME = "Korean_DB" 
 TRUST_THRESHOLD = 3 
 
@@ -390,6 +390,7 @@ with st.sidebar:
     else: st.error("❌ 학습 서버 연결 실패")
     
     st.markdown("---")
+    # [핵심] 수동 추가 시 화면에 즉시 반영하는 로직
     with st.expander("➕ AI가 놓친 단어 추가하기"):
         with st.form("manual_add_form"):
             add_orig = st.text_input("원본 단어")
@@ -398,8 +399,30 @@ with st.sidebar:
             add_pos = st.selectbox("품사", ["명사", "동사", "형용사", "부사", "관형사"]) 
             if st.form_submit_button("추가 및 학습"):
                 if add_orig and add_root and sheet:
+                    # 1. 시트 저장 (학습)
                     row = [datetime.now().isoformat(), add_orig, add_root, add_origin, add_pos, 'add', '수동추가']
                     if send_data_with_retry(sheet, row, is_multiple=False):
+                        # 2. 화면 반영 (세션 상태 강제 업데이트)
+                        if st.session_state.analysis_result is not None:
+                            # 이모지 매핑 (결과표와 스타일 통일)
+                            origin_map = {'고': '🔵 고', '한': '🟢 한', '외': '🔴 외', '혼': '🟣 혼'}
+                            pos_map = {'명사': '📦 명사', '동사': '🏃 동사', '형용사': '🎨 형용사', '부사': '⚡ 부사', '관형사': '🔍 관형사'}
+                            
+                            mapped_origin = origin_map.get(add_origin, add_origin)
+                            mapped_pos = pos_map.get(add_pos, add_pos)
+                            
+                            # 새 데이터 딕셔너리 생성
+                            new_item = {
+                                'delete_check': False,
+                                'status': '✅ 수동', # 수동 상태 표시
+                                'count': '1회',
+                                'original_word': add_orig,
+                                'root_word': add_root,
+                                'origin': mapped_origin,
+                                'pos': mapped_pos
+                            }
+                            st.session_state.analysis_result.append(new_item)
+                            
                         st.toast(f"✅ 추가 완료!", icon="🎓")
                         st.rerun()
 
@@ -550,7 +573,7 @@ if analyze_btn and input_text:
                 item['pos'] = pos_map.get(pos, pos)
                 pre_filtered_items.append(item)
             
-            # [수정] 다시 그룹화 로직 복구 (화면 깔끔하게 보여주기 위함)
+            # [수정] 그룹화 로직 적용 (화면 깔끔하게)
             grouped_data = {} 
             for item in pre_filtered_items:
                 root = item['root_word']
@@ -594,11 +617,9 @@ if st.session_state.analysis_result:
         if st.button("⛔ 체크 삭제", type="secondary"):
             to_delete = edited_df[edited_df['delete_check'] == True]
             if not to_delete.empty and sheet:
-                # [수정] 그룹화된 'original_word' 문자열에서 단어 추출 시도 (완벽하진 않으나 최선)
                 rows_to_add = []
                 for _, row in to_delete.iterrows():
-                     # "저녁(3)" -> "저녁" 추출
-                     raw_orig = row['original_word'].split('(')[0] 
+                     raw_orig = str(row['original_word']).split('(')[0] 
                      rows_to_add.append([datetime.now().isoformat(), raw_orig, row['root_word'], "", "", 'delete', input_text])
                 
                 if send_data_with_retry(sheet, rows_to_add, is_multiple=True):
@@ -608,7 +629,7 @@ if st.session_state.analysis_result:
                     time.sleep(1)
                     st.rerun()
 
-    # [핵심 수정] 저장 로직 (그룹화된 뷰어에 대응 + 빈도수 파싱)
+    # [핵심] 저장 로직 (빈도수 합산 + 화면 그룹화 + 학습 디테일 보존)
     def save_logic(df_to_save, page_str):
         valid_rows = df_to_save[df_to_save['delete_check'] == False].copy()
         
@@ -616,7 +637,6 @@ if st.session_state.analysis_result:
         for _, row in valid_rows.iterrows():
             c_origin = clean_value_for_save(row['origin'])
             c_pos = clean_value_for_save(row['pos'])
-            # 그룹화된 original_word라도 일단 그대로 로그에 남김 (AI가 부분 매칭할 수 있도록)
             learning_logs.append({
                 'timestamp': datetime.now().isoformat(),
                 'original_word': row['original_word'], 
@@ -627,16 +647,14 @@ if st.session_state.analysis_result:
                 'context': input_text
             })
             
-        # [수정] 'count' 컬럼("3회")에서 숫자(3) 추출하여 'numeric_count' 생성
         def parse_count(val):
             try: return int(str(val).replace('회', '').strip())
             except: return 1
             
         valid_rows['numeric_count'] = valid_rows['count'].apply(parse_count)
         
-        # 다시 그룹화 (사용자가 여러 행을 하나로 합쳤을 경우 대비)
         aggregated_df = valid_rows.groupby('root_word', as_index=False).agg({
-            'numeric_count': 'sum', # 1회+3회 -> 4회
+            'numeric_count': 'sum', 
             'original_word': lambda x: ', '.join(x.unique()),
             'origin': 'first',
             'pos': 'first'
