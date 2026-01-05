@@ -167,12 +167,16 @@ def split_text_smartly(text, chunk_size=1000):
     if current_chunk: chunks.append(current_chunk.strip())
     return chunks
 
-# PDF/이미지 통합 추출기
+# [핵심] PDF/이미지 통합 추출기 (상단 크롭 제거 적용)
 def extract_text_unified(file_obj, page_index):
     file_type = file_obj.type
+    
+    # 1. 이미지 파일
     if "image" in file_type:
         try: return api_call_vision_ocr(file_obj.getvalue())
         except Exception as e: return f"이미지 읽기 오류: {e}"
+        
+    # 2. PDF 파일
     elif "pdf" in file_type:
         if PLUMBER_AVAILABLE:
             try:
@@ -180,35 +184,42 @@ def extract_text_unified(file_obj, page_index):
                     if page_index < 0 or page_index >= len(pdf.pages): return ""
                     page = pdf.pages[page_index]
                     width, height = page.width, page.height
-                    crop_box = (0, height * 0.1, width, height * 0.9)
+                    
+                    # [수정됨] 상단 0% (보존), 하단 10% 제거 (쪽수만 제거)
+                    crop_box = (0, 0, width, height * 0.9)
+                    
                     try: cropped = page.crop(crop_box); text = cropped.extract_text()
                     except: text = page.extract_text()
                     if text and len(text.strip()) > 30: return text
             except: pass
+            
         if FITZ_AVAILABLE:
             try:
                 doc = fitz.open(stream=file_obj.getvalue(), filetype="pdf")
                 if page_index < 0 or page_index >= len(doc): return ""
                 page = doc[page_index]
                 rect = page.rect
-                clip_rect = fitz.Rect(0, rect.height * 0.1, rect.width, rect.height * 0.9)
+                
+                # [수정됨] 이미지 모드에서도 동일하게 상단 보존
+                clip_rect = fitz.Rect(0, 0, rect.width, rect.height * 0.9)
+                
                 pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), clip=clip_rect)
                 return api_call_vision_ocr(pix.tobytes("png"))
             except Exception as e: return f"PDF 변환 오류: {e}"
         return "PDF를 읽을 수 없습니다. (라이브러리 설치 확인 필요)"
     return "지원하지 않는 파일 형식입니다."
 
-# [신규] 미리보기용 이미지 생성 함수
+# 미리보기용 이미지 생성 함수
 def get_page_image(file_obj, page_index):
     file_type = file_obj.type
     if "image" in file_type:
-        return file_obj # 이미지는 그대로 반환
+        return file_obj 
     elif "pdf" in file_type and FITZ_AVAILABLE:
         try:
             doc = fitz.open(stream=file_obj.getvalue(), filetype="pdf")
             if page_index < 0 or page_index >= len(doc): return None
             page = doc[page_index]
-            pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5)) # 해상도 적당히
+            pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5)) 
             return pix.tobytes("png")
         except: return None
     return None
@@ -348,8 +359,8 @@ if 'master_df' not in st.session_state: st.session_state.master_df = None
 if 'uploaded_file' not in st.session_state: st.session_state.uploaded_file = None
 if 'total_pages' not in st.session_state: st.session_state.total_pages = 0
 if 'current_page_idx' not in st.session_state: st.session_state.current_page_idx = 0
-if 'user_page_num' not in st.session_state: st.session_state.user_page_num = "1"
-if 'start_page_offset' not in st.session_state: st.session_state.start_page_offset = 1 # [신규] 시작 쪽수 설정
+if 'start_page_offset' not in st.session_state: st.session_state.start_page_offset = 1 
+if 'manual_page_input' not in st.session_state: st.session_state.manual_page_input = "1" # 이미지용 수동 입력
 
 uploaded_df = None
 with st.sidebar:
@@ -392,7 +403,7 @@ with st.sidebar:
             for h in history[-3:]:
                 st.caption(f"{h['timestamp'][:10]} [{h['action']}] {h['original_word']} -> {h['root_word']}")
 
-# [상단 UI] 파일 업로드 및 설정 (전체 너비 사용)
+# [상단 UI] 파일 업로드
 st.subheader("📄 파일 분석 (PDF 또는 이미지)")
 
 col_up, col_set = st.columns([3, 1])
@@ -407,7 +418,7 @@ with col_up:
         st.session_state.uploaded_file = uploaded_file
         st.session_state.current_page_idx = 0
         st.session_state.analysis_result = None
-        st.session_state.start_page_offset = 1 # 파일 바뀌면 초기화
+        st.session_state.start_page_offset = 1 
         
         file_type = uploaded_file.type
         if "pdf" in file_type:
@@ -422,29 +433,30 @@ with col_up:
             st.session_state.total_pages = 1
         st.rerun()
 
+# [핵심] 쪽수 입력 UI 이원화
+# PDF일 때는 상단 오프셋 / 이미지일 때는 상단 숨김
+is_pdf_mode = st.session_state.uploaded_file and "pdf" in st.session_state.uploaded_file.type
+
 with col_set:
-    # [신규] 시작 쪽수 설정 (3번 요구사항)
-    if st.session_state.uploaded_file and "pdf" in st.session_state.uploaded_file.type:
-        st.write("") # 줄맞춤
-        new_offset = st.number_input("교과서 시작 쪽수", min_value=1, value=st.session_state.start_page_offset, help="PDF의 첫 번째 장이 실제 교과서 몇 쪽인지 설정하세요.")
+    if is_pdf_mode:
+        st.write("") 
+        new_offset = st.number_input("교과서 시작 쪽수 (첫장=몇쪽?)", min_value=1, value=st.session_state.start_page_offset, help="PDF의 첫 번째 장이 실제 교과서 몇 쪽인지 설정하세요. 자동으로 계산됩니다.")
         if new_offset != st.session_state.start_page_offset:
             st.session_state.start_page_offset = new_offset
-            # 오프셋이 바뀌면 현재 쪽수 표기도 업데이트
-            st.session_state.user_page_num = str(st.session_state.current_page_idx + new_offset)
             st.rerun()
-    else:
-        st.session_state.start_page_offset = 1
 
-# [메인 UI] 좌우 분할 뷰 (1번 요구사항)
+# [메인 UI] 좌우 분할 뷰
 extracted_text = ""
 
 if st.session_state.uploaded_file:
-    # 쪽수 계산 (오프셋 적용)
-    calc_page_num = st.session_state.current_page_idx + st.session_state.start_page_offset
-    st.session_state.user_page_num = str(calc_page_num)
+    # 현재 저장될 쪽수 계산 (PDF는 자동, 이미지는 사용자 입력 대기)
+    if is_pdf_mode:
+        current_save_page = str(st.session_state.current_page_idx + st.session_state.start_page_offset)
+    else:
+        current_save_page = st.session_state.manual_page_input # 나중에 하단에서 입력받음
 
-    # 네비게이션
-    if "pdf" in st.session_state.uploaded_file.type and st.session_state.total_pages > 1:
+    # 네비게이션 (PDF만)
+    if is_pdf_mode and st.session_state.total_pages > 1:
         c_prev, c_info, c_next = st.columns([1, 2, 1])
         with c_prev:
             if st.button("◀ 이전 장"):
@@ -459,9 +471,9 @@ if st.session_state.uploaded_file:
                     st.session_state.analysis_result = None
                     st.rerun()
         with c_info:
-            st.markdown(f"<div style='text-align:center; padding-top:10px;'><b>PDF {st.session_state.current_page_idx + 1}/{st.session_state.total_pages}장 (교과서 {calc_page_num}쪽)</b></div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align:center; padding-top:10px;'><b>PDF {st.session_state.current_page_idx + 1}/{st.session_state.total_pages}장 (현재 {current_save_page}쪽)</b></div>", unsafe_allow_html=True)
 
-    # [핵심] 좌우 분할 (이미지 vs 텍스트)
+    # 좌우 분할
     view_col1, view_col2 = st.columns([1, 1])
     
     with view_col1:
@@ -485,12 +497,18 @@ if st.session_state.uploaded_file:
             label_visibility="collapsed"
         )
         
-        # 저장 설정 및 분석 버튼 (오른쪽 패널 하단)
+        # 하단 설정 (이미지일 때만 쪽수 입력창 표시)
         col_p, col_b = st.columns([1, 2])
         with col_p:
-            user_page_val = st.text_input("저장될 쪽수", value=st.session_state.user_page_num, key="final_page_input")
-            if user_page_val != st.session_state.user_page_num:
-                st.session_state.user_page_num = user_page_val
+            if not is_pdf_mode: # 이미지 모드일 때만 보임
+                manual_page = st.text_input("저장될 쪽수 입력", value=st.session_state.manual_page_input, key="manual_page_setter")
+                if manual_page != st.session_state.manual_page_input:
+                    st.session_state.manual_page_input = manual_page
+                    # rerun은 굳이 안 해도 됨 (다음 클릭 시 반영)
+            else:
+                # PDF 모드일 땐 입력창 없음 (자동 계산된 값만 내부적으로 사용)
+                st.info(f"💾 **{current_save_page}쪽**으로 저장됩니다.")
+
         with col_b:
             analyze_btn = st.button("🚀 분석 실행", use_container_width=True, type="primary")
 
@@ -499,7 +517,7 @@ else:
     analyze_btn = False
     input_text = ""
 
-# 분석 로직 (기존과 동일)
+# 분석 로직
 if analyze_btn and input_text:
     with st.spinner(f"{mode_selection} 모드로 분석 중입니다..."):
         raw_results = get_analysis_hybrid(input_text, sheet_data, MODE_KEY)
@@ -542,7 +560,7 @@ if analyze_btn and input_text:
                 
             st.session_state.analysis_result = final_results
 
-# 결과 화면 (분석 결과가 있을 때만 오른쪽 컬럼 아래에 표시)
+# 결과 화면
 if st.session_state.analysis_result:
     st.markdown("---")
     st.markdown("### 📊 분석 결과")
@@ -626,22 +644,30 @@ if st.session_state.analysis_result:
             except: pass
         return True
 
+    # 현재 로직에 맞는 저장될 쪽수 값 가져오기
+    if is_pdf_mode:
+        final_page_str = str(st.session_state.current_page_idx + st.session_state.start_page_offset)
+    else:
+        final_page_str = st.session_state.manual_page_input
+
     with btn_col2:
         if st.button("💾 저장하고 다음 쪽(▶) 이동", type="primary", use_container_width=True):
-            if save_logic(edited_df, st.session_state.user_page_num):
-                if "pdf" in st.session_state.uploaded_file.type and st.session_state.current_page_idx < st.session_state.total_pages - 1:
+            if save_logic(edited_df, final_page_str):
+                # PDF일 때만 이동
+                if is_pdf_mode and st.session_state.current_page_idx < st.session_state.total_pages - 1:
                     st.session_state.current_page_idx += 1
-                    # 쪽수 오프셋은 유지되므로 user_page_num 자동 계산됨
                     st.session_state.analysis_result = None
                     st.toast("✅ 저장 완료! 이동합니다.", icon="🏃")
                     time.sleep(1)
                     st.rerun()
-                else: 
-                    st.success("마지막 페이지 또는 이미지 파일입니다!")
+                elif not is_pdf_mode:
+                    st.success("이미지 파일은 다음 쪽이 없습니다. (저장 완료)")
+                else:
+                    st.success("마지막 페이지입니다!")
 
     with btn_col3:
         if st.button("💾 저장만 하기 (종료)", use_container_width=True):
-            if save_logic(edited_df, st.session_state.user_page_num):
+            if save_logic(edited_df, final_page_str):
                 st.success("✅ 저장되었습니다.")
 
     if st.session_state.excel_buffer:
