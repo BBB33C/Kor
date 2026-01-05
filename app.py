@@ -36,7 +36,7 @@ try:
 except:
     API_KEY = "AIzaSyCC6oyL7POpbWq2FZrJ2zIJuiosupFQZYk"
 
-MODEL_NAME = "gemini-2.0-flash-exp"
+MODEL_NAME = "gemini-2.0-flash-exp" 
 SHEET_NAME = "Korean_DB" 
 TRUST_THRESHOLD = 3 
 
@@ -550,26 +550,31 @@ if analyze_btn and input_text:
                 item['pos'] = pos_map.get(pos, pos)
                 pre_filtered_items.append(item)
             
-            # 여기서 그룹화 제거하고 Raw Data로 편집기로 넘김 (그래야 개별 수정 가능)
-            st.session_state.analysis_result = pre_filtered_items
+            # [수정] 다시 그룹화 로직 복구 (화면 깔끔하게 보여주기 위함)
+            grouped_data = {} 
+            for item in pre_filtered_items:
+                root = item['root_word']
+                if root not in grouped_data:
+                    grouped_data[root] = {'root_word': root, 'origin': item['origin'], 'pos': item['pos'], 'originals': []}
+                grouped_data[root]['originals'].append(item['original_word'])
+
+            final_results = []
+            for root, info in grouped_data.items():
+                orig_counts = Counter(info['originals'])
+                formatted_original = ", ".join([f"{word}({cnt})" for word, cnt in orig_counts.items()])
+                total_cnt = sum(orig_counts.values())
+                is_trusted = check_trust_level_strict(root, st.session_state.master_df, problematic_words)
+                status = '✅ 자동' if is_trusted else '📝 검토'
+                final_results.append({'delete_check': False, 'status': status, 'count': f"{total_cnt}회", 'original_word': formatted_original, 'root_word': root, 'origin': info['origin'], 'pos': info['pos']})
+            
+            st.session_state.analysis_result = final_results
 
 if st.session_state.analysis_result:
     st.markdown("---")
     st.markdown("### 📊 분석 결과")
     
-    # [수정됨] DataFrame 생성 (Raw Data 상태)
     df_display = pd.DataFrame(st.session_state.analysis_result)
     
-    # [수정됨] 빈도(Count)는 미리 보여줄 수 없으므로(개별 항목이므로) 일단 제거하거나 '1'로 표시
-    if 'count' not in df_display.columns:
-        df_display['count'] = 1
-        
-    if 'delete_check' not in df_display.columns:
-        df_display['delete_check'] = False
-        
-    if 'status' not in df_display.columns:
-        df_display['status'] = '📝 검토'
-
     column_config = {
         "delete_check": st.column_config.CheckboxColumn("삭제", width="small"),
         "status": st.column_config.TextColumn("상태", disabled=True),
@@ -579,7 +584,7 @@ if st.session_state.analysis_result:
         "origin": st.column_config.SelectboxColumn("분류", options=["🔵 고", "🟢 한", "🔴 외", "🟣 혼"]),
         "pos": st.column_config.SelectboxColumn("품사", options=["📦 명사", "🏃 동사", "🎨 형용사", "⚡ 부사", "🔍 관형사"])
     }
-    cols = ["delete_check", "status", "original_word", "root_word", "origin", "pos"] # count 제외하고 보여줌 (오해 방지)
+    cols = ["delete_check", "status", "count", "original_word", "root_word", "origin", "pos"]
     
     edited_df = st.data_editor(df_display[cols] if not df_display.empty else df_display, column_config=column_config, use_container_width=True, num_rows="fixed", key="editor")
     
@@ -589,29 +594,32 @@ if st.session_state.analysis_result:
         if st.button("⛔ 체크 삭제", type="secondary"):
             to_delete = edited_df[edited_df['delete_check'] == True]
             if not to_delete.empty and sheet:
-                rows_to_add = [[datetime.now().isoformat(), row['original_word'], row['root_word'], "", "", 'delete', input_text] for _, row in to_delete.iterrows()]
+                # [수정] 그룹화된 'original_word' 문자열에서 단어 추출 시도 (완벽하진 않으나 최선)
+                rows_to_add = []
+                for _, row in to_delete.iterrows():
+                     # "저녁(3)" -> "저녁" 추출
+                     raw_orig = row['original_word'].split('(')[0] 
+                     rows_to_add.append([datetime.now().isoformat(), raw_orig, row['root_word'], "", "", 'delete', input_text])
+                
                 if send_data_with_retry(sheet, rows_to_add, is_multiple=True):
                     st.toast(f"🗑️ 삭제 학습 완료!", icon="✅")
-                    # 삭제된 행 제외하고 갱신
                     remaining = edited_df[edited_df['delete_check'] == False].to_dict('records')
                     st.session_state.analysis_result = remaining
                     time.sleep(1)
                     st.rerun()
 
-    # [핵심 수정] 저장 로직 (Pre-Aggregation 적용)
+    # [핵심 수정] 저장 로직 (그룹화된 뷰어에 대응 + 빈도수 파싱)
     def save_logic(df_to_save, page_str):
-        # 1. 학습 로그 기록 (개별 데이터 기준)
         valid_rows = df_to_save[df_to_save['delete_check'] == False].copy()
         
         learning_logs = []
         for _, row in valid_rows.iterrows():
-            # 저장용 클리닝
             c_origin = clean_value_for_save(row['origin'])
             c_pos = clean_value_for_save(row['pos'])
-            
+            # 그룹화된 original_word라도 일단 그대로 로그에 남김 (AI가 부분 매칭할 수 있도록)
             learning_logs.append({
                 'timestamp': datetime.now().isoformat(),
-                'original_word': row['original_word'],
+                'original_word': row['original_word'], 
                 'root_word': row['root_word'],
                 'origin': c_origin,
                 'pos': c_pos,
@@ -619,23 +627,23 @@ if st.session_state.analysis_result:
                 'context': input_text
             })
             
-        # 2. 엑셀 저장용 데이터 통합 (GroupBy)
-        # 같은 root_word끼리 묶어서 count 합산
-        # 숫자형 카운트 컬럼 생성 (기본 1)
-        valid_rows['numeric_count'] = 1 
+        # [수정] 'count' 컬럼("3회")에서 숫자(3) 추출하여 'numeric_count' 생성
+        def parse_count(val):
+            try: return int(str(val).replace('회', '').strip())
+            except: return 1
+            
+        valid_rows['numeric_count'] = valid_rows['count'].apply(parse_count)
         
-        # 그룹화: root_word 기준
+        # 다시 그룹화 (사용자가 여러 행을 하나로 합쳤을 경우 대비)
         aggregated_df = valid_rows.groupby('root_word', as_index=False).agg({
-            'numeric_count': 'sum',
-            'original_word': lambda x: ', '.join(x.unique()), # 원본 단어들 병합
-            'origin': 'first', # 분류는 첫번째 것 따름
-            'pos': 'first'     # 품사도 첫번째 것 따름
+            'numeric_count': 'sum', # 1회+3회 -> 4회
+            'original_word': lambda x: ', '.join(x.unique()),
+            'origin': 'first',
+            'pos': 'first'
         })
         
-        # 3. 마스터 DF 업데이트 (통합된 데이터 사용)
         base_df = st.session_state.master_df
         if base_df is None: base_df = pd.DataFrame(columns=['구분', '자료', '출연횟수'])
-        # 쪽수 컬럼 Object 타입 변환
         for c in base_df.columns:
             if '쪽수' in c: base_df[c] = base_df[c].astype(object)
             
@@ -646,12 +654,10 @@ if st.session_state.analysis_result:
             cnt = item['numeric_count']
             origin_val = clean_value_for_save(item['origin'])
             
-            # 쪽수_빈도 표기 (예: 5쪽_3)
             val = f"{page_str}_{cnt}" if cnt > 1 else page_str
             
             if root in base_df['자료'].values:
                 idx = base_df[base_df['자료'] == root].index[0]
-                # 빈 쪽수 컬럼 찾기
                 filled = base_df.loc[idx].filter(like='쪽수').notna().sum()
                 col = f"쪽수{filled+1}"
                 if col not in base_df.columns: base_df[col] = float('nan')
@@ -662,20 +668,16 @@ if st.session_state.analysis_result:
         if new_rows_for_excel:
             base_df = pd.concat([base_df, pd.DataFrame(new_rows_for_excel)], ignore_index=True)
             
-        # 총 횟수 재계산
         base_df['출연횟수'] = base_df.apply(calculate_total_appearances, axis=1)
-        # 정렬
         base_df['sort'] = base_df['구분'].map({'고':1, '순':1, '한':2, '외':3, '혼':4}).fillna(5)
         base_df = base_df.sort_values(['sort', '자료']).drop('sort', axis=1)
         st.session_state.master_df = base_df
         
-        # 엑셀 버퍼 생성
         output_excel = io.BytesIO()
         with pd.ExcelWriter(output_excel, engine='openpyxl') as writer: base_df.to_excel(writer, index=False)
         output_excel.seek(0)
         st.session_state.excel_buffer = output_excel
 
-        # 4. 학습 데이터 전송 (개별 로그 사용)
         if sheet and learning_logs:
             rows = [list(log.values()) for log in learning_logs]
             send_data_with_retry(sheet, rows, is_multiple=True)
