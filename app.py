@@ -23,13 +23,13 @@ except:
     API_KEY = "AIzaSyCC6oyL7POpbWq2FZrJ2zIJuiosupFQZYk"
 
 MODEL_NAME = "gemini-2.5-flash"
-SHEET_NAME = "Korean_DB"
+SHEET_NAME = "Korean_DB" # 엑셀 파일 이름
 TRUST_THRESHOLD = 3 
 
 st.set_page_config(page_title="국어활동 AI 분석기", page_icon="📝", layout="wide")
 
 # =========================================================
-# 🔐 구글 시트 연결
+# 🔐 구글 시트 연결 (이원화 로직 적용)
 # =========================================================
 @st.cache_resource
 def get_google_sheet_client():
@@ -45,43 +45,29 @@ def get_google_sheet_client():
         return client
     except: return None
 
-def get_sheet_data_fresh():
+# [핵심 변경] 모드에 따라 다른 탭(Worksheet)을 가져오는 함수
+def get_sheet_data_fresh(mode_key):
     client = get_google_sheet_client()
     if not client: return None, []
+    
+    # 모드에 따른 시트 이름 매핑
+    target_sheet_name = "South_Korea" if mode_key == "SOUTH" else "North_Korea"
+    
     try:
-        sheet = client.open(SHEET_NAME).sheet1
+        # 파일 열기
+        spreadsheet = client.open(SHEET_NAME)
+        # 탭(워크시트) 선택
+        try:
+            sheet = spreadsheet.worksheet(target_sheet_name)
+        except gspread.WorksheetNotFound:
+            st.error(f"❌ '{target_sheet_name}' 시트를 찾을 수 없습니다. 구글 시트 하단 탭 이름을 확인해주세요.")
+            return None, []
+            
         data = sheet.get_all_records()
         return sheet, data
-    except: return None, []
-
-def sync_json_to_sheet_if_empty(sheet, current_data):
-    if not sheet: return
-    if len(current_data) > 0: return 
-
-    json_path = "korean_analysis_learning.json"
-    if os.path.exists(json_path):
-        try:
-            with st.spinner("📦 기존 지능을 구글 시트로 이사 중..."):
-                with open(json_path, 'r', encoding='utf-8') as f:
-                    local_data = json.load(f)
-                corrections = local_data.get("corrections", [])
-                if corrections:
-                    sheet.append_row(["timestamp", "original_word", "root_word", "origin", "pos", "action", "context"])
-                    rows_to_add = []
-                    for c in corrections:
-                        user_cls = c.get('user_classification', {})
-                        ai_cls = c.get('ai_classification', {})
-                        root = user_cls.get('root_word') or ai_cls.get('root_word') or ""
-                        origin = user_cls.get('origin') or ai_cls.get('origin') or ""
-                        pos = user_cls.get('pos') or ai_cls.get('pos') or ""
-                        row = [c.get('timestamp', ''), c.get('original_word', ''), root, origin, pos, c.get('action', ''), c.get('context', '')]
-                        rows_to_add.append(row)
-                    if rows_to_add:
-                        sheet.append_rows(rows_to_add)
-                        st.success("✅ 이사 완료! 새로고침합니다.")
-                        time.sleep(1)
-                        st.rerun()
-        except: pass
+    except Exception as e:
+        st.error(f"구글 시트 연결 오류: {e}")
+        return None, []
 
 # =========================================================
 # 🧠 AI 및 전처리 로직
@@ -92,7 +78,7 @@ def generate_prompt_from_sheet(sheet_data):
     if df.empty: return ""
     prompt_lines = []
     
-    # [1칙: 학습 데이터 신뢰도 최우선 확보]
+    # 학습 데이터 프롬프트 생성 (공통 로직)
     if 'action' in df.columns:
         deleted = df[df['action'] == 'delete']
         for _, row in deleted.tail(10).iterrows(): 
@@ -162,26 +148,44 @@ def split_text_smartly(text, chunk_size=1000):
     
     return chunks
 
-def get_analysis_hybrid(text, sheet_data):
+# [핵심 변경] 모드에 따라 AI 페르소나(역할) 변경
+def get_analysis_hybrid(text, sheet_data, mode_key):
     learning_prompt = generate_prompt_from_sheet(sheet_data)
     
-    # [수정된 프롬프트: 강제 분리 규칙 제거 -> 사용자 자율성 극대화]
-    base_instruction = """
-    국어학 전문가로서 문맥을 고려하여 실질 형태소(알맹이 단어)를 분석하세요.
+    # 1. 공통 역할
+    role_definition = "국어학 전문가로서 문맥을 고려하여 실질 형태소(알맹이 단어)를 분석하세요."
+    
+    # 2. 모드별 특수 지침 (페르소나 이원화)
+    if mode_key == "NORTH":
+        mode_instruction = """
+        [🇰🇵 북한 문화어 분석 모드]
+        - 당신은 '북한 문화어(Munhwa-o)' 전문가입니다.
+        - **두음법칙을 적용하지 마세요.** (예: '노동'이 아니라 '로동', '여자'가 아니라 '녀자'가 원형입니다.)
+        - 북한 특유의 어휘나 표기법이 있다면 이를 존중하여 원형을 추출하세요.
+        """
+    else:
+        mode_instruction = """
+        [🇰🇷 대한민국 표준어 분석 모드]
+        - 당신은 '대한민국 표준어' 전문가입니다.
+        - 국립국어원 표준 맞춤법과 두음법칙을 준수하세요.
+        """
+
+    base_instruction = f"""
+    {role_definition}
+    {mode_instruction}
     
     [핵심 작성 규칙]
     - original_word: 문장에서 **실제로 쓰인 형태 그대로(활용형 포함)** 적으세요. (예: '먹었습니다' -> '먹었습니다')
-    - root_word: 사전에 등재된 **기본형(원형)**으로 적으세요. (예: '먹었습니다' -> '먹다')
+    - root_word: 사전에 등재된 **기본형(원형)**으로 적으세요.
     
-    [분석 3단계 우선순위 (번호가 낮을수록 강력함)]
-    1. [최우선] 사용자 학습 규칙(위쪽 내용)이 있다면 무조건 따르세요. (예: 사용자가 '공부하다'를 '공부'로 저장했다면, '공부'로 출력)
-    2. [표준 원형] 특별한 학습 규칙이 없다면, 국립국어원 표준국어대사전 기준의 '기본형'을 추출하세요. 굳이 '하다'를 떼어내려 하지 마세요.
+    [분석 3단계 우선순위]
+    1. [최우선] 사용자 학습 규칙(위쪽 내용)이 있다면 무조건 따르세요.
+    2. [표준 원형] 특별한 학습 규칙이 없다면, 해당 언어 규범(남/북)에 맞는 사전적 '기본형'을 추출하세요. 굳이 '하다'를 떼어내려 하지 마세요.
     3. [명사 통합] '비빔냉면', '학교앞' 같은 복합명사는 굳이 쪼개지 말고 '하나의 단어'로 분석하세요.
     
     [기본 규칙]
     - 조사, 어미, 접사, 문장부호, 감탄사는 제외하세요.
     - 추출 대상 품사: '명사', '동사', '형용사', '부사', '관형사'
-    - 문장에 반복되는 단어가 있다면, 생략하지 말고 등장하는 횟수만큼 모두 나열하세요. (카운팅용)
     - 어원 분류: '고'(고유어), '한'(한자어), '외'(외래어), '혼'(혼종어)
     
     형식: [{"original_word": "문장에_나온_그대로", "root_word": "기본형", "origin": "고", "pos": "명사"}]
@@ -189,9 +193,6 @@ def get_analysis_hybrid(text, sheet_data):
     
     chunks = split_text_smartly(text)
     all_results = []
-    
-    progress_bar = st.progress(0)
-    total_chunks = len(chunks)
     
     for i, chunk in enumerate(chunks):
         if not chunk.strip(): continue
@@ -206,10 +207,8 @@ def get_analysis_hybrid(text, sheet_data):
         if chunk_result:
             all_results.extend(chunk_result)
             
-        progress_bar.progress((i + 1) / total_chunks)
         time.sleep(0.1) 
         
-    progress_bar.empty()
     return all_results
 
 def calculate_total_appearances(row):
@@ -274,12 +273,25 @@ def load_excel_safely(file):
 # =========================================================
 # 🖥️ 메인 화면 로직
 # =========================================================
-sheet, sheet_data = get_sheet_data_fresh()
-if sheet:
-    sync_json_to_sheet_if_empty(sheet, sheet_data)
-    if not sheet_data: _, sheet_data = get_sheet_data_fresh()
-
 st.title("📝 국어활동 AI 분석기")
+
+# [사이드바] 모드 선택 UI 추가
+with st.sidebar:
+    st.header("🏳️ 분석 모드 선택")
+    mode_selection = st.radio(
+        "분석할 언어 환경을 선택하세요",
+        ("🇰🇷 대한민국 표준어", "🇰🇵 북한 문화어"),
+        index=0
+    )
+    
+    # 모드 키 설정 (SOUTH / NORTH)
+    MODE_KEY = "SOUTH" if "대한민국" in mode_selection else "NORTH"
+    
+    st.info(f"현재 **{mode_selection}** 모드로 동작합니다.\n\n연결된 시트: {('South_Korea' if MODE_KEY=='SOUTH' else 'North_Korea')}")
+    st.markdown("---")
+
+# [동적 연결] 선택된 모드에 따라 시트 데이터 로드
+sheet, sheet_data = get_sheet_data_fresh(MODE_KEY)
 
 if 'analysis_result' not in st.session_state:
     st.session_state.analysis_result = None
@@ -323,6 +335,7 @@ with st.sidebar:
                     row = [datetime.now().isoformat(), add_orig, add_root, add_origin, add_pos, 'add', '수동추가']
                     sheet.append_row(row)
                     
+                    # 현재 모드 결과에 즉시 반영
                     if st.session_state.analysis_result is not None:
                         formatted_pos = {
                             '명사': '📦 명사', '동사': '🏃 동사', '형용사': '🎨 형용사',
@@ -336,7 +349,7 @@ with st.sidebar:
                         }
                         st.session_state.analysis_result.append(new_item)
                     
-                    st.toast(f"✅ '{add_orig}' 추가 완료! 리스트에 즉시 반영됩니다.", icon="🎓")
+                    st.toast(f"✅ '{add_orig}' 추가 완료! ({MODE_KEY} 모드)", icon="🎓")
                     time.sleep(1)
                     st.rerun()
 
@@ -358,12 +371,12 @@ with col2:
     analyze_btn = st.button("🚀 분석 실행", use_container_width=True)
 
 # ---------------------------------------------------------
-# 🚀 분석 실행 및 그룹화 로직 (UI 복구 완료)
+# 🚀 분석 실행 (모드 키 전달)
 # ---------------------------------------------------------
 if analyze_btn and input_text:
-    with st.spinner("AI가 분석 중입니다..."):
-        # UI 요소(status) 전달 없이 순수 데이터만 요청
-        raw_results = get_analysis_hybrid(input_text, sheet_data)
+    with st.spinner(f"{mode_selection} 모드로 분석 중입니다..."):
+        # get_analysis_hybrid에 MODE_KEY 전달
+        raw_results = get_analysis_hybrid(input_text, sheet_data, MODE_KEY)
         
         if raw_results:
             validation_text = input_text.replace(" ", "")
@@ -393,7 +406,7 @@ if analyze_btn and input_text:
                 
                 pre_filtered_items.append(item)
             
-            # [Step 2] 그룹화 (Root 기준 중복 통합)
+            # [Step 2] 그룹화
             grouped_data = {} 
             for item in pre_filtered_items:
                 root = item['root_word']
@@ -406,7 +419,7 @@ if analyze_btn and input_text:
                     }
                 grouped_data[root]['originals'].append(item['original_word'])
 
-            # [Step 3] 최종 리스트 생성 (포맷팅)
+            # [Step 3] 최종 리스트 생성
             final_results = []
             for root, info in grouped_data.items():
                 orig_counts = Counter(info['originals'])
@@ -473,7 +486,7 @@ if st.session_state.analysis_result:
                                 "", "", 'delete', input_text
                             ])
                         sheet.append_rows(rows_to_add)
-                        st.toast(f"🗑️ 삭제 학습 완료! (원형 '{row['root_word']}' 계열 차단)", icon="✅")
+                        st.toast(f"🗑️ 삭제 학습 완료! ({MODE_KEY} 탭에 저장)", icon="✅")
                         remaining = edited_df[edited_df['delete_check'] == False].to_dict('records')
                         st.session_state.analysis_result = remaining
                         time.sleep(1)
@@ -556,7 +569,7 @@ if st.session_state.analysis_result:
                 try:
                     rows_to_add = [list(log.values()) for log in learning_logs]
                     sheet.append_rows(rows_to_add)
-                    st.toast(f"✅ 학습 완료: {len(rows_to_add)}건 저장됨.", icon="🧠")
+                    st.toast(f"✅ 학습 완료: {len(rows_to_add)}건 저장됨. ({MODE_KEY})", icon="🧠")
                 except Exception as e: pass
             
             st.success("✅ 누적 저장 완료! (1, 2, ... 쪽 내용이 모두 합쳐졌습니다.)")
