@@ -169,13 +169,17 @@ def split_text_smartly(text, chunk_size=1000):
 def get_analysis_hybrid(text, sheet_data):
     learning_prompt = generate_prompt_from_sheet(sheet_data)
     
-    # [2칙 & 4칙: 규칙 충돌 방지를 위한 서열 정리]
+    # [수정된 핵심 프롬프트: 원본 단어와 원형 구분 명확화]
     base_instruction = """
     국어학 전문가로서 문맥을 고려하여 실질 형태소(알맹이 단어)를 분석하세요.
     
+    [핵심 작성 규칙]
+    - original_word: 문장에서 **실제로 쓰인 형태 그대로(활용형 포함)** 적으세요. (예: '먹었습니다' -> '먹었습니다')
+    - root_word: 사전에 등재된 **기본형(원형)**으로 적으세요. (예: '먹었습니다' -> '먹다')
+    
     [분석 3단계 우선순위 (번호가 낮을수록 강력함)]
     1. [최우선] 사용자 학습 규칙(위쪽 내용)이 있다면 무조건 따르세요.
-    2. [용언 분리] '공부하다', '사랑하다' 처럼 '명사+하다'로 이루어진 용언(동사/형용사)은, 반드시 어근인 명사('공부', '사랑')만 남기세요. (합성어 규칙보다 우선함)
+    2. [용언 분리] '공부하다', '사랑하다' 처럼 '명사+하다'로 이루어진 용언(동사/형용사)은, 원형(root_word)을 추출할 때 반드시 어근인 명사('공부', '사랑')만 남기세요.
     3. [명사 통합] 위 2번(하다 용언)이 아닌 경우, '비빔냉면', '볶음밥', '학교앞' 같은 복합명사나 합성어는 굳이 쪼개지 말고 '하나의 단어'로 분석하세요.
     
     [기본 규칙]
@@ -184,7 +188,7 @@ def get_analysis_hybrid(text, sheet_data):
     - 문장에 반복되는 단어가 있다면, 생략하지 말고 등장하는 횟수만큼 모두 나열하세요. (카운팅용)
     - 어원 분류: '고'(고유어), '한'(한자어), '외'(외래어), '혼'(혼종어)
     
-    형식: [{"original_word": "단어", "root_word": "원형", "origin": "고", "pos": "명사"}]
+    형식: [{"original_word": "문장에_나온_그대로", "root_word": "기본형", "origin": "고", "pos": "명사"}]
     """
     
     chunks = split_text_smartly(text)
@@ -198,7 +202,7 @@ def get_analysis_hybrid(text, sheet_data):
         
         keywords = preprocess_with_morphology(chunk)
         if keywords:
-            prompt = f"""{learning_prompt}\n{base_instruction}\n문장: "{chunk}"\n힌트: {', '.join(keywords)}"""
+            prompt = f"""{learning_prompt}\n{base_instruction}\n문장: "{chunk}"\n힌트(참고만 할 것): {', '.join(keywords)}"""
         else:
             prompt = f"""{learning_prompt}\n{base_instruction}\n문장: "{chunk}" """
             
