@@ -10,7 +10,13 @@ from oauth2client.service_account import ServiceAccountCredentials
 from collections import Counter
 from datetime import datetime
 import time
-import pdfplumber  # [추가] PDF 텍스트 추출 라이브러리
+
+# [안전 장치 추가] pdfplumber 라이브러리가 없어도 프로그램이 멈추지 않도록 처리
+try:
+    import pdfplumber
+    PDF_AVAILABLE = True
+except ImportError:
+    PDF_AVAILABLE = False
 
 # =========================================================
 # ⚙️ 설정
@@ -144,14 +150,21 @@ def split_text_smartly(text, chunk_size=1000):
     
     return chunks
 
-# [추가] PDF 텍스트 추출 함수
+# [수정] PDF 추출 함수 (라이브러리가 있을 때만 작동)
 def extract_text_from_pdf(pdf_file):
+    if not PDF_AVAILABLE:
+        return "PDF 라이브러리가 설치되지 않았습니다."
+    
     text_content = ""
-    with pdfplumber.open(pdf_file) as pdf:
-        for page in pdf.pages:
-            extracted = page.extract_text()
-            if extracted:
-                text_content += extracted + "\n"
+    try:
+        with pdfplumber.open(pdf_file) as pdf:
+            for page in pdf.pages:
+                extracted = page.extract_text()
+                if extracted:
+                    text_content += extracted + "\n"
+    except Exception as e:
+        return f"PDF 읽기 오류: {str(e)}"
+        
     return text_content
 
 def get_analysis_hybrid(text, sheet_data, mode_key):
@@ -370,20 +383,25 @@ with st.sidebar:
                 st.caption(f"{h['timestamp'][:10]} [{h['action']}] {h['original_word']} -> {h['root_word']}")
         else: st.caption("이력이 없습니다.")
 
-# [추가] PDF 업로드 기능
+# [수정] PDF 기능 안전 처리 (라이브러리 없으면 버튼 안 보임)
 col1, col2 = st.columns([4, 1])
 with col1:
-    st.subheader("📄 텍스트 입력 또는 PDF 업로드")
-    uploaded_pdf = st.file_uploader("교과서 PDF 파일을 드래그하거나 선택하세요", type=['pdf'])
+    st.subheader("📄 텍스트 입력")
     
     extracted_text = ""
-    if uploaded_pdf:
-        with st.spinner("PDF에서 글자를 읽어오는 중입니다..."):
-            try:
+    
+    # PDF_AVAILABLE이 True일 때만 업로더 표시
+    if PDF_AVAILABLE:
+        uploaded_pdf = st.file_uploader("교과서 PDF 파일을 드래그하거나 선택하세요", type=['pdf'])
+        if uploaded_pdf:
+            with st.spinner("PDF에서 글자를 읽어오는 중입니다..."):
                 extracted_text = extract_text_from_pdf(uploaded_pdf)
-                st.success(f"✅ PDF 읽기 성공! (총 {len(extracted_text)}자)")
-            except Exception as e:
-                st.error(f"❌ PDF 읽기 실패: {e}")
+                if "오류" not in extracted_text:
+                    st.success(f"✅ PDF 읽기 성공! (총 {len(extracted_text)}자)")
+                else:
+                    st.error(extracted_text)
+    else:
+        st.warning("⚠️ PDF 자동 추출 기능을 사용하려면 'pdfplumber' 라이브러리 설치가 필요합니다. (현재는 텍스트 직접 입력만 가능)")
 
     # value에 extracted_text를 넣어 PDF가 있으면 내용 자동 채움
     input_text = st.text_area(
@@ -394,7 +412,7 @@ with col1:
     )
 
 with col2:
-    st.write("") # 줄맞춤용 공백
+    st.write("") 
     st.write("") 
     st.write("") 
     st.write("") 
