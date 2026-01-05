@@ -11,7 +11,7 @@ from collections import Counter
 from datetime import datetime
 import time
 
-# [안전 장치] 라이브러리 부재 시 프로그램 보호
+# [안전 장치 1] 라이브러리 부재 시 프로그램 멈춤 방지
 try:
     import pdfplumber
     PDF_AVAILABLE = True
@@ -25,7 +25,7 @@ try:
     if "GEMINI_API_KEY" in st.secrets:
         API_KEY = st.secrets["GEMINI_API_KEY"]
     else:
-        API_KEY = "AIzaSyCC6oyL7POpbWq2FZrJ2zIJuiosupFQZYk" 
+        API_KEY = "AIzaSyCC6oyL7POpbWq2FZrJ2zIJuiosupFQZYk"
 except:
     API_KEY = "AIzaSyCC6oyL7POpbWq2FZrJ2zIJuiosupFQZYk"
 
@@ -150,49 +150,38 @@ def split_text_smartly(text, chunk_size=1000):
     
     return chunks
 
-# [핵심] PDF 추출 함수 고도화 (구간 설정 + 상하단 여백 제외)
-def extract_text_from_pdf(pdf_file, start_page=1, end_page=None):
+# [핵심] 1쪽 단위 추출 + 상/하단 크롭핑 (쪽수/머리말 제거)
+def extract_text_from_page(pdf_file, page_index):
     if not PDF_AVAILABLE:
-        return "PDF 라이브러리가 설치되지 않았습니다.", 0
+        return "PDF 라이브러리가 설치되지 않았습니다."
     
     text_content = ""
-    total_pages = 0
-    
     try:
         with pdfplumber.open(pdf_file) as pdf:
-            total_pages = len(pdf.pages)
+            # 인덱스 범위 체크
+            if page_index < 0 or page_index >= len(pdf.pages):
+                return ""
             
-            # 범위 보정 (사용자가 잘못 입력해도 에러 안 나게)
-            if end_page is None or end_page > total_pages:
-                end_page = total_pages
-            if start_page < 1: start_page = 1
+            page = pdf.pages[page_index]
+            width = page.width
+            height = page.height
             
-            # 페이지 순회 (Python은 0부터 시작하므로 -1 처리)
-            for i in range(start_page - 1, end_page):
-                page = pdf.pages[i]
+            # 상단 10%, 하단 10% 제거 (본문만 남김)
+            crop_box = (0, height * 0.1, width, height * 0.9)
+            
+            try:
+                cropped_page = page.crop(crop_box)
+                extracted = cropped_page.extract_text()
+            except:
+                extracted = page.extract_text() # 크롭 실패시 원본
+            
+            if extracted:
+                text_content = extracted
                 
-                # [스마트 전처리] 상단 10%, 하단 10% 제외하고 본문만 크롭
-                width = page.width
-                height = page.height
-                # crop_box = (x0, top, x1, bottom)
-                # 상단 50px, 하단 50px 정도를 제외 (비율로 10% 설정 시 본문 날아갈 위험 방지)
-                # 안전하게 상하단 5% 정도만 잘라냄
-                crop_box = (0, height * 0.05, width, height * 0.95)
-                
-                try:
-                    cropped_page = page.crop(crop_box)
-                    extracted = cropped_page.extract_text()
-                except:
-                    # 크롭 실패 시(페이지가 너무 작을 때) 원본 사용
-                    extracted = page.extract_text()
-                
-                if extracted:
-                    text_content += extracted + "\n"
-                    
     except Exception as e:
-        return f"PDF 읽기 오류: {str(e)}", 0
+        return f"PDF 읽기 오류: {str(e)}"
         
-    return text_content, total_pages
+    return text_content
 
 def get_analysis_hybrid(text, sheet_data, mode_key):
     learning_prompt = generate_prompt_from_sheet(sheet_data)
@@ -213,6 +202,7 @@ def get_analysis_hybrid(text, sheet_data, mode_key):
         - 국립국어원 표준 맞춤법과 두음법칙을 준수하세요.
         """
 
+    # [핵심] 동음이의어 구분 지침 추가 (태깅 시스템)
     base_instruction = f"""
     {role_definition}
     {mode_instruction}
@@ -220,6 +210,11 @@ def get_analysis_hybrid(text, sheet_data, mode_key):
     [핵심 작성 규칙]
     - original_word: 문장에서 **실제로 쓰인 형태 그대로(활용형 포함)** 적으세요. (예: '먹었습니다' -> '먹었습니다')
     - root_word: 사전에 등재된 **기본형(원형)**으로 적으세요.
+    
+    [동음이의어 구분 규칙 - 매우 중요!]
+    - **사람 이름(인명)**인 경우: 원형 뒤에 **(이름)**을 붙이세요. (예: '지혜가 왔다' -> '지혜(이름)')
+    - **지명(장소)**인 경우: 원형 뒤에 **(지명)**을 붙이세요. (예: '서울로 갔다' -> '서울(지명)')
+    - 그 외 동음이의어가 명확하면 괄호로 뜻을 구분하세요. (예: '배를 탔다' -> '배(교통)', '배를 먹었다' -> '배(과일)')
     
     [분석 3단계 우선순위]
     1. [최우선] 사용자 학습 규칙(위쪽 내용)이 있다면 무조건 따르세요.
@@ -349,6 +344,12 @@ if 'excel_buffer' not in st.session_state:
 if 'master_df' not in st.session_state:
     st.session_state.master_df = None
 
+# PDF 관련 상태 관리
+if 'pdf_file' not in st.session_state: st.session_state.pdf_file = None
+if 'total_pages' not in st.session_state: st.session_state.total_pages = 0
+if 'current_page_idx' not in st.session_state: st.session_state.current_page_idx = 0 # 0부터 시작
+if 'user_page_num' not in st.session_state: st.session_state.user_page_num = "1" # 사용자가 입력하는 쪽수
+
 uploaded_df = None
 
 with st.sidebar:
@@ -410,57 +411,66 @@ with st.sidebar:
                 st.caption(f"{h['timestamp'][:10]} [{h['action']}] {h['original_word']} -> {h['root_word']}")
         else: st.caption("이력이 없습니다.")
 
-# [핵심 변경] PDF 업로드 및 구간 선택 UI
-col1, col2 = st.columns([4, 1])
-with col1:
-    st.subheader("📄 텍스트 입력")
-    
-    extracted_text = ""
-    
-    # PDF 파일 상태 저장을 위한 세션
-    if 'pdf_file' not in st.session_state: st.session_state.pdf_file = None
-    if 'total_pages' not in st.session_state: st.session_state.total_pages = 0
+# [UI] 메인 화면 구성
+col1, col2 = st.columns([3, 1])
 
+extracted_text = ""
+    
+with col1:
+    st.subheader("📄 텍스트 입력 및 PDF 뷰어")
+    
     if PDF_AVAILABLE:
-        uploaded_pdf = st.file_uploader("교과서 PDF 파일을 드래그하거나 선택하세요", type=['pdf'], key='pdf_uploader')
-        
-        # 파일이 새로 업로드되면 정보 업데이트
-        if uploaded_pdf:
+        # 파일이 바뀔 때마다 초기화
+        uploaded_pdf = st.file_uploader("교과서 PDF 파일 (1쪽 단위 자동 분석)", type=['pdf'], key='pdf_uploader')
+        if uploaded_pdf and uploaded_pdf != st.session_state.pdf_file:
             st.session_state.pdf_file = uploaded_pdf
-            # 전체 페이지 수만 가볍게 읽기 (메타데이터)
+            st.session_state.current_page_idx = 0
+            st.session_state.user_page_num = "1"
+            st.session_state.analysis_result = None
             try:
                 with pdfplumber.open(uploaded_pdf) as pdf:
                     st.session_state.total_pages = len(pdf.pages)
             except: pass
-        
-        if st.session_state.total_pages > 0:
-            st.info(f"📚 총 {st.session_state.total_pages}쪽짜리 PDF가 로드되었습니다.")
+            st.rerun()
             
-            # 구간 선택 UI (가로 배치)
-            c1, c2, c3 = st.columns([1, 1, 2])
-            with c1:
-                start_p = st.number_input("시작 쪽", min_value=1, max_value=st.session_state.total_pages, value=1)
-            with c2:
-                end_p = st.number_input("끝 쪽", min_value=start_p, max_value=st.session_state.total_pages, value=min(start_p+4, st.session_state.total_pages))
-            with c3:
-                st.write("") # 줄맞춤
-                st.write("")
-                if st.button("📖 이 구간만 텍스트 추출", use_container_width=True):
-                    with st.spinner(f"{start_p}~{end_p}쪽 텍스트를 읽어오는 중..."):
-                        extracted_text, _ = extract_text_from_pdf(st.session_state.pdf_file, start_p, end_p)
-                        if "오류" in extracted_text:
-                            st.error(extracted_text)
-                        else:
-                            st.toast(f"✅ {start_p}~{end_p}쪽 추출 완료!", icon="📄")
+        if st.session_state.pdf_file and st.session_state.total_pages > 0:
+            # 네비게이션 UI
+            c_prev, c_info, c_next = st.columns([1, 2, 1])
+            with c_prev:
+                if st.button("◀ 이전 장"):
+                    if st.session_state.current_page_idx > 0:
+                        st.session_state.current_page_idx -= 1
+                        st.session_state.analysis_result = None # 페이지 이동 시 결과 초기화
+                        try:
+                            # 쪽수 추정 (현재 인덱스 + 1)
+                            st.session_state.user_page_num = str(st.session_state.current_page_idx + 1)
+                        except: pass
+                        st.rerun()
+            with c_next:
+                if st.button("다음 장 ▶"):
+                    if st.session_state.current_page_idx < st.session_state.total_pages - 1:
+                        st.session_state.current_page_idx += 1
+                        st.session_state.analysis_result = None
+                        try:
+                            st.session_state.user_page_num = str(st.session_state.current_page_idx + 1)
+                        except: pass
+                        st.rerun()
+            with c_info:
+                st.markdown(f"<div style='text-align:center; padding-top:10px;'><b>PDF {st.session_state.current_page_idx + 1} / {st.session_state.total_pages} 번째 장</b></div>", unsafe_allow_html=True)
+            
+            # 텍스트 자동 추출
+            extracted_text = extract_text_from_page(st.session_state.pdf_file, st.session_state.current_page_idx)
+            if "오류" in extracted_text: st.error(extracted_text)
+            
     else:
         st.warning("⚠️ PDF 자동 추출 기능을 사용하려면 'pdfplumber' 라이브러리 설치가 필요합니다.")
 
-    # 텍스트 에디터 (수정 가능)
+    # 텍스트 에디터 (자동 채움)
     input_text = st.text_area(
-        "분석할 문장을 입력하세요", 
+        "분석할 텍스트 (직접 수정 가능)", 
         value=extracted_text if extracted_text else "",
         height=300, 
-        placeholder="PDF에서 추출된 텍스트가 여기에 나타납니다. 직접 수정할 수도 있습니다."
+        placeholder="직접 입력하거나 PDF를 업로드하면 내용이 나타납니다."
     )
 
 with col2:
@@ -468,10 +478,17 @@ with col2:
     st.write("") 
     st.write("") 
     st.write("") 
-    # 쪽수 입력 자동화 (PDF 구간과 연동하고 싶다면 여기서 value를 start_p로 바꿀 수도 있음)
-    page_num = st.text_input("대표 쪽수", value="1")
-    analyze_btn = st.button("🚀 분석 실행", use_container_width=True)
+    
+    st.markdown("##### ⚙️ 저장 설정")
+    # 사용자가 직접 수정 가능한 실제 쪽수
+    user_page_val = st.text_input("저장될 실제 쪽수", value=st.session_state.user_page_num, key="page_input")
+    # 입력값이 바뀌면 세션에 업데이트
+    if user_page_val != st.session_state.user_page_num:
+        st.session_state.user_page_num = user_page_val
+    
+    analyze_btn = st.button("🚀 분석 실행", use_container_width=True, type="primary")
 
+# 분석 로직
 if analyze_btn and input_text:
     with st.spinner(f"{mode_selection} 모드로 분석 중입니다..."):
         raw_results = get_analysis_hybrid(input_text, sheet_data, MODE_KEY)
@@ -488,7 +505,10 @@ if analyze_btn and input_text:
                 root = item.get('root_word', '')
                 pos = item.get('pos', '')
                 
-                if original not in validation_text: pass 
+                # 태깅된 단어 (예: 지혜(이름))는 원본 검증 시 태그 떼고 검사
+                orig_check = original.split('(')[0]
+                if orig_check not in validation_text: pass 
+                
                 if not pos or pos not in POS_WHITELIST: continue
                 if original in blacklist or root in blacklist: continue
                 
@@ -538,6 +558,7 @@ if analyze_btn and input_text:
             st.session_state.analysis_result = final_results
         else: pass
 
+# 결과 및 투 트랙 저장 버튼
 if st.session_state.analysis_result:
     st.markdown("### 📊 분석 결과 (수정 및 삭제)")
     
@@ -563,10 +584,11 @@ if st.session_state.analysis_result:
         key="editor"
     )
     
-    col_del, col_save = st.columns([1, 4])
+    # 하단 버튼 영역 (삭제 / 투 트랙 저장)
+    btn_col1, btn_col2, btn_col3 = st.columns([1, 2, 2])
     
-    with col_del:
-        if st.button("⛔ 체크한 단어 삭제 및 학습", type="secondary"):
+    with btn_col1:
+        if st.button("⛔ 체크 삭제", type="secondary"):
             to_delete = edited_df[edited_df['delete_check'] == True]
             if not to_delete.empty:
                 if sheet:
@@ -575,106 +597,115 @@ if st.session_state.analysis_result:
                         for _, row in to_delete.iterrows():
                             rows_to_add.append([
                                 datetime.now().isoformat(),
-                                row['original_word'], 
-                                row['root_word'],
-                                "", "", 'delete', input_text
+                                row['original_word'], row['root_word'], "", "", 'delete', input_text
                             ])
                         sheet.append_rows(rows_to_add)
-                        st.toast(f"🗑️ 삭제 학습 완료! ({MODE_KEY} 학습데이터에 기록)", icon="✅")
+                        st.toast(f"🗑️ 삭제 학습 완료!", icon="✅")
                         remaining = edited_df[edited_df['delete_check'] == False].to_dict('records')
                         st.session_state.analysis_result = remaining
                         time.sleep(1)
                         st.rerun()
-                    except Exception as e:
-                        st.error(f"삭제 오류: {e}")
+                    except: st.error("삭제 오류")
+
+    # 공통 저장 함수
+    def save_logic(df_to_save, page_str):
+        final_data = df_to_save[df_to_save['delete_check'] == False].to_dict('records')
+        base_df = st.session_state.master_df
+        if base_df is None:
+             base_df = pd.DataFrame(columns=['구분', '자료', '출연횟수'])
+        for c in base_df.columns:
+            if '쪽수' in c: base_df[c] = base_df[c].astype(object)
+        
+        new_rows = []
+        learning_logs = []
+        saved_roots = set()
+
+        for item in final_data:
+            item['origin'] = clean_value_for_save(item['origin'])
+            item['pos'] = clean_value_for_save(item['pos'])
+            
+            learning_logs.append({
+                'timestamp': datetime.now().isoformat(),
+                'original_word': item['original_word'], 
+                'root_word': item['root_word'],
+                'origin': item['origin'],
+                'pos': item['pos'],
+                'action': 'modify',
+                'context': input_text
+            })
+            
+            root = item['root_word']
+            if root in saved_roots: continue
+            saved_roots.add(root)
+            
+            try: cnt = int(str(item['count']).replace('회',''))
+            except: cnt = 1
+            
+            val = f"{page_str}_{cnt}" if cnt > 1 else page_str
+            origin_val = item.get('origin', '고')
+            
+            if root in base_df['자료'].values:
+                idx = base_df[base_df['자료'] == root].index[0]
+                filled = base_df.loc[idx].filter(like='쪽수').notna().sum()
+                col = f"쪽수{filled+1}"
+                if col not in base_df.columns: base_df[col] = float('nan')
+                base_df.at[idx, col] = val
             else:
-                st.toast("삭제할 단어를 체크해주세요.", icon="⚠️")
+                new_rows.append({'구분': origin_val, '자료': root, '쪽수1': val})
+        
+        if new_rows:
+            base_df = pd.concat([base_df, pd.DataFrame(new_rows)], ignore_index=True)
+        
+        base_df['출연횟수'] = base_df.apply(calculate_total_appearances, axis=1)
+        base_df['sort'] = base_df['구분'].map({'고':1, '순':1, '한':2, '외':3, '혼':4}).fillna(5)
+        base_df = base_df.sort_values(['sort', '자료']).drop('sort', axis=1)
+        st.session_state.master_df = base_df
+        
+        output_excel = io.BytesIO()
+        with pd.ExcelWriter(output_excel, engine='openpyxl') as writer:
+            base_df.to_excel(writer, index=False)
+        output_excel.seek(0)
+        st.session_state.excel_buffer = output_excel
 
-    st.markdown("---")
-    
-    with col_save:
-        if st.button("💾 엑셀에 저장 (누적 저장)", type="primary"):
+        if sheet and learning_logs:
             try:
-                final_data = edited_df[edited_df['delete_check'] == False].to_dict('records')
-                
-                base_df = st.session_state.master_df
-                if base_df is None:
-                     base_df = pd.DataFrame(columns=['구분', '자료', '출연횟수'])
+                rows_to_add = [list(log.values()) for log in learning_logs]
+                sheet.append_rows(rows_to_add)
+            except: pass
+        return True
 
-                for c in base_df.columns:
-                    if '쪽수' in c: base_df[c] = base_df[c].astype(object)
-                    
-                new_rows = []
-                saved_roots = set() 
-                learning_logs = []
-
-                for item in final_data:
-                    item['origin'] = clean_value_for_save(item['origin'])
-                    item['pos'] = clean_value_for_save(item['pos'])
-                    
-                    learning_logs.append({
-                        'timestamp': datetime.now().isoformat(),
-                        'original_word': item['original_word'], 
-                        'root_word': item['root_word'],
-                        'origin': item['origin'],
-                        'pos': item['pos'],
-                        'action': 'modify',
-                        'context': input_text
-                    })
-                    
-                    root = item['root_word']
-                    if root in saved_roots: continue
-                    saved_roots.add(root)
-                    
+    with btn_col2:
+        # 투 트랙 1: 저장하고 계속하기 (고속 모드)
+        if st.button("💾 저장하고 다음 쪽(▶) 이동", type="primary", use_container_width=True):
+            if save_logic(edited_df, st.session_state.user_page_num):
+                # 페이지 넘김 로직
+                if st.session_state.current_page_idx < st.session_state.total_pages - 1:
+                    st.session_state.current_page_idx += 1
+                    # 쪽수도 +1
                     try:
-                        cnt = int(str(item['count']).replace('회',''))
-                    except: cnt = 1
-                    
-                    val = f"{page_num}_{cnt}" if cnt > 1 else page_num
-                    origin_val = item.get('origin', '고')
-                    
-                    if root in base_df['자료'].values:
-                        idx = base_df[base_df['자료'] == root].index[0]
-                        filled = base_df.loc[idx].filter(like='쪽수').notna().sum()
-                        col = f"쪽수{filled+1}"
-                        if col not in base_df.columns: base_df[col] = float('nan')
-                        base_df.at[idx, col] = val
-                    else:
-                        new_rows.append({'구분': origin_val, '자료': root, '쪽수1': val})
-                
-                if new_rows:
-                    base_df = pd.concat([base_df, pd.DataFrame(new_rows)], ignore_index=True)
-                
-                base_df['출연횟수'] = base_df.apply(calculate_total_appearances, axis=1)
-                base_df['sort'] = base_df['구분'].map({'고':1, '순':1, '한':2, '외':3, '혼':4}).fillna(5)
-                base_df = base_df.sort_values(['sort', '자료']).drop('sort', axis=1)
-                
-                st.session_state.master_df = base_df
-                
-                output_excel = io.BytesIO()
-                with pd.ExcelWriter(output_excel, engine='openpyxl') as writer:
-                    base_df.to_excel(writer, index=False)
-                output_excel.seek(0)
-                
-                st.session_state.excel_buffer = output_excel
-                
-                if sheet and learning_logs:
-                    try:
-                        rows_to_add = [list(log.values()) for log in learning_logs]
-                        sheet.append_rows(rows_to_add)
-                        st.toast(f"✅ 학습 완료: {len(rows_to_add)}건 저장됨. ({MODE_KEY})", icon="🧠")
-                    except Exception as e: pass
-                
-                st.success("✅ 누적 저장 완료! 바로 아래 [다운로드] 버튼을 눌러주세요.")
+                        curr_p = int(st.session_state.user_page_num)
+                        st.session_state.user_page_num = str(curr_p + 1)
+                    except: pass
+                    st.session_state.analysis_result = None # 결과 초기화
+                    st.toast("✅ 저장 완료! 다음 장으로 이동했습니다.", icon="🏃")
+                    time.sleep(1)
+                    st.rerun()
+                else:
+                    st.success("마지막 페이지입니다! 다운로드를 이용하세요.")
 
-            except Exception as e:
-                st.error(f"❌ 저장 중 오류 발생: {e}")
+    with btn_col3:
+        # 투 트랙 2: 저장만 하기 (종료/다운로드 모드)
+        if st.button("💾 저장만 하기 (종료)", use_container_width=True):
+            if save_logic(edited_df, st.session_state.user_page_num):
+                st.success("✅ 저장되었습니다. 아래 버튼으로 엑셀을 받으세요.")
 
-        if st.session_state.excel_buffer:
-            st.download_button(
-                label="📥 엑셀파일 다운로드하기 (전체 내용)",
-                data=st.session_state.excel_buffer,
-                file_name="국어활동_분석결과_통합.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                type="secondary"
-            )
+    # 다운로드 버튼 (저장 후 버퍼가 있을 때만 표시)
+    if st.session_state.excel_buffer:
+        st.download_button(
+            label="📥 엑셀파일 다운로드",
+            data=st.session_state.excel_buffer,
+            file_name="국어활동_분석결과_통합.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="secondary",
+            use_container_width=True
+        )
