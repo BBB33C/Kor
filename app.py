@@ -121,43 +121,24 @@ def api_call_direct(prompt):
         st.error(f"❌ 서버 통신 오류: {e}")
         return None
 
-# [이미지 OCR 호출]
 def api_call_vision_ocr(image_bytes):
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={API_KEY.strip()}"
     headers = {'Content-Type': 'application/json'}
-    
     base64_image = base64.b64encode(image_bytes).decode('utf-8')
-    
     prompt_text = """
     이 이미지에 있는 텍스트를 보이는 그대로 추출해주세요.
     - 북한 문화어 표기(두음법칙 미적용 등)가 있다면 수정하지 말고 그대로 적으세요.
     - 페이지의 머리말이나 쪽수 번호는 제외하고 본문 내용만 적으세요.
     - 문단 구분은 줄바꿈으로 해주세요.
     """
-    
-    data = {
-        "contents": [{
-            "parts": [
-                {"text": prompt_text},
-                {"inline_data": {
-                    "mime_type": "image/png",
-                    "data": base64_image
-                }}
-            ]
-        }],
-        "generationConfig": {"temperature": 0.1}
-    }
-    
+    data = {"contents": [{"parts": [{"text": prompt_text}, {"inline_data": {"mime_type": "image/png", "data": base64_image}}]}], "generationConfig": {"temperature": 0.1}}
     try:
         response = requests.post(url, headers=headers, json=data, timeout=300)
-        if response.status_code != 200:
-            return f"OCR 실패: {response.text}"
+        if response.status_code != 200: return f"OCR 실패: {response.text}"
         result_json = response.json()
-        if 'candidates' in result_json:
-            return result_json['candidates'][0]['content']['parts'][0]['text']
+        if 'candidates' in result_json: return result_json['candidates'][0]['content']['parts'][0]['text']
         return "텍스트를 찾을 수 없습니다."
-    except Exception as e:
-        return f"OCR 통신 오류: {e}"
+    except Exception as e: return f"OCR 통신 오류: {e}"
 
 try:
     from konlpy.tag import Okt
@@ -186,20 +167,13 @@ def split_text_smartly(text, chunk_size=1000):
     if current_chunk: chunks.append(current_chunk.strip())
     return chunks
 
-# [핵심 변경] PDF/이미지 통합 추출기
+# PDF/이미지 통합 추출기
 def extract_text_unified(file_obj, page_index):
     file_type = file_obj.type
-    
-    # 1. 이미지 파일인 경우 (JPG, PNG 등) -> 바로 Vision API로 보냄
     if "image" in file_type:
-        try:
-            return api_call_vision_ocr(file_obj.getvalue())
-        except Exception as e:
-            return f"이미지 읽기 오류: {e}"
-
-    # 2. PDF 파일인 경우 -> 기존 로직 (Plumber -> Fitz -> Vision)
+        try: return api_call_vision_ocr(file_obj.getvalue())
+        except Exception as e: return f"이미지 읽기 오류: {e}"
     elif "pdf" in file_type:
-        # (A) 텍스트 레이어 시도
         if PLUMBER_AVAILABLE:
             try:
                 with pdfplumber.open(file_obj) as pdf:
@@ -211,8 +185,6 @@ def extract_text_unified(file_obj, page_index):
                     except: text = page.extract_text()
                     if text and len(text.strip()) > 30: return text
             except: pass
-
-        # (B) 스캔본(이미지) 시도
         if FITZ_AVAILABLE:
             try:
                 doc = fitz.open(stream=file_obj.getvalue(), filetype="pdf")
@@ -223,10 +195,23 @@ def extract_text_unified(file_obj, page_index):
                 pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), clip=clip_rect)
                 return api_call_vision_ocr(pix.tobytes("png"))
             except Exception as e: return f"PDF 변환 오류: {e}"
-        
         return "PDF를 읽을 수 없습니다. (라이브러리 설치 확인 필요)"
-    
     return "지원하지 않는 파일 형식입니다."
+
+# [신규] 미리보기용 이미지 생성 함수
+def get_page_image(file_obj, page_index):
+    file_type = file_obj.type
+    if "image" in file_type:
+        return file_obj # 이미지는 그대로 반환
+    elif "pdf" in file_type and FITZ_AVAILABLE:
+        try:
+            doc = fitz.open(stream=file_obj.getvalue(), filetype="pdf")
+            if page_index < 0 or page_index >= len(doc): return None
+            page = doc[page_index]
+            pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5)) # 해상도 적당히
+            return pix.tobytes("png")
+        except: return None
+    return None
 
 def get_analysis_hybrid(text, sheet_data, mode_key):
     learning_prompt = generate_prompt_from_sheet(sheet_data)
@@ -266,18 +251,13 @@ def get_analysis_hybrid(text, sheet_data, mode_key):
     
     형식: [{{"original_word": "...", "root_word": "...", "origin": "고", "pos": "명사"}}]
     """
-    
     chunks = split_text_smartly(text)
     all_results = []
-    
     for i, chunk in enumerate(chunks):
         if not chunk.strip(): continue
         keywords = preprocess_with_morphology(chunk)
-        if keywords:
-            prompt = f"""{learning_prompt}\n{base_instruction}\n문장: "{chunk}"\n힌트: {', '.join(keywords)}"""
-        else:
-            prompt = f"""{learning_prompt}\n{base_instruction}\n문장: "{chunk}" """
-        
+        if keywords: prompt = f"""{learning_prompt}\n{base_instruction}\n문장: "{chunk}"\n힌트: {', '.join(keywords)}"""
+        else: prompt = f"""{learning_prompt}\n{base_instruction}\n문장: "{chunk}" """
         chunk_result = api_call_direct(prompt)
         if chunk_result: all_results.extend(chunk_result)
         time.sleep(0.1)
@@ -291,8 +271,7 @@ def calculate_total_appearances(row):
             if '_' in val:
                 try: total += int(val.split('_')[1])
                 except: total += 1
-            elif val != 'nan' and val != '':
-                total += 1
+            elif val != 'nan' and val != '': total += 1
     return total
 
 def add_emoji_to_origin(val):
@@ -336,8 +315,7 @@ def get_blacklist_from_sheet(sheet_data):
 def load_excel_safely(file):
     try:
         df = pd.read_excel(file)
-        if '자료' in df.columns and '출연횟수' in df.columns:
-            return df
+        if '자료' in df.columns and '출연횟수' in df.columns: return df
         return None
     except: return None
 
@@ -371,6 +349,7 @@ if 'uploaded_file' not in st.session_state: st.session_state.uploaded_file = Non
 if 'total_pages' not in st.session_state: st.session_state.total_pages = 0
 if 'current_page_idx' not in st.session_state: st.session_state.current_page_idx = 0
 if 'user_page_num' not in st.session_state: st.session_state.user_page_num = "1"
+if 'start_page_offset' not in st.session_state: st.session_state.start_page_offset = 1 # [신규] 시작 쪽수 설정
 
 uploaded_df = None
 with st.sidebar:
@@ -413,16 +392,13 @@ with st.sidebar:
             for h in history[-3:]:
                 st.caption(f"{h['timestamp'][:10]} [{h['action']}] {h['original_word']} -> {h['root_word']}")
 
-# [메인 UI] PDF & 이미지 업로더
-col1, col2 = st.columns([3, 1])
-extracted_text = ""
+# [상단 UI] 파일 업로드 및 설정 (전체 너비 사용)
+st.subheader("📄 파일 분석 (PDF 또는 이미지)")
 
-with col1:
-    st.subheader("📄 파일 분석 (PDF 또는 이미지)")
-    
-    # [수정] type에 이미지 확장자 추가
+col_up, col_set = st.columns([3, 1])
+with col_up:
     uploaded_file = st.file_uploader(
-        "교과서 파일 (PDF는 1쪽 단위, 이미지는 자동 분석)", 
+        "교과서 파일 업로드", 
         type=['pdf', 'png', 'jpg', 'jpeg'], 
         key='file_uploader'
     )
@@ -430,77 +406,100 @@ with col1:
     if uploaded_file and uploaded_file != st.session_state.uploaded_file:
         st.session_state.uploaded_file = uploaded_file
         st.session_state.current_page_idx = 0
-        st.session_state.user_page_num = "1"
         st.session_state.analysis_result = None
+        st.session_state.start_page_offset = 1 # 파일 바뀌면 초기화
         
-        # 파일 타입에 따른 초기화
         file_type = uploaded_file.type
         if "pdf" in file_type:
             try:
-                # PDF는 페이지 수 계산
                 if PLUMBER_AVAILABLE:
-                    with pdfplumber.open(uploaded_file) as pdf:
-                        st.session_state.total_pages = len(pdf.pages)
+                    with pdfplumber.open(uploaded_file) as pdf: st.session_state.total_pages = len(pdf.pages)
                 elif FITZ_AVAILABLE:
                     doc = fitz.open(stream=uploaded_file.getvalue(), filetype="pdf")
                     st.session_state.total_pages = len(doc)
             except: pass
         else:
-            # 이미지는 1페이지로 고정
             st.session_state.total_pages = 1
-            
         st.rerun()
-        
-    if st.session_state.uploaded_file:
-        # 네비게이션은 PDF이고 페이지가 2장 이상일 때만 표시
-        is_pdf = "pdf" in st.session_state.uploaded_file.type
-        if is_pdf and st.session_state.total_pages > 1:
-            c_prev, c_info, c_next = st.columns([1, 2, 1])
-            with c_prev:
-                if st.button("◀ 이전 장"):
-                    if st.session_state.current_page_idx > 0:
-                        st.session_state.current_page_idx -= 1
-                        st.session_state.analysis_result = None
-                        try: st.session_state.user_page_num = str(st.session_state.current_page_idx + 1)
-                        except: pass
-                        st.rerun()
-            with c_next:
-                if st.button("다음 장 ▶"):
-                    if st.session_state.current_page_idx < st.session_state.total_pages - 1:
-                        st.session_state.current_page_idx += 1
-                        st.session_state.analysis_result = None
-                        try: st.session_state.user_page_num = str(st.session_state.current_page_idx + 1)
-                        except: pass
-                        st.rerun()
-            with c_info:
-                st.markdown(f"<div style='text-align:center; padding-top:10px;'><b>PDF {st.session_state.current_page_idx + 1} / {st.session_state.total_pages} 번째 장</b></div>", unsafe_allow_html=True)
-        elif not is_pdf:
-            st.info("📷 이미지 파일이 로드되었습니다 (총 1장)")
 
-        # 추출 실행
-        with st.spinner("내용을 읽어오는 중입니다..."):
+with col_set:
+    # [신규] 시작 쪽수 설정 (3번 요구사항)
+    if st.session_state.uploaded_file and "pdf" in st.session_state.uploaded_file.type:
+        st.write("") # 줄맞춤
+        new_offset = st.number_input("교과서 시작 쪽수", min_value=1, value=st.session_state.start_page_offset, help="PDF의 첫 번째 장이 실제 교과서 몇 쪽인지 설정하세요.")
+        if new_offset != st.session_state.start_page_offset:
+            st.session_state.start_page_offset = new_offset
+            # 오프셋이 바뀌면 현재 쪽수 표기도 업데이트
+            st.session_state.user_page_num = str(st.session_state.current_page_idx + new_offset)
+            st.rerun()
+    else:
+        st.session_state.start_page_offset = 1
+
+# [메인 UI] 좌우 분할 뷰 (1번 요구사항)
+extracted_text = ""
+
+if st.session_state.uploaded_file:
+    # 쪽수 계산 (오프셋 적용)
+    calc_page_num = st.session_state.current_page_idx + st.session_state.start_page_offset
+    st.session_state.user_page_num = str(calc_page_num)
+
+    # 네비게이션
+    if "pdf" in st.session_state.uploaded_file.type and st.session_state.total_pages > 1:
+        c_prev, c_info, c_next = st.columns([1, 2, 1])
+        with c_prev:
+            if st.button("◀ 이전 장"):
+                if st.session_state.current_page_idx > 0:
+                    st.session_state.current_page_idx -= 1
+                    st.session_state.analysis_result = None
+                    st.rerun()
+        with c_next:
+            if st.button("다음 장 ▶"):
+                if st.session_state.current_page_idx < st.session_state.total_pages - 1:
+                    st.session_state.current_page_idx += 1
+                    st.session_state.analysis_result = None
+                    st.rerun()
+        with c_info:
+            st.markdown(f"<div style='text-align:center; padding-top:10px;'><b>PDF {st.session_state.current_page_idx + 1}/{st.session_state.total_pages}장 (교과서 {calc_page_num}쪽)</b></div>", unsafe_allow_html=True)
+
+    # [핵심] 좌우 분할 (이미지 vs 텍스트)
+    view_col1, view_col2 = st.columns([1, 1])
+    
+    with view_col1:
+        st.caption("📷 원본 미리보기")
+        page_img = get_page_image(st.session_state.uploaded_file, st.session_state.current_page_idx)
+        if page_img:
+            st.image(page_img, use_container_width=True)
+        else:
+            st.info("미리보기를 불러올 수 없습니다. (라이브러리 확인)")
+
+    with view_col2:
+        st.caption("📝 추출 텍스트 (수정 가능)")
+        with st.spinner("텍스트 읽는 중..."):
             extracted_text = extract_text_unified(st.session_state.uploaded_file, st.session_state.current_page_idx)
             if "오류" in extracted_text: st.error(extracted_text)
+            
+        input_text = st.text_area(
+            "분석 대상", 
+            value=extracted_text if extracted_text else "",
+            height=400,
+            label_visibility="collapsed"
+        )
+        
+        # 저장 설정 및 분석 버튼 (오른쪽 패널 하단)
+        col_p, col_b = st.columns([1, 2])
+        with col_p:
+            user_page_val = st.text_input("저장될 쪽수", value=st.session_state.user_page_num, key="final_page_input")
+            if user_page_val != st.session_state.user_page_num:
+                st.session_state.user_page_num = user_page_val
+        with col_b:
+            analyze_btn = st.button("🚀 분석 실행", use_container_width=True, type="primary")
 
-    input_text = st.text_area(
-        "분석할 텍스트 (직접 수정 가능)", 
-        value=extracted_text if extracted_text else "",
-        height=300, 
-        placeholder="직접 입력하거나 파일을 업로드하면 내용이 나타납니다."
-    )
+else:
+    st.info("👆 위에서 파일을 업로드해주세요.")
+    analyze_btn = False
+    input_text = ""
 
-with col2:
-    st.write("") 
-    st.write("") 
-    st.write("") 
-    st.write("") 
-    st.markdown("##### ⚙️ 저장 설정")
-    user_page_val = st.text_input("저장될 실제 쪽수", value=st.session_state.user_page_num, key="page_input")
-    if user_page_val != st.session_state.user_page_num:
-        st.session_state.user_page_num = user_page_val
-    analyze_btn = st.button("🚀 분석 실행", use_container_width=True, type="primary")
-
-# 분석 로직
+# 분석 로직 (기존과 동일)
 if analyze_btn and input_text:
     with st.spinner(f"{mode_selection} 모드로 분석 중입니다..."):
         raw_results = get_analysis_hybrid(input_text, sheet_data, MODE_KEY)
@@ -543,7 +542,9 @@ if analyze_btn and input_text:
                 
             st.session_state.analysis_result = final_results
 
+# 결과 화면 (분석 결과가 있을 때만 오른쪽 컬럼 아래에 표시)
 if st.session_state.analysis_result:
+    st.markdown("---")
     st.markdown("### 📊 분석 결과")
     df_display = pd.DataFrame(st.session_state.analysis_result)
     
@@ -626,14 +627,11 @@ if st.session_state.analysis_result:
         return True
 
     with btn_col2:
-        # 이미지는 다음 장 개념이 없으므로 저장 후 종료와 동일하게 처리하거나 알림 표시
         if st.button("💾 저장하고 다음 쪽(▶) 이동", type="primary", use_container_width=True):
             if save_logic(edited_df, st.session_state.user_page_num):
-                # PDF이고 다음 장이 있을 때만 이동
                 if "pdf" in st.session_state.uploaded_file.type and st.session_state.current_page_idx < st.session_state.total_pages - 1:
                     st.session_state.current_page_idx += 1
-                    try: st.session_state.user_page_num = str(int(st.session_state.user_page_num) + 1)
-                    except: pass
+                    # 쪽수 오프셋은 유지되므로 user_page_num 자동 계산됨
                     st.session_state.analysis_result = None
                     st.toast("✅ 저장 완료! 이동합니다.", icon="🏃")
                     time.sleep(1)
