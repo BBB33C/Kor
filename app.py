@@ -11,7 +11,7 @@ from collections import Counter
 from datetime import datetime
 import time
 
-# [안전 장치 추가] pdfplumber 라이브러리가 없어도 프로그램이 멈추지 않도록 처리
+# [안전 장치] 라이브러리 부재 시 프로그램 보호
 try:
     import pdfplumber
     PDF_AVAILABLE = True
@@ -25,7 +25,7 @@ try:
     if "GEMINI_API_KEY" in st.secrets:
         API_KEY = st.secrets["GEMINI_API_KEY"]
     else:
-        API_KEY = "AIzaSyCC6oyL7POpbWq2FZrJ2zIJuiosupFQZYk" # (비상용)
+        API_KEY = "AIzaSyCC6oyL7POpbWq2FZrJ2zIJuiosupFQZYk" 
 except:
     API_KEY = "AIzaSyCC6oyL7POpbWq2FZrJ2zIJuiosupFQZYk"
 
@@ -36,7 +36,7 @@ TRUST_THRESHOLD = 3
 st.set_page_config(page_title="국어활동 AI 분석기", page_icon="📝", layout="wide")
 
 # =========================================================
-# 🔐 구글 시트 연결 (이원화 및 학습 데이터 분리 적용)
+# 🔐 구글 시트 연결
 # =========================================================
 @st.cache_resource
 def get_google_sheet_client():
@@ -150,22 +150,49 @@ def split_text_smartly(text, chunk_size=1000):
     
     return chunks
 
-# [수정] PDF 추출 함수 (라이브러리가 있을 때만 작동)
-def extract_text_from_pdf(pdf_file):
+# [핵심] PDF 추출 함수 고도화 (구간 설정 + 상하단 여백 제외)
+def extract_text_from_pdf(pdf_file, start_page=1, end_page=None):
     if not PDF_AVAILABLE:
-        return "PDF 라이브러리가 설치되지 않았습니다."
+        return "PDF 라이브러리가 설치되지 않았습니다.", 0
     
     text_content = ""
+    total_pages = 0
+    
     try:
         with pdfplumber.open(pdf_file) as pdf:
-            for page in pdf.pages:
-                extracted = page.extract_text()
+            total_pages = len(pdf.pages)
+            
+            # 범위 보정 (사용자가 잘못 입력해도 에러 안 나게)
+            if end_page is None or end_page > total_pages:
+                end_page = total_pages
+            if start_page < 1: start_page = 1
+            
+            # 페이지 순회 (Python은 0부터 시작하므로 -1 처리)
+            for i in range(start_page - 1, end_page):
+                page = pdf.pages[i]
+                
+                # [스마트 전처리] 상단 10%, 하단 10% 제외하고 본문만 크롭
+                width = page.width
+                height = page.height
+                # crop_box = (x0, top, x1, bottom)
+                # 상단 50px, 하단 50px 정도를 제외 (비율로 10% 설정 시 본문 날아갈 위험 방지)
+                # 안전하게 상하단 5% 정도만 잘라냄
+                crop_box = (0, height * 0.05, width, height * 0.95)
+                
+                try:
+                    cropped_page = page.crop(crop_box)
+                    extracted = cropped_page.extract_text()
+                except:
+                    # 크롭 실패 시(페이지가 너무 작을 때) 원본 사용
+                    extracted = page.extract_text()
+                
                 if extracted:
                     text_content += extracted + "\n"
+                    
     except Exception as e:
-        return f"PDF 읽기 오류: {str(e)}"
+        return f"PDF 읽기 오류: {str(e)}", 0
         
-    return text_content
+    return text_content, total_pages
 
 def get_analysis_hybrid(text, sheet_data, mode_key):
     learning_prompt = generate_prompt_from_sheet(sheet_data)
@@ -383,32 +410,57 @@ with st.sidebar:
                 st.caption(f"{h['timestamp'][:10]} [{h['action']}] {h['original_word']} -> {h['root_word']}")
         else: st.caption("이력이 없습니다.")
 
-# [수정] PDF 기능 안전 처리 (라이브러리 없으면 버튼 안 보임)
+# [핵심 변경] PDF 업로드 및 구간 선택 UI
 col1, col2 = st.columns([4, 1])
 with col1:
     st.subheader("📄 텍스트 입력")
     
     extracted_text = ""
     
-    # PDF_AVAILABLE이 True일 때만 업로더 표시
-    if PDF_AVAILABLE:
-        uploaded_pdf = st.file_uploader("교과서 PDF 파일을 드래그하거나 선택하세요", type=['pdf'])
-        if uploaded_pdf:
-            with st.spinner("PDF에서 글자를 읽어오는 중입니다..."):
-                extracted_text = extract_text_from_pdf(uploaded_pdf)
-                if "오류" not in extracted_text:
-                    st.success(f"✅ PDF 읽기 성공! (총 {len(extracted_text)}자)")
-                else:
-                    st.error(extracted_text)
-    else:
-        st.warning("⚠️ PDF 자동 추출 기능을 사용하려면 'pdfplumber' 라이브러리 설치가 필요합니다. (현재는 텍스트 직접 입력만 가능)")
+    # PDF 파일 상태 저장을 위한 세션
+    if 'pdf_file' not in st.session_state: st.session_state.pdf_file = None
+    if 'total_pages' not in st.session_state: st.session_state.total_pages = 0
 
-    # value에 extracted_text를 넣어 PDF가 있으면 내용 자동 채움
+    if PDF_AVAILABLE:
+        uploaded_pdf = st.file_uploader("교과서 PDF 파일을 드래그하거나 선택하세요", type=['pdf'], key='pdf_uploader')
+        
+        # 파일이 새로 업로드되면 정보 업데이트
+        if uploaded_pdf:
+            st.session_state.pdf_file = uploaded_pdf
+            # 전체 페이지 수만 가볍게 읽기 (메타데이터)
+            try:
+                with pdfplumber.open(uploaded_pdf) as pdf:
+                    st.session_state.total_pages = len(pdf.pages)
+            except: pass
+        
+        if st.session_state.total_pages > 0:
+            st.info(f"📚 총 {st.session_state.total_pages}쪽짜리 PDF가 로드되었습니다.")
+            
+            # 구간 선택 UI (가로 배치)
+            c1, c2, c3 = st.columns([1, 1, 2])
+            with c1:
+                start_p = st.number_input("시작 쪽", min_value=1, max_value=st.session_state.total_pages, value=1)
+            with c2:
+                end_p = st.number_input("끝 쪽", min_value=start_p, max_value=st.session_state.total_pages, value=min(start_p+4, st.session_state.total_pages))
+            with c3:
+                st.write("") # 줄맞춤
+                st.write("")
+                if st.button("📖 이 구간만 텍스트 추출", use_container_width=True):
+                    with st.spinner(f"{start_p}~{end_p}쪽 텍스트를 읽어오는 중..."):
+                        extracted_text, _ = extract_text_from_pdf(st.session_state.pdf_file, start_p, end_p)
+                        if "오류" in extracted_text:
+                            st.error(extracted_text)
+                        else:
+                            st.toast(f"✅ {start_p}~{end_p}쪽 추출 완료!", icon="📄")
+    else:
+        st.warning("⚠️ PDF 자동 추출 기능을 사용하려면 'pdfplumber' 라이브러리 설치가 필요합니다.")
+
+    # 텍스트 에디터 (수정 가능)
     input_text = st.text_area(
         "분석할 문장을 입력하세요", 
         value=extracted_text if extracted_text else "",
-        height=200, 
-        placeholder="직접 입력하거나 PDF를 업로드하면 내용이 여기에 나타납니다."
+        height=300, 
+        placeholder="PDF에서 추출된 텍스트가 여기에 나타납니다. 직접 수정할 수도 있습니다."
     )
 
 with col2:
@@ -416,7 +468,8 @@ with col2:
     st.write("") 
     st.write("") 
     st.write("") 
-    page_num = st.text_input("쪽수", value="1")
+    # 쪽수 입력 자동화 (PDF 구간과 연동하고 싶다면 여기서 value를 start_p로 바꿀 수도 있음)
+    page_num = st.text_input("대표 쪽수", value="1")
     analyze_btn = st.button("🚀 분석 실행", use_container_width=True)
 
 if analyze_btn and input_text:
