@@ -29,7 +29,7 @@ TRUST_THRESHOLD = 3
 st.set_page_config(page_title="국어활동 AI 분석기", page_icon="📝", layout="wide")
 
 # =========================================================
-# 🔐 구글 시트 연결 (이원화 로직 적용)
+# 🔐 구글 시트 연결 (이원화 및 학습 데이터 분리 적용)
 # =========================================================
 @st.cache_resource
 def get_google_sheet_client():
@@ -45,11 +45,12 @@ def get_google_sheet_client():
         return client
     except: return None
 
-# [핵심 변경] 모드에 따라 다른 탭(Worksheet)을 가져오는 함수
+# [핵심] 모드에 따라 읽고 쓸 탭(Worksheet)을 결정하는 함수
 def get_sheet_data_fresh(mode_key):
     client = get_google_sheet_client()
     if not client: return None, []
     
+    # 모드에 따른 시트 이름 매핑 (데이터 저장소 분리)
     target_sheet_name = "South_Korea" if mode_key == "SOUTH" else "North_Korea"
     
     try:
@@ -57,7 +58,7 @@ def get_sheet_data_fresh(mode_key):
         try:
             sheet = spreadsheet.worksheet(target_sheet_name)
         except gspread.WorksheetNotFound:
-            st.error(f"❌ '{target_sheet_name}' 시트를 찾을 수 없습니다. 구글 시트 하단 탭 이름을 확인해주세요.")
+            st.error(f"❌ '{target_sheet_name}' 시트를 찾을 수 없습니다. 구글 시트 하단 '+' 버튼을 눌러 탭을 만들고 이름을 변경해주세요.")
             return None, []
             
         data = sheet.get_all_records()
@@ -75,6 +76,7 @@ def generate_prompt_from_sheet(sheet_data):
     if df.empty: return ""
     prompt_lines = []
     
+    # 현재 모드의 시트에서 가져온 데이터로만 학습 프롬프트 생성
     if 'action' in df.columns:
         deleted = df[df['action'] == 'delete']
         for _, row in deleted.tail(10).iterrows(): 
@@ -144,7 +146,7 @@ def split_text_smartly(text, chunk_size=1000):
     
     return chunks
 
-# [핵심 변경] 모드에 따라 AI 페르소나(역할) 변경
+# 모드별 프롬프트 생성 (JSON 중괄호 이중 처리 완료)
 def get_analysis_hybrid(text, sheet_data, mode_key):
     learning_prompt = generate_prompt_from_sheet(sheet_data)
     
@@ -164,7 +166,7 @@ def get_analysis_hybrid(text, sheet_data, mode_key):
         - 국립국어원 표준 맞춤법과 두음법칙을 준수하세요.
         """
 
-    # [수정] JSON 예시의 중괄호를 {{ }}로 이중 처리하여 f-string 오류 방지
+    # [중요] JSON 예시의 중괄호는 {{ }}로, 변수는 { }로 처리
     base_instruction = f"""
     {role_definition}
     {mode_instruction}
@@ -279,12 +281,15 @@ with st.sidebar:
         index=0
     )
     
+    # 모드 키 설정 (SOUTH / NORTH)
     MODE_KEY = "SOUTH" if "대한민국" in mode_selection else "NORTH"
     
-    st.info(f"현재 **{mode_selection}** 모드로 동작합니다.\n\n연결된 시트: {('South_Korea' if MODE_KEY=='SOUTH' else 'North_Korea')}")
+    # [상태 표시] 현재 연결된 탭을 사용자에게 명확히 고지
+    connected_tab_name = 'South_Korea' if MODE_KEY=='SOUTH' else 'North_Korea'
+    st.success(f"현재 **[{mode_selection}]** 모드입니다.\n\n학습 데이터가 **'{connected_tab_name}'** 탭에 저장됩니다.")
     st.markdown("---")
 
-# [동적 연결]
+# [핵심] 선택된 모드에 맞는 시트 객체와 데이터를 로드
 sheet, sheet_data = get_sheet_data_fresh(MODE_KEY)
 
 if 'analysis_result' not in st.session_state:
@@ -312,12 +317,13 @@ with st.sidebar:
         if st.session_state.master_df is None:
             st.session_state.master_df = pd.DataFrame(columns=['구분', '자료', '출연횟수'])
 
-    if sheet: st.success(f"🌏 두뇌 연결됨 ({len(sheet_data)}건)")
-    else: st.error("❌ 두뇌 연결 실패")
+    # 시트 연결 상태 확인
+    if sheet: st.caption(f"🌏 지능 연결됨: {len(sheet_data)}건 학습됨")
+    else: st.error("❌ 학습 서버 연결 실패")
     
     st.markdown("---")
     
-    # [수동 추가]
+    # [수동 추가] - 현재 선택된 모드(sheet)에 저장됨
     with st.expander("➕ AI가 놓친 단어 추가하기"):
         with st.form("manual_add_form"):
             add_orig = st.text_input("원본 단어")
@@ -327,6 +333,7 @@ with st.sidebar:
             if st.form_submit_button("추가 및 학습"):
                 if add_orig and add_root and sheet:
                     row = [datetime.now().isoformat(), add_orig, add_root, add_origin, add_pos, 'add', '수동추가']
+                    # [핵심] 현재 활성화된 시트(탭)에 저장
                     sheet.append_row(row)
                     
                     if st.session_state.analysis_result is not None:
@@ -342,7 +349,7 @@ with st.sidebar:
                         }
                         st.session_state.analysis_result.append(new_item)
                     
-                    st.toast(f"✅ '{add_orig}' 추가 완료! ({MODE_KEY} 모드)", icon="🎓")
+                    st.toast(f"✅ '{add_orig}' 추가 완료! ({MODE_KEY} 학습데이터에 저장)", icon="🎓")
                     time.sleep(1)
                     st.rerun()
 
@@ -364,10 +371,11 @@ with col2:
     analyze_btn = st.button("🚀 분석 실행", use_container_width=True)
 
 # ---------------------------------------------------------
-# 🚀 분석 실행 (UI 요소 제거, Pure Function)
+# 🚀 분석 실행
 # ---------------------------------------------------------
 if analyze_btn and input_text:
     with st.spinner(f"{mode_selection} 모드로 분석 중입니다..."):
+        # 모드 키를 전달하여 해당 모드의 학습 데이터만 사용
         raw_results = get_analysis_hybrid(input_text, sheet_data, MODE_KEY)
         
         if raw_results:
@@ -463,6 +471,7 @@ if st.session_state.analysis_result:
     
     col_del, col_save = st.columns([1, 4])
     
+    # [삭제 버튼]
     with col_del:
         if st.button("⛔ 체크한 단어 삭제 및 학습", type="secondary"):
             to_delete = edited_df[edited_df['delete_check'] == True]
@@ -477,8 +486,9 @@ if st.session_state.analysis_result:
                                 row['root_word'],
                                 "", "", 'delete', input_text
                             ])
+                        # [핵심] 현재 활성화된 시트(탭)에 'delete' 기록
                         sheet.append_rows(rows_to_add)
-                        st.toast(f"🗑️ 삭제 학습 완료! ({MODE_KEY} 탭에 저장)", icon="✅")
+                        st.toast(f"🗑️ 삭제 학습 완료! ({MODE_KEY} 학습데이터에 기록)", icon="✅")
                         remaining = edited_df[edited_df['delete_check'] == False].to_dict('records')
                         st.session_state.analysis_result = remaining
                         time.sleep(1)
@@ -490,8 +500,8 @@ if st.session_state.analysis_result:
 
     st.markdown("---")
     
+    # [저장 버튼]
     with col_save:
-        # [누적 저장 로직]
         if st.button("💾 엑셀에 저장 (누적 저장)", type="primary"):
             try:
                 final_data = edited_df[edited_df['delete_check'] == False].to_dict('records')
@@ -511,6 +521,7 @@ if st.session_state.analysis_result:
                     item['origin'] = clean_value_for_save(item['origin'])
                     item['pos'] = clean_value_for_save(item['pos'])
                     
+                    # [핵심] 수정 이력(modify) 로그 생성
                     learning_logs.append({
                         'timestamp': datetime.now().isoformat(),
                         'original_word': item['original_word'], 
@@ -557,6 +568,7 @@ if st.session_state.analysis_result:
                 
                 st.session_state.excel_buffer = output_excel
                 
+                # [핵심] 현재 활성화된 시트(탭)에 'modify' 학습 기록 저장
                 if sheet and learning_logs:
                     try:
                         rows_to_add = [list(log.values()) for log in learning_logs]
@@ -569,7 +581,7 @@ if st.session_state.analysis_result:
             except Exception as e:
                 st.error(f"❌ 저장 중 오류 발생: {e}")
 
-        # [수정] 다운로드 버튼을 저장 버튼 바로 아래(같은 컬럼)에 배치하여 가시성 확보
+        # [검증 결과 반영] 다운로드 버튼 위치 최적화: 저장 버튼 누른 후 조건부 렌더링되지만 가시성 높은 위치에 배치
         if st.session_state.excel_buffer:
             st.download_button(
                 label="📥 엑셀파일 다운로드하기 (전체 내용)",
