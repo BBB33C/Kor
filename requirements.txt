@@ -6,3 +6,4 @@ konlpy
 gspread
 oauth2client
 pdfplumber
+pymupdf
