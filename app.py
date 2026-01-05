@@ -12,14 +12,13 @@ from collections import Counter
 from datetime import datetime
 import time
 
-# [안전 장치 1] pdfplumber (텍스트 PDF용)
+# [라이브러리 상태 체크]
 try:
     import pdfplumber
     PLUMBER_AVAILABLE = True
 except ImportError:
     PLUMBER_AVAILABLE = False
 
-# [안전 장치 2] PyMuPDF (스캔 PDF 이미지 변환용)
 try:
     import fitz  # PyMuPDF
     FITZ_AVAILABLE = True
@@ -103,7 +102,6 @@ def generate_prompt_from_sheet(sheet_data):
          return "\n[🚨 최우선 사용자 학습 규칙 (이것이 법이다)]:\n" + "\n".join(prompt_lines) + "\n"
     return ""
 
-# [텍스트 분석용 API 호출]
 def api_call_direct(prompt):
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={API_KEY.strip()}"
     headers = {'Content-Type': 'application/json'}
@@ -123,7 +121,7 @@ def api_call_direct(prompt):
         st.error(f"❌ 서버 통신 오류: {e}")
         return None
 
-# [신규] 이미지(스캔본) 텍스트 추출용 API 호출 (Vision)
+# [이미지 OCR 호출]
 def api_call_vision_ocr(image_bytes):
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={API_KEY.strip()}"
     headers = {'Content-Type': 'application/json'}
@@ -132,7 +130,7 @@ def api_call_vision_ocr(image_bytes):
     
     prompt_text = """
     이 이미지에 있는 텍스트를 보이는 그대로 추출해주세요.
-    - 북한 문화어 표기(두음법칙 미적용 등)가 있다면 수정하지 말고 그대로 적으세요. (예: 로동 -> 로동)
+    - 북한 문화어 표기(두음법칙 미적용 등)가 있다면 수정하지 말고 그대로 적으세요.
     - 페이지의 머리말이나 쪽수 번호는 제외하고 본문 내용만 적으세요.
     - 문단 구분은 줄바꿈으로 해주세요.
     """
@@ -188,48 +186,47 @@ def split_text_smartly(text, chunk_size=1000):
     if current_chunk: chunks.append(current_chunk.strip())
     return chunks
 
-# [핵심] 하이브리드 PDF 추출 (텍스트 우선 -> 실패시 이미지 OCR)
-def extract_text_from_page_hybrid(pdf_file, page_index):
-    # 1. 텍스트 레이어 추출 시도
-    if PLUMBER_AVAILABLE:
-        try:
-            with pdfplumber.open(pdf_file) as pdf:
-                if page_index < 0 or page_index >= len(pdf.pages): return ""
-                page = pdf.pages[page_index]
-                # 상하단 10% 제외하고 크롭
-                width, height = page.width, page.height
-                crop_box = (0, height * 0.1, width, height * 0.9)
-                try:
-                    cropped = page.crop(crop_box)
-                    text = cropped.extract_text()
-                except:
-                    text = page.extract_text()
-                
-                # 텍스트가 충분히 있으면 반환
-                if text and len(text.strip()) > 30: 
-                    return text
-        except: pass 
-
-    # 2. 실패 시 이미지 OCR 시도 (스캔본)
-    if FITZ_AVAILABLE:
-        try:
-            doc = fitz.open(stream=pdf_file.getvalue(), filetype="pdf")
-            if page_index < 0 or page_index >= len(doc): return ""
-            page = doc[page_index]
-            
-            # 상하단 크롭 (clip)
-            rect = page.rect
-            clip_rect = fitz.Rect(0, rect.height * 0.1, rect.width, rect.height * 0.9)
-            
-            # 고해상도 이미지 렌더링
-            pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), clip=clip_rect)
-            img_bytes = pix.tobytes("png")
-            
-            return api_call_vision_ocr(img_bytes)
-        except Exception as e:
-            return f"이미지 변환 오류: {str(e)}"
+# [핵심 변경] PDF/이미지 통합 추출기
+def extract_text_unified(file_obj, page_index):
+    file_type = file_obj.type
     
-    return "텍스트를 추출할 수 없습니다. (라이브러리 확인 필요)"
+    # 1. 이미지 파일인 경우 (JPG, PNG 등) -> 바로 Vision API로 보냄
+    if "image" in file_type:
+        try:
+            return api_call_vision_ocr(file_obj.getvalue())
+        except Exception as e:
+            return f"이미지 읽기 오류: {e}"
+
+    # 2. PDF 파일인 경우 -> 기존 로직 (Plumber -> Fitz -> Vision)
+    elif "pdf" in file_type:
+        # (A) 텍스트 레이어 시도
+        if PLUMBER_AVAILABLE:
+            try:
+                with pdfplumber.open(file_obj) as pdf:
+                    if page_index < 0 or page_index >= len(pdf.pages): return ""
+                    page = pdf.pages[page_index]
+                    width, height = page.width, page.height
+                    crop_box = (0, height * 0.1, width, height * 0.9)
+                    try: cropped = page.crop(crop_box); text = cropped.extract_text()
+                    except: text = page.extract_text()
+                    if text and len(text.strip()) > 30: return text
+            except: pass
+
+        # (B) 스캔본(이미지) 시도
+        if FITZ_AVAILABLE:
+            try:
+                doc = fitz.open(stream=file_obj.getvalue(), filetype="pdf")
+                if page_index < 0 or page_index >= len(doc): return ""
+                page = doc[page_index]
+                rect = page.rect
+                clip_rect = fitz.Rect(0, rect.height * 0.1, rect.width, rect.height * 0.9)
+                pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), clip=clip_rect)
+                return api_call_vision_ocr(pix.tobytes("png"))
+            except Exception as e: return f"PDF 변환 오류: {e}"
+        
+        return "PDF를 읽을 수 없습니다. (라이브러리 설치 확인 필요)"
+    
+    return "지원하지 않는 파일 형식입니다."
 
 def get_analysis_hybrid(text, sheet_data, mode_key):
     learning_prompt = generate_prompt_from_sheet(sheet_data)
@@ -370,7 +367,7 @@ if 'analysis_result' not in st.session_state: st.session_state.analysis_result =
 if 'excel_buffer' not in st.session_state: st.session_state.excel_buffer = None
 if 'master_df' not in st.session_state: st.session_state.master_df = None
 
-if 'pdf_file' not in st.session_state: st.session_state.pdf_file = None
+if 'uploaded_file' not in st.session_state: st.session_state.uploaded_file = None
 if 'total_pages' not in st.session_state: st.session_state.total_pages = 0
 if 'current_page_idx' not in st.session_state: st.session_state.current_page_idx = 0
 if 'user_page_num' not in st.session_state: st.session_state.user_page_num = "1"
@@ -416,32 +413,48 @@ with st.sidebar:
             for h in history[-3:]:
                 st.caption(f"{h['timestamp'][:10]} [{h['action']}] {h['original_word']} -> {h['root_word']}")
 
-# [메인 UI] PDF 뷰어 & 텍스트
+# [메인 UI] PDF & 이미지 업로더
 col1, col2 = st.columns([3, 1])
 extracted_text = ""
 
 with col1:
-    st.subheader("📄 PDF 자동 분석 (스캔본 포함)")
+    st.subheader("📄 파일 분석 (PDF 또는 이미지)")
     
-    if PLUMBER_AVAILABLE or FITZ_AVAILABLE:
-        uploaded_pdf = st.file_uploader("교과서 PDF 파일 (1쪽 단위 자동 분석)", type=['pdf'], key='pdf_uploader')
-        if uploaded_pdf and uploaded_pdf != st.session_state.pdf_file:
-            st.session_state.pdf_file = uploaded_pdf
-            st.session_state.current_page_idx = 0
-            st.session_state.user_page_num = "1"
-            st.session_state.analysis_result = None
+    # [수정] type에 이미지 확장자 추가
+    uploaded_file = st.file_uploader(
+        "교과서 파일 (PDF는 1쪽 단위, 이미지는 자동 분석)", 
+        type=['pdf', 'png', 'jpg', 'jpeg'], 
+        key='file_uploader'
+    )
+    
+    if uploaded_file and uploaded_file != st.session_state.uploaded_file:
+        st.session_state.uploaded_file = uploaded_file
+        st.session_state.current_page_idx = 0
+        st.session_state.user_page_num = "1"
+        st.session_state.analysis_result = None
+        
+        # 파일 타입에 따른 초기화
+        file_type = uploaded_file.type
+        if "pdf" in file_type:
             try:
-                # 페이지 수 계산 (가벼운 라이브러리 우선 사용)
+                # PDF는 페이지 수 계산
                 if PLUMBER_AVAILABLE:
-                    with pdfplumber.open(uploaded_pdf) as pdf:
+                    with pdfplumber.open(uploaded_file) as pdf:
                         st.session_state.total_pages = len(pdf.pages)
                 elif FITZ_AVAILABLE:
-                    doc = fitz.open(stream=uploaded_pdf.getvalue(), filetype="pdf")
+                    doc = fitz.open(stream=uploaded_file.getvalue(), filetype="pdf")
                     st.session_state.total_pages = len(doc)
             except: pass
-            st.rerun()
+        else:
+            # 이미지는 1페이지로 고정
+            st.session_state.total_pages = 1
             
-        if st.session_state.pdf_file and st.session_state.total_pages > 0:
+        st.rerun()
+        
+    if st.session_state.uploaded_file:
+        # 네비게이션은 PDF이고 페이지가 2장 이상일 때만 표시
+        is_pdf = "pdf" in st.session_state.uploaded_file.type
+        if is_pdf and st.session_state.total_pages > 1:
             c_prev, c_info, c_next = st.columns([1, 2, 1])
             with c_prev:
                 if st.button("◀ 이전 장"):
@@ -461,20 +474,19 @@ with col1:
                         st.rerun()
             with c_info:
                 st.markdown(f"<div style='text-align:center; padding-top:10px;'><b>PDF {st.session_state.current_page_idx + 1} / {st.session_state.total_pages} 번째 장</b></div>", unsafe_allow_html=True)
-            
-            # 하이브리드 추출 실행
-            with st.spinner("텍스트를 읽어오는 중입니다... (스캔본은 3~5초 소요)"):
-                extracted_text = extract_text_from_page_hybrid(st.session_state.pdf_file, st.session_state.current_page_idx)
-                if "오류" in extracted_text: st.error(extracted_text)
-            
-    else:
-        st.warning("⚠️ 'pdfplumber' 또는 'pymupdf' 라이브러리가 설치되지 않았습니다.")
+        elif not is_pdf:
+            st.info("📷 이미지 파일이 로드되었습니다 (총 1장)")
+
+        # 추출 실행
+        with st.spinner("내용을 읽어오는 중입니다..."):
+            extracted_text = extract_text_unified(st.session_state.uploaded_file, st.session_state.current_page_idx)
+            if "오류" in extracted_text: st.error(extracted_text)
 
     input_text = st.text_area(
         "분석할 텍스트 (직접 수정 가능)", 
         value=extracted_text if extracted_text else "",
         height=300, 
-        placeholder="직접 입력하거나 PDF를 업로드하면 내용이 나타납니다."
+        placeholder="직접 입력하거나 파일을 업로드하면 내용이 나타납니다."
     )
 
 with col2:
@@ -563,7 +575,6 @@ if st.session_state.analysis_result:
                     st.rerun()
                 except: st.error("삭제 오류")
 
-    # [저장 로직 통합 함수]
     def save_logic(df_to_save, page_str):
         final_data = df_to_save[df_to_save['delete_check'] == False].to_dict('records')
         base_df = st.session_state.master_df
@@ -615,9 +626,11 @@ if st.session_state.analysis_result:
         return True
 
     with btn_col2:
+        # 이미지는 다음 장 개념이 없으므로 저장 후 종료와 동일하게 처리하거나 알림 표시
         if st.button("💾 저장하고 다음 쪽(▶) 이동", type="primary", use_container_width=True):
             if save_logic(edited_df, st.session_state.user_page_num):
-                if st.session_state.current_page_idx < st.session_state.total_pages - 1:
+                # PDF이고 다음 장이 있을 때만 이동
+                if "pdf" in st.session_state.uploaded_file.type and st.session_state.current_page_idx < st.session_state.total_pages - 1:
                     st.session_state.current_page_idx += 1
                     try: st.session_state.user_page_num = str(int(st.session_state.user_page_num) + 1)
                     except: pass
@@ -625,7 +638,8 @@ if st.session_state.analysis_result:
                     st.toast("✅ 저장 완료! 이동합니다.", icon="🏃")
                     time.sleep(1)
                     st.rerun()
-                else: st.success("마지막 페이지입니다!")
+                else: 
+                    st.success("마지막 페이지 또는 이미지 파일입니다!")
 
     with btn_col3:
         if st.button("💾 저장만 하기 (종료)", use_container_width=True):
