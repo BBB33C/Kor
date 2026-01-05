@@ -50,13 +50,10 @@ def get_sheet_data_fresh(mode_key):
     client = get_google_sheet_client()
     if not client: return None, []
     
-    # 모드에 따른 시트 이름 매핑
     target_sheet_name = "South_Korea" if mode_key == "SOUTH" else "North_Korea"
     
     try:
-        # 파일 열기
         spreadsheet = client.open(SHEET_NAME)
-        # 탭(워크시트) 선택
         try:
             sheet = spreadsheet.worksheet(target_sheet_name)
         except gspread.WorksheetNotFound:
@@ -78,7 +75,6 @@ def generate_prompt_from_sheet(sheet_data):
     if df.empty: return ""
     prompt_lines = []
     
-    # 학습 데이터 프롬프트 생성 (공통 로직)
     if 'action' in df.columns:
         deleted = df[df['action'] == 'delete']
         for _, row in deleted.tail(10).iterrows(): 
@@ -152,10 +148,8 @@ def split_text_smartly(text, chunk_size=1000):
 def get_analysis_hybrid(text, sheet_data, mode_key):
     learning_prompt = generate_prompt_from_sheet(sheet_data)
     
-    # 1. 공통 역할
     role_definition = "국어학 전문가로서 문맥을 고려하여 실질 형태소(알맹이 단어)를 분석하세요."
     
-    # 2. 모드별 특수 지침 (페르소나 이원화)
     if mode_key == "NORTH":
         mode_instruction = """
         [🇰🇵 북한 문화어 분석 모드]
@@ -170,7 +164,7 @@ def get_analysis_hybrid(text, sheet_data, mode_key):
         - 국립국어원 표준 맞춤법과 두음법칙을 준수하세요.
         """
 
-    # [수정 완료] JSON 예시의 중괄호를 {{ }}로 이중 처리하여 f-string 오류 완벽 해결
+    # [수정] JSON 예시의 중괄호를 {{ }}로 이중 처리하여 f-string 오류 방지
     base_instruction = f"""
     {role_definition}
     {mode_instruction}
@@ -195,7 +189,6 @@ def get_analysis_hybrid(text, sheet_data, mode_key):
     chunks = split_text_smartly(text)
     all_results = []
     
-    # UI 제거됨 (st.status 등의 시각적 요소 없음)
     for i, chunk in enumerate(chunks):
         if not chunk.strip(): continue
         
@@ -277,7 +270,7 @@ def load_excel_safely(file):
 # =========================================================
 st.title("📝 국어활동 AI 분석기")
 
-# [사이드바] 모드 선택 UI 추가
+# [사이드바] 모드 선택 UI
 with st.sidebar:
     st.header("🏳️ 분석 모드 선택")
     mode_selection = st.radio(
@@ -286,13 +279,12 @@ with st.sidebar:
         index=0
     )
     
-    # 모드 키 설정 (SOUTH / NORTH)
     MODE_KEY = "SOUTH" if "대한민국" in mode_selection else "NORTH"
     
     st.info(f"현재 **{mode_selection}** 모드로 동작합니다.\n\n연결된 시트: {('South_Korea' if MODE_KEY=='SOUTH' else 'North_Korea')}")
     st.markdown("---")
 
-# [동적 연결] 선택된 모드에 따라 시트 데이터 로드
+# [동적 연결]
 sheet, sheet_data = get_sheet_data_fresh(MODE_KEY)
 
 if 'analysis_result' not in st.session_state:
@@ -337,7 +329,6 @@ with st.sidebar:
                     row = [datetime.now().isoformat(), add_orig, add_root, add_origin, add_pos, 'add', '수동추가']
                     sheet.append_row(row)
                     
-                    # 현재 모드 결과에 즉시 반영
                     if st.session_state.analysis_result is not None:
                         formatted_pos = {
                             '명사': '📦 명사', '동사': '🏃 동사', '형용사': '🎨 형용사',
@@ -373,11 +364,10 @@ with col2:
     analyze_btn = st.button("🚀 분석 실행", use_container_width=True)
 
 # ---------------------------------------------------------
-# 🚀 분석 실행 (모드 키 전달)
+# 🚀 분석 실행 (UI 요소 제거, Pure Function)
 # ---------------------------------------------------------
 if analyze_btn and input_text:
     with st.spinner(f"{mode_selection} 모드로 분석 중입니다..."):
-        # [수정] UI 요소 전달 제거 (pure function call)
         raw_results = get_analysis_hybrid(input_text, sheet_data, MODE_KEY)
         
         if raw_results:
@@ -503,47 +493,88 @@ if st.session_state.analysis_result:
     with col_save:
         # [누적 저장 로직]
         if st.button("💾 엑셀에 저장 (누적 저장)", type="primary"):
-            final_data = edited_df[edited_df['delete_check'] == False].to_dict('records')
-            
-            base_df = st.session_state.master_df
-            if base_df is None:
-                 base_df = pd.DataFrame(columns=['구분', '자료', '출연횟수'])
+            try:
+                final_data = edited_df[edited_df['delete_check'] == False].to_dict('records')
+                
+                base_df = st.session_state.master_df
+                if base_df is None:
+                     base_df = pd.DataFrame(columns=['구분', '자료', '출연횟수'])
 
-            for c in base_df.columns:
-                if '쪽수' in c: base_df[c] = base_df[c].astype(object)
-                
-            new_rows = []
-            saved_roots = set() 
-            learning_logs = []
+                for c in base_df.columns:
+                    if '쪽수' in c: base_df[c] = base_df[c].astype(object)
+                    
+                new_rows = []
+                saved_roots = set() 
+                learning_logs = []
 
-            for item in final_data:
-                item['origin'] = clean_value_for_save(item['origin'])
-                item['pos'] = clean_value_for_save(item['pos'])
+                for item in final_data:
+                    item['origin'] = clean_value_for_save(item['origin'])
+                    item['pos'] = clean_value_for_save(item['pos'])
+                    
+                    learning_logs.append({
+                        'timestamp': datetime.now().isoformat(),
+                        'original_word': item['original_word'], 
+                        'root_word': item['root_word'],
+                        'origin': item['origin'],
+                        'pos': item['pos'],
+                        'action': 'modify',
+                        'context': input_text
+                    })
+                    
+                    root = item['root_word']
+                    if root in saved_roots: continue
+                    saved_roots.add(root)
+                    
+                    try:
+                        cnt = int(str(item['count']).replace('회',''))
+                    except: cnt = 1
+                    
+                    val = f"{page_num}_{cnt}" if cnt > 1 else page_num
+                    origin_val = item.get('origin', '고')
+                    
+                    if root in base_df['자료'].values:
+                        idx = base_df[base_df['자료'] == root].index[0]
+                        filled = base_df.loc[idx].filter(like='쪽수').notna().sum()
+                        col = f"쪽수{filled+1}"
+                        if col not in base_df.columns: base_df[col] = float('nan')
+                        base_df.at[idx, col] = val
+                    else:
+                        new_rows.append({'구분': origin_val, '자료': root, '쪽수1': val})
                 
-                # 학습 로그
-                learning_logs.append({
-                    'timestamp': datetime.now().isoformat(),
-                    'original_word': item['original_word'], 
-                    'root_word': item['root_word'],
-                    'origin': item['origin'],
-                    'pos': item['pos'],
-                    'action': 'modify',
-                    'context': input_text
-                })
+                if new_rows:
+                    base_df = pd.concat([base_df, pd.DataFrame(new_rows)], ignore_index=True)
                 
-                root = item['root_word']
-                if root in saved_roots: continue
-                saved_roots.add(root)
+                base_df['출연횟수'] = base_df.apply(calculate_total_appearances, axis=1)
+                base_df['sort'] = base_df['구분'].map({'고':1, '순':1, '한':2, '외':3, '혼':4}).fillna(5)
+                base_df = base_df.sort_values(['sort', '자료']).drop('sort', axis=1)
                 
-                try:
-                    cnt = int(str(item['count']).replace('회',''))
-                except: cnt = 1
+                st.session_state.master_df = base_df
                 
-                val = f"{page_num}_{cnt}" if cnt > 1 else page_num
-                origin_val = item.get('origin', '고')
+                output_excel = io.BytesIO()
+                with pd.ExcelWriter(output_excel, engine='openpyxl') as writer:
+                    base_df.to_excel(writer, index=False)
+                output_excel.seek(0)
                 
-                if root in base_df['자료'].values:
-                    idx = base_df[base_df['자료'] == root].index[0]
-                    filled = base_df.loc[idx].filter(like='쪽수').notna().sum()
-                    col = f"쪽수{filled+1}"
-                    if col not in base_df.columns: base_df[col] = float('nan')
+                st.session_state.excel_buffer = output_excel
+                
+                if sheet and learning_logs:
+                    try:
+                        rows_to_add = [list(log.values()) for log in learning_logs]
+                        sheet.append_rows(rows_to_add)
+                        st.toast(f"✅ 학습 완료: {len(rows_to_add)}건 저장됨. ({MODE_KEY})", icon="🧠")
+                    except Exception as e: pass
+                
+                st.success("✅ 누적 저장 완료! 바로 아래 [다운로드] 버튼을 눌러주세요.")
+
+            except Exception as e:
+                st.error(f"❌ 저장 중 오류 발생: {e}")
+
+        # [수정] 다운로드 버튼을 저장 버튼 바로 아래(같은 컬럼)에 배치하여 가시성 확보
+        if st.session_state.excel_buffer:
+            st.download_button(
+                label="📥 엑셀파일 다운로드하기 (전체 내용)",
+                data=st.session_state.excel_buffer,
+                file_name="국어활동_분석결과_통합.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                type="secondary"
+            )
