@@ -96,12 +96,14 @@ def send_data_with_retry(sheet_obj, data, is_multiple=False):
                 return False
     return False
 
-# [백업 기능] 클라우드 백업 (자동/수동 공용)
+# [백업 기능] 클라우드 백업 (모드별 시트 분리)
 def save_backup_to_cloud(mode_key, df):
     client = get_google_sheet_client()
     if not client or df is None or df.empty: return False
     
+    # [핵심] 모드에 따라 백업 시트 이름을 다르게 설정
     backup_sheet_name = f"Backup_{'South' if mode_key == 'SOUTH' else 'North'}"
+    
     try:
         spreadsheet = client.open(SHEET_NAME)
         try:
@@ -111,21 +113,21 @@ def save_backup_to_cloud(mode_key, df):
             worksheet = spreadsheet.add_worksheet(title=backup_sheet_name, rows=1000, cols=20)
         
         # DataFrame을 리스트로 변환하여 업로드
-        # 헤더 포함
         data_to_upload = [df.columns.values.tolist()] + df.astype(str).values.tolist()
         worksheet.update(data_to_upload)
         return True
     except Exception as e:
-        # 백업 실패가 메인 기능을 멈추게 하면 안 되므로 로그만 출력
         print(f"자동 백업 실패: {e}") 
         return False
 
-# [백업 기능] 클라우드 복구
+# [백업 기능] 클라우드 복구 (모드별 시트 분리)
 def load_backup_from_cloud(mode_key):
     client = get_google_sheet_client()
     if not client: return None
     
+    # [핵심] 현재 모드에 맞는 백업 시트만 로드
     backup_sheet_name = f"Backup_{'South' if mode_key == 'SOUTH' else 'North'}"
+    
     try:
         spreadsheet = client.open(SHEET_NAME)
         worksheet = spreadsheet.worksheet(backup_sheet_name)
@@ -184,7 +186,6 @@ def api_call_vision_ocr(image_bytes):
     headers = {'Content-Type': 'application/json'}
     base64_image = base64.b64encode(image_bytes).decode('utf-8')
     
-    # [정확도 향상] 중복 허용 및 전문성 강화 프롬프트
     prompt_text = """
     이 이미지에 있는 텍스트를 보이는 그대로 추출해주세요.
     
@@ -279,7 +280,6 @@ def get_page_image_bytes(file_obj, page_index):
 def get_analysis_hybrid(text, sheet_data, mode_key):
     learning_prompt = generate_prompt_from_sheet(sheet_data)
     
-    # [1순위 해결] 분류 정확도 향상을 위한 전문가 페르소나 및 함정 예시 주입
     role_definition = """
     당신은 국립국어원 표준국어대사전 편찬에 참여하는 '국어학 및 어원 분석 전문가'입니다.
     주어진 텍스트에서 '실질 형태소(알맹이 단어)'를 분석하고, 그 단어의 어원(Origin)을 국어사전 기준으로 엄격하게 판별하세요.
@@ -316,7 +316,7 @@ def get_analysis_hybrid(text, sheet_data, mode_key):
     [동음이의어 구분 규칙]
     - **사람 이름(인명)**: 원형 뒤에 **(이름)** 붙이기 (예: 철수(이름))
     - **지명(장소)**: 원형 뒤에 **(지명)** 붙이기 (예: 평양(지명))
-    - 그 외 동음이의어는 괄호로 뜻 구분 (예: 배(과일), 배(신체))
+    - 그 외 동음이의어는 괄호로 뜻 구분
     
     [기본 규칙]
     - 조사, 어미, 접사, 문장부호, 감탄사 제외
@@ -406,6 +406,8 @@ with st.sidebar:
     if 'last_mode' not in st.session_state: st.session_state.last_mode = MODE_KEY
     if st.session_state.last_mode != MODE_KEY:
         st.session_state.analysis_result = None
+        # [핵심 수정] 모드 변경 시 기존 데이터 메모리 초기화 (데이터 섞임 방지)
+        st.session_state.master_df = None 
         st.session_state.last_mode = MODE_KEY
         st.rerun()
 
@@ -462,7 +464,7 @@ with st.sidebar:
                 else:
                     st.error("❌ 저장 실패")
 
-    # [클라우드 복구 버튼] - 데이터가 없을 때만 표시
+    # [클라우드 복구 버튼]
     if (st.session_state.master_df is None or st.session_state.master_df.empty) and sheet:
         if st.button("📂 클라우드 백업 불러오기", use_container_width=True):
             with st.spinner("백업 찾는 중..."):
@@ -683,17 +685,14 @@ if st.session_state.analysis_result:
     
     df_display = pd.DataFrame(st.session_state.analysis_result)
     
-    # [수정] status 컬럼 제거 + count 컬럼 수정 가능(False)
     column_config = {
         "delete_check": st.column_config.CheckboxColumn("삭제", width="small"),
-        # "status": st.column_config.TextColumn("상태", disabled=True), 
-        "count": st.column_config.TextColumn("빈도", disabled=False), # [수정 가능하게 변경]
+        "count": st.column_config.TextColumn("빈도", disabled=False), 
         "original_word": st.column_config.TextColumn("원본 단어", disabled=True, width="large"),
         "root_word": "원형",
         "origin": st.column_config.SelectboxColumn("분류", options=["🔵 고", "🟢 한", "🔴 외", "🟣 혼"]),
         "pos": st.column_config.SelectboxColumn("품사", options=["📦 명사", "🏃 동사", "🎨 형용사", "⚡ 부사", "🔍 관형사"])
     }
-    # [수정] cols 리스트에서 status 제거
     cols = ["delete_check", "count", "original_word", "root_word", "origin", "pos"]
     
     edited_df = st.data_editor(df_display[cols] if not df_display.empty else df_display, column_config=column_config, use_container_width=True, num_rows="fixed", key="editor")
@@ -723,7 +722,6 @@ if st.session_state.analysis_result:
         for _, row in valid_rows.iterrows():
             c_origin = clean_value_for_save(row['origin'])
             c_pos = clean_value_for_save(row['pos'])
-            # 학습은 원형, 품사 등 속성만 기록 (횟수 변경은 학습하지 않음)
             learning_logs.append({
                 'timestamp': datetime.now().isoformat(),
                 'original_word': row['original_word'], 
@@ -740,7 +738,6 @@ if st.session_state.analysis_result:
             
         valid_rows['numeric_count'] = valid_rows['count'].apply(parse_count)
         
-        # 선 통합 후 저장 (Pre-Aggregation)
         aggregated_df = valid_rows.groupby('root_word', as_index=False).agg({
             'numeric_count': 'sum', 
             'original_word': lambda x: ', '.join(x.unique()),
@@ -784,7 +781,7 @@ if st.session_state.analysis_result:
         output_excel.seek(0)
         st.session_state.excel_buffer = output_excel
         
-        # [신규 통합] 저장 시 자동 클라우드 백업
+        # [백업 기능 통합] 저장 시 자동 백업
         save_backup_to_cloud(MODE_KEY, base_df)
 
         if sheet and learning_logs:
