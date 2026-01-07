@@ -96,6 +96,44 @@ def send_data_with_retry(sheet_obj, data, is_multiple=False):
                 return False
     return False
 
+# [백업 기능] 클라우드 백업 (자동/수동 공용)
+def save_backup_to_cloud(mode_key, df):
+    client = get_google_sheet_client()
+    if not client or df is None or df.empty: return False
+    
+    backup_sheet_name = f"Backup_{'South' if mode_key == 'SOUTH' else 'North'}"
+    try:
+        spreadsheet = client.open(SHEET_NAME)
+        try:
+            worksheet = spreadsheet.worksheet(backup_sheet_name)
+            worksheet.clear() # 기존 백업 삭제 (덮어쓰기)
+        except gspread.WorksheetNotFound:
+            worksheet = spreadsheet.add_worksheet(title=backup_sheet_name, rows=1000, cols=20)
+        
+        # DataFrame을 리스트로 변환하여 업로드
+        # 헤더 포함
+        data_to_upload = [df.columns.values.tolist()] + df.astype(str).values.tolist()
+        worksheet.update(data_to_upload)
+        return True
+    except Exception as e:
+        # 백업 실패가 메인 기능을 멈추게 하면 안 되므로 로그만 출력
+        print(f"자동 백업 실패: {e}") 
+        return False
+
+# [백업 기능] 클라우드 복구
+def load_backup_from_cloud(mode_key):
+    client = get_google_sheet_client()
+    if not client: return None
+    
+    backup_sheet_name = f"Backup_{'South' if mode_key == 'SOUTH' else 'North'}"
+    try:
+        spreadsheet = client.open(SHEET_NAME)
+        worksheet = spreadsheet.worksheet(backup_sheet_name)
+        data = worksheet.get_all_records()
+        if not data: return None
+        return pd.DataFrame(data)
+    except: return None
+
 # =========================================================
 # 🧠 AI 및 전처리 로직
 # =========================================================
@@ -271,11 +309,9 @@ def get_analysis_hybrid(text, sheet_data, mode_key):
     
     [어원 분류 기준 (매우 중요)]
     - **고(고유어):** 순우리말 (예: 하늘, 아버지, 바람)
-    - **한(한자어):** 한자에 뿌리를 둔 말 (예: 학교, 학생, 귤) 
-      *주의: '귤(橘)'은 한자어입니다. '점심(點心)'은 한자어입니다.
+    - **한(한자어):** 한자에 뿌리를 둔 말 (예: 학교, 학생, 귤, 점심)
     - **외(외래어):** 외국에서 들어와 우리말처럼 쓰이는 말 (예: 버스, 컴퓨터, 가방, 빵, 담배, 냄비)
-      *주의: '가방(네덜란드어 kabas)', '빵(포르투갈어 pão)', '담배(포르투갈어 tabaco)', '냄비(일본어 nabe)'는 모두 외래어입니다.
-    - **혼(혼종어):** 서로 다른 어종이 결합된 말 (예: 비빔밥(고+한), 가지각색(고+한))
+    - **혼(혼종어):** 서로 다른 어종이 결합된 말 (예: 비빔밥, 가지각색)
 
     [동음이의어 구분 규칙]
     - **사람 이름(인명)**: 원형 뒤에 **(이름)** 붙이기 (예: 철수(이름))
@@ -285,7 +321,7 @@ def get_analysis_hybrid(text, sheet_data, mode_key):
     [기본 규칙]
     - 조사, 어미, 접사, 문장부호, 감탄사 제외
     - 품사: '명사', '동사', '형용사', '부사', '관형사'
-    - **[중요] 같은 단어가 여러 번 나오면 합치지 말고 나온 횟수만큼 JSON 객체를 반복해서 만드세요. (빈도수 체크용)**
+    - **[중요] 같은 단어가 여러 번 나오면 합치지 말고 나온 횟수만큼 JSON 객체를 반복해서 만드세요.**
     
     형식: [{{"original_word": "...", "root_word": "...", "origin": "고", "pos": "명사"}}]
     """
@@ -403,25 +439,47 @@ with st.sidebar:
     else:
         if st.session_state.master_df is None:
             st.session_state.master_df = pd.DataFrame(columns=['구분', '자료', '출연횟수'])
-
-    # [신규] 자체 백업 버튼
+            
+    # [백업 버튼 모음]
     if st.session_state.master_df is not None and not st.session_state.master_df.empty:
+        # 1. 파일 다운로드 백업
         backup_buffer = io.BytesIO()
         with pd.ExcelWriter(backup_buffer, engine='openpyxl') as writer: st.session_state.master_df.to_excel(writer, index=False)
         backup_buffer.seek(0)
         st.download_button(
-            label="💾 현재 상태 백업 (중간저장)",
+            label="💾 PC에 엑셀 백업",
             data=backup_buffer,
             file_name=f"국어활동_백업_{datetime.now().strftime('%H%M%S')}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True
         )
+        
+        # 2. 클라우드 백업 (수동)
+        if st.button("☁️ 구글 시트에 임시저장", use_container_width=True):
+            with st.spinner("클라우드에 백업 중..."):
+                if save_backup_to_cloud(MODE_KEY, st.session_state.master_df):
+                    st.success("✅ 클라우드 저장 완료!")
+                else:
+                    st.error("❌ 저장 실패")
+
+    # [클라우드 복구 버튼] - 데이터가 없을 때만 표시
+    if (st.session_state.master_df is None or st.session_state.master_df.empty) and sheet:
+        if st.button("📂 클라우드 백업 불러오기", use_container_width=True):
+            with st.spinner("백업 찾는 중..."):
+                restored_df = load_backup_from_cloud(MODE_KEY)
+                if restored_df is not None and not restored_df.empty:
+                    st.session_state.master_df = restored_df
+                    st.success(f"✅ 복구 완료! ({len(restored_df)}개 단어)")
+                    time.sleep(1)
+                    st.rerun()
+                else:
+                    st.warning("⚠️ 저장된 백업 데이터가 없습니다.")
 
     if sheet: st.caption(f"🌏 지능 연결됨: {len(sheet_data)}건 학습됨")
     else: st.error("❌ 학습 서버 연결 실패")
     
     st.markdown("---")
     
-    # [수동 추가] 화면 즉시 반영 로직 포함
     with st.expander("➕ AI가 놓친 단어 추가하기"):
         with st.form("manual_add_form"):
             add_orig = st.text_input("원본 단어")
@@ -530,7 +588,7 @@ if st.session_state.uploaded_file:
 
     view_col1, view_col2 = st.columns([1, 1])
     
-    # 스크롤 뷰어 적용
+    # 스크롤 뷰어
     with view_col1:
         st.caption("📷 원본 미리보기 (휠로 스크롤 가능)")
         img_bytes = get_page_image_bytes(st.session_state.uploaded_file, st.session_state.current_page_idx)
@@ -600,7 +658,7 @@ if analyze_btn and input_text:
                 item['pos'] = pos_map.get(pos, pos)
                 pre_filtered_items.append(item)
             
-            # [수정] 정확도 향상을 위한 그룹화 로직 (AI 중복 추출 -> 파이썬 그룹화)
+            # 정확도 향상을 위한 그룹화 로직
             grouped_data = {} 
             for item in pre_filtered_items:
                 root = item['root_word']
@@ -612,7 +670,7 @@ if analyze_btn and input_text:
             for root, info in grouped_data.items():
                 orig_counts = Counter(info['originals'])
                 formatted_original = ", ".join([f"{word}({cnt})" for word, cnt in orig_counts.items()])
-                total_cnt = sum(orig_counts.values()) # 여기서 AI가 찾아낸 모든 중복을 더함
+                total_cnt = sum(orig_counts.values()) 
                 is_trusted = check_trust_level_strict(root, st.session_state.master_df, problematic_words)
                 status = '✅ 자동' if is_trusted else '📝 검토'
                 final_results.append({'delete_check': False, 'status': status, 'count': f"{total_cnt}회", 'original_word': formatted_original, 'root_word': root, 'origin': info['origin'], 'pos': info['pos']})
@@ -676,7 +734,6 @@ if st.session_state.analysis_result:
                 'context': input_text
             })
             
-        # [수정] 사용자가 수정한 횟수를 반영하는 파싱 로직
         def parse_count(val):
             try: return int(str(val).replace('회', '').strip())
             except: return 1
@@ -726,6 +783,9 @@ if st.session_state.analysis_result:
         with pd.ExcelWriter(output_excel, engine='openpyxl') as writer: base_df.to_excel(writer, index=False)
         output_excel.seek(0)
         st.session_state.excel_buffer = output_excel
+        
+        # [신규 통합] 저장 시 자동 클라우드 백업
+        save_backup_to_cloud(MODE_KEY, base_df)
 
         if sheet and learning_logs:
             rows = [list(log.values()) for log in learning_logs]
