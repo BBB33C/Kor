@@ -36,7 +36,7 @@ try:
 except:
     API_KEY = "AIzaSyCC6oyL7POpbWq2FZrJ2zIJuiosupFQZYk"
 
-MODEL_NAME = "gemini-2.0-flash-exp" # 최신 모델
+MODEL_NAME = "gemini-2.0-flash-exp"
 SHEET_NAME = "Korean_DB" 
 TRUST_THRESHOLD = 3 
 
@@ -390,7 +390,7 @@ with st.sidebar:
     else: st.error("❌ 학습 서버 연결 실패")
     
     st.markdown("---")
-    # [핵심] 수동 추가 시 화면에 즉시 반영하는 로직
+    # [수동 추가] 화면 즉시 반영 로직 포함
     with st.expander("➕ AI가 놓친 단어 추가하기"):
         with st.form("manual_add_form"):
             add_orig = st.text_input("원본 단어")
@@ -399,22 +399,17 @@ with st.sidebar:
             add_pos = st.selectbox("품사", ["명사", "동사", "형용사", "부사", "관형사"]) 
             if st.form_submit_button("추가 및 학습"):
                 if add_orig and add_root and sheet:
-                    # 1. 시트 저장 (학습)
                     row = [datetime.now().isoformat(), add_orig, add_root, add_origin, add_pos, 'add', '수동추가']
                     if send_data_with_retry(sheet, row, is_multiple=False):
-                        # 2. 화면 반영 (세션 상태 강제 업데이트)
                         if st.session_state.analysis_result is not None:
-                            # 이모지 매핑 (결과표와 스타일 통일)
                             origin_map = {'고': '🔵 고', '한': '🟢 한', '외': '🔴 외', '혼': '🟣 혼'}
                             pos_map = {'명사': '📦 명사', '동사': '🏃 동사', '형용사': '🎨 형용사', '부사': '⚡ 부사', '관형사': '🔍 관형사'}
-                            
                             mapped_origin = origin_map.get(add_origin, add_origin)
                             mapped_pos = pos_map.get(add_pos, add_pos)
                             
-                            # 새 데이터 딕셔너리 생성
                             new_item = {
                                 'delete_check': False,
-                                'status': '✅ 수동', # 수동 상태 표시
+                                'status': '✅ 수동',
                                 'count': '1회',
                                 'original_word': add_orig,
                                 'root_word': add_root,
@@ -504,6 +499,7 @@ if st.session_state.uploaded_file:
 
     view_col1, view_col2 = st.columns([1, 1])
     
+    # 스크롤 뷰어 적용
     with view_col1:
         st.caption("📷 원본 미리보기 (휠로 스크롤 가능)")
         img_bytes = get_page_image_bytes(st.session_state.uploaded_file, st.session_state.current_page_idx)
@@ -573,7 +569,6 @@ if analyze_btn and input_text:
                 item['pos'] = pos_map.get(pos, pos)
                 pre_filtered_items.append(item)
             
-            # [수정] 그룹화 로직 적용 (화면 깔끔하게)
             grouped_data = {} 
             for item in pre_filtered_items:
                 root = item['root_word']
@@ -598,16 +593,18 @@ if st.session_state.analysis_result:
     
     df_display = pd.DataFrame(st.session_state.analysis_result)
     
+    # [수정] status 컬럼 제거하여 화면 공간 확보
     column_config = {
         "delete_check": st.column_config.CheckboxColumn("삭제", width="small"),
-        "status": st.column_config.TextColumn("상태", disabled=True),
+        # "status": st.column_config.TextColumn("상태", disabled=True),  <-- 화면 표시 제외
         "count": st.column_config.TextColumn("빈도", disabled=True),
         "original_word": st.column_config.TextColumn("원본 단어", disabled=True, width="large"),
         "root_word": "원형",
         "origin": st.column_config.SelectboxColumn("분류", options=["🔵 고", "🟢 한", "🔴 외", "🟣 혼"]),
         "pos": st.column_config.SelectboxColumn("품사", options=["📦 명사", "🏃 동사", "🎨 형용사", "⚡ 부사", "🔍 관형사"])
     }
-    cols = ["delete_check", "status", "count", "original_word", "root_word", "origin", "pos"]
+    # [수정] cols 리스트에서 status 제거
+    cols = ["delete_check", "count", "original_word", "root_word", "origin", "pos"]
     
     edited_df = st.data_editor(df_display[cols] if not df_display.empty else df_display, column_config=column_config, use_container_width=True, num_rows="fixed", key="editor")
     
@@ -629,7 +626,6 @@ if st.session_state.analysis_result:
                     time.sleep(1)
                     st.rerun()
 
-    # [핵심] 저장 로직 (빈도수 합산 + 화면 그룹화 + 학습 디테일 보존)
     def save_logic(df_to_save, page_str):
         valid_rows = df_to_save[df_to_save['delete_check'] == False].copy()
         
