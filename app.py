@@ -145,14 +145,19 @@ def api_call_vision_ocr(image_bytes):
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={API_KEY.strip()}"
     headers = {'Content-Type': 'application/json'}
     base64_image = base64.b64encode(image_bytes).decode('utf-8')
+    
+    # [수정: 정확도 향상 프롬프트] 중복 허용 지시 추가
     prompt_text = """
     이 이미지에 있는 텍스트를 보이는 그대로 추출해주세요.
+    
     [중요한 형식 규칙]
-    1. **공간 분리 준수:** 말풍선, 단락, 표 등으로 시각적으로 분리된 텍스트 덩어리는 반드시 **줄바꿈(Enter)**으로 명확히 구분하세요. 문장이 섞이지 않게 하세요.
-    2. **세로쓰기 대응:** 글자가 세로로(위에서 아래로) 쓰여 있다면, 자연스러운 독해 순서(보통 우측 상단에서 좌측 하단)에 맞춰 순서대로 추출하세요.
-    3. **북한 표기 유지:** 두음법칙을 적용하지 않은 표기(예: 로동, 녀자)가 있다면 수정하지 말고 그대로 적으세요.
-    4. **노이즈 제거:** 페이지의 쪽수 번호나 머리말/꼬리말은 본문과 섞이지 않도록 제외하거나 맨 마지막에 따로 적으세요.
+    1. **공간 분리 준수:** 말풍선, 단락, 표 등으로 시각적으로 분리된 텍스트 덩어리는 반드시 **줄바꿈(Enter)**으로 명확히 구분하세요.
+    2. **세로쓰기 대응:** 글자가 세로로(위에서 아래로) 쓰여 있다면, 자연스러운 독해 순서(우측 상단 -> 좌측 하단)를 따르세요.
+    3. **북한 표기 유지:** 두음법칙을 적용하지 않은 표기(예: 로동, 녀자)는 수정하지 말고 그대로 적으세요.
+    4. **중복 포함(필수):** 같은 단어나 문장이 여러 번 나오면 합치지 말고 **나온 횟수만큼 반복해서** 적으세요. (빈도수 분석용)
+    5. **노이즈 제거:** 쪽수, 머리말은 제외하세요.
     """
+    
     data = {"contents": [{"parts": [{"text": prompt_text}, {"inline_data": {"mime_type": "image/png", "data": base64_image}}]}], "generationConfig": {"temperature": 0.1}}
     try:
         response = requests.post(url, headers=headers, json=data, timeout=300)
@@ -268,6 +273,7 @@ def get_analysis_hybrid(text, sheet_data, mode_key):
     - 조사, 어미, 접사, 문장부호, 감탄사 제외
     - 품사: '명사', '동사', '형용사', '부사', '관형사'
     - 어원: '고', '한', '외', '혼'
+    - **[중요] 같은 단어가 여러 번 나오면 합치지 말고 나온 횟수만큼 JSON 객체를 반복해서 만드세요.**
     
     형식: [{{"original_word": "...", "root_word": "...", "origin": "고", "pos": "명사"}}]
     """
@@ -373,7 +379,7 @@ if 'manual_page_input' not in st.session_state: st.session_state.manual_page_inp
 
 uploaded_df = None
 with st.sidebar:
-    st.header("📂 이어하기")
+    st.header("📂 이어하기 & 백업")
     uploaded_excel = st.file_uploader("작업하던 엑셀 파일", type=['xlsx'])
     if uploaded_excel:
         uploaded_df = load_excel_safely(uploaded_excel)
@@ -386,10 +392,23 @@ with st.sidebar:
         if st.session_state.master_df is None:
             st.session_state.master_df = pd.DataFrame(columns=['구분', '자료', '출연횟수'])
 
+    # [신규] 자체 백업 버튼
+    if st.session_state.master_df is not None and not st.session_state.master_df.empty:
+        backup_buffer = io.BytesIO()
+        with pd.ExcelWriter(backup_buffer, engine='openpyxl') as writer: st.session_state.master_df.to_excel(writer, index=False)
+        backup_buffer.seek(0)
+        st.download_button(
+            label="💾 현재 상태 백업 (중간저장)",
+            data=backup_buffer,
+            file_name=f"국어활동_백업_{datetime.now().strftime('%H%M%S')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
     if sheet: st.caption(f"🌏 지능 연결됨: {len(sheet_data)}건 학습됨")
     else: st.error("❌ 학습 서버 연결 실패")
     
     st.markdown("---")
+    
     # [수동 추가] 화면 즉시 반영 로직 포함
     with st.expander("➕ AI가 놓친 단어 추가하기"):
         with st.form("manual_add_form"):
@@ -569,6 +588,7 @@ if analyze_btn and input_text:
                 item['pos'] = pos_map.get(pos, pos)
                 pre_filtered_items.append(item)
             
+            # [수정] 정확도 향상을 위한 그룹화 로직 (AI 중복 추출 -> 파이썬 그룹화)
             grouped_data = {} 
             for item in pre_filtered_items:
                 root = item['root_word']
@@ -580,7 +600,7 @@ if analyze_btn and input_text:
             for root, info in grouped_data.items():
                 orig_counts = Counter(info['originals'])
                 formatted_original = ", ".join([f"{word}({cnt})" for word, cnt in orig_counts.items()])
-                total_cnt = sum(orig_counts.values())
+                total_cnt = sum(orig_counts.values()) # 여기서 AI가 찾아낸 모든 중복을 더함
                 is_trusted = check_trust_level_strict(root, st.session_state.master_df, problematic_words)
                 status = '✅ 자동' if is_trusted else '📝 검토'
                 final_results.append({'delete_check': False, 'status': status, 'count': f"{total_cnt}회", 'original_word': formatted_original, 'root_word': root, 'origin': info['origin'], 'pos': info['pos']})
@@ -593,11 +613,11 @@ if st.session_state.analysis_result:
     
     df_display = pd.DataFrame(st.session_state.analysis_result)
     
-    # [수정] status 컬럼 제거하여 화면 공간 확보
+    # [수정] status 컬럼 제거 + count 컬럼 수정 가능(False)
     column_config = {
         "delete_check": st.column_config.CheckboxColumn("삭제", width="small"),
-        # "status": st.column_config.TextColumn("상태", disabled=True),  <-- 화면 표시 제외
-        "count": st.column_config.TextColumn("빈도", disabled=True),
+        # "status": st.column_config.TextColumn("상태", disabled=True), 
+        "count": st.column_config.TextColumn("빈도", disabled=False), # [수정 가능하게 변경]
         "original_word": st.column_config.TextColumn("원본 단어", disabled=True, width="large"),
         "root_word": "원형",
         "origin": st.column_config.SelectboxColumn("분류", options=["🔵 고", "🟢 한", "🔴 외", "🟣 혼"]),
@@ -633,6 +653,7 @@ if st.session_state.analysis_result:
         for _, row in valid_rows.iterrows():
             c_origin = clean_value_for_save(row['origin'])
             c_pos = clean_value_for_save(row['pos'])
+            # 학습은 원형, 품사 등 속성만 기록 (횟수 변경은 학습하지 않음)
             learning_logs.append({
                 'timestamp': datetime.now().isoformat(),
                 'original_word': row['original_word'], 
@@ -643,12 +664,14 @@ if st.session_state.analysis_result:
                 'context': input_text
             })
             
+        # [수정] 사용자가 수정한 횟수를 반영하는 파싱 로직
         def parse_count(val):
             try: return int(str(val).replace('회', '').strip())
             except: return 1
             
         valid_rows['numeric_count'] = valid_rows['count'].apply(parse_count)
         
+        # 선 통합 후 저장 (Pre-Aggregation)
         aggregated_df = valid_rows.groupby('root_word', as_index=False).agg({
             'numeric_count': 'sum', 
             'original_word': lambda x: ', '.join(x.unique()),
