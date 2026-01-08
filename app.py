@@ -96,9 +96,10 @@ def send_data_with_retry(sheet_obj, data, is_multiple=False):
                 return False
     return False
 
-# [백업 기능] 클라우드 백업 (모드별 분리)
+# [백업 기능] 클라우드 백업 (모드별 분리 + 안전장치)
 def save_backup_to_cloud(mode_key, df):
     client = get_google_sheet_client()
+    # 빈 데이터는 백업하지 않음 (덮어쓰기 방지)
     if not client or df is None or df.empty: return False
     
     backup_sheet_name = f"Backup_{'South' if mode_key == 'SOUTH' else 'North'}"
@@ -401,9 +402,16 @@ with st.sidebar:
     if 'last_mode' not in st.session_state: st.session_state.last_mode = MODE_KEY
     if st.session_state.last_mode != MODE_KEY:
         st.session_state.analysis_result = None
-        # 모드 변경 시 데이터 격리
+        
+        # [안전장치 1] 모드 변경 전, 기존 작업물이 있다면 강제 백업 (실수 방지)
+        if st.session_state.master_df is not None and not st.session_state.master_df.empty:
+            # 주의: 여기서는 '이전 모드(last_mode)'로 저장해야 함
+            prev_mode = st.session_state.last_mode
+            if save_backup_to_cloud(prev_mode, st.session_state.master_df):
+                st.toast(f"🔄 모드 변경 전 '{prev_mode}' 데이터가 안전하게 백업되었습니다.", icon="🛡️")
+        
+        # 데이터 격리 및 파일 기록 초기화
         st.session_state.master_df = None 
-        # [중요] 모드가 바뀌면 이전에 로드했던 파일 기억도 지워야 함
         st.session_state.last_uploaded_file_name = None 
         st.session_state.last_mode = MODE_KEY
         st.rerun()
@@ -417,7 +425,6 @@ sheet, sheet_data = get_sheet_data_fresh(MODE_KEY)
 if 'analysis_result' not in st.session_state: st.session_state.analysis_result = None
 if 'excel_buffer' not in st.session_state: st.session_state.excel_buffer = None
 if 'master_df' not in st.session_state: st.session_state.master_df = None
-# [신규] 파일 로드 상태 추적용 변수 초기화
 if 'last_uploaded_file_name' not in st.session_state: st.session_state.last_uploaded_file_name = None
 
 if 'uploaded_file' not in st.session_state: st.session_state.uploaded_file = None
@@ -431,9 +438,8 @@ with st.sidebar:
     st.header("📂 이어하기 & 백업")
     uploaded_excel = st.file_uploader("작업하던 엑셀 파일", type=['xlsx'])
     
-    # [핵심 수정] 파일 변경 감지 로직 (덮어쓰기 문제 해결)
+    # [핵심 수정] 파일 변경 감지 로직 (이어하기 버그 해결)
     if uploaded_excel:
-        # 방금 올린 파일이 이전에 로드한 파일과 다르면 로드 실행
         if uploaded_excel.name != st.session_state.last_uploaded_file_name:
             uploaded_df = load_excel_safely(uploaded_excel)
             if uploaded_df is not None:
@@ -441,18 +447,16 @@ with st.sidebar:
                  st.session_state.last_uploaded_file_name = uploaded_excel.name
                  st.toast(f"📂 '{uploaded_excel.name}' 파일이 로드되었습니다!", icon="✅")
                  time.sleep(0.5)
-                 st.rerun() # 데이터 반영을 위해 리로드
+                 st.rerun() 
             else:
                  st.error("ℹ️ 빈 파일 혹은 양식이 다릅니다.")
     else:
-        # 파일이 제거되면 상태 리셋
         st.session_state.last_uploaded_file_name = None
         if st.session_state.master_df is None:
             st.session_state.master_df = pd.DataFrame(columns=['구분', '자료', '출연횟수'])
             
     # [백업 버튼 모음]
     if st.session_state.master_df is not None and not st.session_state.master_df.empty:
-        # 1. 파일 다운로드 백업
         backup_buffer = io.BytesIO()
         with pd.ExcelWriter(backup_buffer, engine='openpyxl') as writer: st.session_state.master_df.to_excel(writer, index=False)
         backup_buffer.seek(0)
@@ -464,13 +468,12 @@ with st.sidebar:
             use_container_width=True
         )
         
-        # 2. 클라우드 백업 (수동)
         if st.button("☁️ 구글 시트에 임시저장", use_container_width=True):
             with st.spinner("클라우드에 백업 중..."):
                 if save_backup_to_cloud(MODE_KEY, st.session_state.master_df):
                     st.success("✅ 클라우드 저장 완료!")
                 else:
-                    st.error("❌ 저장 실패")
+                    st.error("❌ 저장 실패 (인터넷 연결 확인)")
 
     # [클라우드 복구 버튼]
     if (st.session_state.master_df is None or st.session_state.master_df.empty) and sheet:
@@ -693,11 +696,11 @@ if st.session_state.analysis_result:
     
     df_display = pd.DataFrame(st.session_state.analysis_result)
     
-    # [수정] UI 개선: 원본 단어 너비 제한 해제 (width 옵션 삭제)
+    # UI 개선 (원본 단어 너비 자동 조절)
     column_config = {
         "delete_check": st.column_config.CheckboxColumn("삭제", width="small"),
         "count": st.column_config.TextColumn("빈도", disabled=False), 
-        "original_word": st.column_config.TextColumn("원본 단어", disabled=True), # width="large" 삭제 -> 자동 조절
+        "original_word": st.column_config.TextColumn("원본 단어", disabled=True), 
         "root_word": "원형",
         "origin": st.column_config.SelectboxColumn("분류", options=["🔵 고", "🟢 한", "🔴 외", "🟣 혼"]),
         "pos": st.column_config.SelectboxColumn("품사", options=["📦 명사", "🏃 동사", "🎨 형용사", "⚡ 부사", "🔍 관형사"])
@@ -747,11 +750,10 @@ if st.session_state.analysis_result:
             
         valid_rows['numeric_count'] = valid_rows['count'].apply(parse_count)
         
-        aggregated_df = valid_rows.groupby('root_word', as_index=False).agg({
+        # [안전장치 2] 동음이의어 분리 저장 (그룹화 기준 강화)
+        aggregated_df = valid_rows.groupby(['root_word', 'origin', 'pos'], as_index=False).agg({
             'numeric_count': 'sum', 
-            'original_word': lambda x: ', '.join(x.unique()),
-            'origin': 'first',
-            'pos': 'first'
+            'original_word': lambda x: ', '.join(x.unique())
         })
         
         base_df = st.session_state.master_df
@@ -768,8 +770,12 @@ if st.session_state.analysis_result:
             
             val = f"{page_str}_{cnt}" if cnt > 1 else page_str
             
-            if root in base_df['자료'].values:
-                idx = base_df[base_df['자료'] == root].index[0]
+            # 기존 데이터에 있는지 확인 (동음이의어까지 구분해서)
+            # 조건: 자료(root)가 같고, 구분(origin)도 같아야 같은 단어로 인정
+            mask = (base_df['자료'] == root) & (base_df['구분'] == origin_val)
+            
+            if mask.any():
+                idx = base_df[mask].index[0]
                 filled = base_df.loc[idx].filter(like='쪽수').notna().sum()
                 col = f"쪽수{filled+1}"
                 if col not in base_df.columns: base_df[col] = float('nan')
@@ -790,8 +796,13 @@ if st.session_state.analysis_result:
         output_excel.seek(0)
         st.session_state.excel_buffer = output_excel
         
-        # [백업 기능 통합] 저장 시 자동 백업
-        save_backup_to_cloud(MODE_KEY, base_df)
+        # [안전장치 3] 백업 결과 통보
+        if save_backup_to_cloud(MODE_KEY, base_df):
+            # 백업 성공 시 조용히 넘어감 (UX)
+            pass
+        else:
+            # 백업 실패 시 경고
+            st.toast("⚠️ 엑셀은 저장됐지만, 클라우드 백업은 실패했습니다!", icon="☁️")
 
         if sheet and learning_logs:
             rows = [list(log.values()) for log in learning_logs]
@@ -826,7 +837,6 @@ if st.session_state.analysis_result:
     if st.session_state.excel_buffer:
         st.download_button(label="📥 엑셀파일 다운로드", data=st.session_state.excel_buffer, file_name="국어활동_분석결과_통합.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="secondary", use_container_width=True)
     
-    # [신규] 통계 대시보드 추가 (작업 현황 시각화)
     if st.session_state.master_df is not None and not st.session_state.master_df.empty:
         st.markdown("---")
         with st.expander("📊 현재까지 모인 데이터 통계 보러가기"):
