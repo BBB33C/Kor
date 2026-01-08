@@ -96,23 +96,20 @@ def send_data_with_retry(sheet_obj, data, is_multiple=False):
                 return False
     return False
 
-# [백업 기능] 클라우드 백업 (모드별 시트 분리)
+# [백업 기능] 클라우드 백업 (모드별 분리)
 def save_backup_to_cloud(mode_key, df):
     client = get_google_sheet_client()
     if not client or df is None or df.empty: return False
     
-    # [핵심] 모드에 따라 백업 시트 이름을 다르게 설정
     backup_sheet_name = f"Backup_{'South' if mode_key == 'SOUTH' else 'North'}"
-    
     try:
         spreadsheet = client.open(SHEET_NAME)
         try:
             worksheet = spreadsheet.worksheet(backup_sheet_name)
-            worksheet.clear() # 기존 백업 삭제 (덮어쓰기)
+            worksheet.clear() 
         except gspread.WorksheetNotFound:
             worksheet = spreadsheet.add_worksheet(title=backup_sheet_name, rows=1000, cols=20)
         
-        # DataFrame을 리스트로 변환하여 업로드
         data_to_upload = [df.columns.values.tolist()] + df.astype(str).values.tolist()
         worksheet.update(data_to_upload)
         return True
@@ -120,14 +117,12 @@ def save_backup_to_cloud(mode_key, df):
         print(f"자동 백업 실패: {e}") 
         return False
 
-# [백업 기능] 클라우드 복구 (모드별 시트 분리)
+# [백업 기능] 클라우드 복구 (모드별 분리)
 def load_backup_from_cloud(mode_key):
     client = get_google_sheet_client()
     if not client: return None
     
-    # [핵심] 현재 모드에 맞는 백업 시트만 로드
     backup_sheet_name = f"Backup_{'South' if mode_key == 'SOUTH' else 'North'}"
-    
     try:
         spreadsheet = client.open(SHEET_NAME)
         worksheet = spreadsheet.worksheet(backup_sheet_name)
@@ -406,8 +401,10 @@ with st.sidebar:
     if 'last_mode' not in st.session_state: st.session_state.last_mode = MODE_KEY
     if st.session_state.last_mode != MODE_KEY:
         st.session_state.analysis_result = None
-        # [핵심 수정] 모드 변경 시 기존 데이터 메모리 초기화 (데이터 섞임 방지)
+        # 모드 변경 시 데이터 격리
         st.session_state.master_df = None 
+        # [중요] 모드가 바뀌면 이전에 로드했던 파일 기억도 지워야 함
+        st.session_state.last_uploaded_file_name = None 
         st.session_state.last_mode = MODE_KEY
         st.rerun()
 
@@ -420,6 +417,8 @@ sheet, sheet_data = get_sheet_data_fresh(MODE_KEY)
 if 'analysis_result' not in st.session_state: st.session_state.analysis_result = None
 if 'excel_buffer' not in st.session_state: st.session_state.excel_buffer = None
 if 'master_df' not in st.session_state: st.session_state.master_df = None
+# [신규] 파일 로드 상태 추적용 변수 초기화
+if 'last_uploaded_file_name' not in st.session_state: st.session_state.last_uploaded_file_name = None
 
 if 'uploaded_file' not in st.session_state: st.session_state.uploaded_file = None
 if 'total_pages' not in st.session_state: st.session_state.total_pages = 0
@@ -431,14 +430,23 @@ uploaded_df = None
 with st.sidebar:
     st.header("📂 이어하기 & 백업")
     uploaded_excel = st.file_uploader("작업하던 엑셀 파일", type=['xlsx'])
+    
+    # [핵심 수정] 파일 변경 감지 로직 (덮어쓰기 문제 해결)
     if uploaded_excel:
-        uploaded_df = load_excel_safely(uploaded_excel)
-        if uploaded_df is not None:
-             st.success(f"📂 파일 로드됨: {len(uploaded_df)}개 단어")
-             if st.session_state.master_df is None:
+        # 방금 올린 파일이 이전에 로드한 파일과 다르면 로드 실행
+        if uploaded_excel.name != st.session_state.last_uploaded_file_name:
+            uploaded_df = load_excel_safely(uploaded_excel)
+            if uploaded_df is not None:
                  st.session_state.master_df = uploaded_df.copy()
-        else: st.caption("ℹ️ 빈 파일 혹은 양식이 다릅니다.")
+                 st.session_state.last_uploaded_file_name = uploaded_excel.name
+                 st.toast(f"📂 '{uploaded_excel.name}' 파일이 로드되었습니다!", icon="✅")
+                 time.sleep(0.5)
+                 st.rerun() # 데이터 반영을 위해 리로드
+            else:
+                 st.error("ℹ️ 빈 파일 혹은 양식이 다릅니다.")
     else:
+        # 파일이 제거되면 상태 리셋
+        st.session_state.last_uploaded_file_name = None
         if st.session_state.master_df is None:
             st.session_state.master_df = pd.DataFrame(columns=['구분', '자료', '출연횟수'])
             
@@ -685,10 +693,11 @@ if st.session_state.analysis_result:
     
     df_display = pd.DataFrame(st.session_state.analysis_result)
     
+    # [수정] UI 개선: 원본 단어 너비 제한 해제 (width 옵션 삭제)
     column_config = {
         "delete_check": st.column_config.CheckboxColumn("삭제", width="small"),
         "count": st.column_config.TextColumn("빈도", disabled=False), 
-        "original_word": st.column_config.TextColumn("원본 단어", disabled=True, width="large"),
+        "original_word": st.column_config.TextColumn("원본 단어", disabled=True), # width="large" 삭제 -> 자동 조절
         "root_word": "원형",
         "origin": st.column_config.SelectboxColumn("분류", options=["🔵 고", "🟢 한", "🔴 외", "🟣 혼"]),
         "pos": st.column_config.SelectboxColumn("품사", options=["📦 명사", "🏃 동사", "🎨 형용사", "⚡ 부사", "🔍 관형사"])
@@ -816,3 +825,23 @@ if st.session_state.analysis_result:
 
     if st.session_state.excel_buffer:
         st.download_button(label="📥 엑셀파일 다운로드", data=st.session_state.excel_buffer, file_name="국어활동_분석결과_통합.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="secondary", use_container_width=True)
+    
+    # [신규] 통계 대시보드 추가 (작업 현황 시각화)
+    if st.session_state.master_df is not None and not st.session_state.master_df.empty:
+        st.markdown("---")
+        with st.expander("📊 현재까지 모인 데이터 통계 보러가기"):
+            stat_df = st.session_state.master_df
+            col_stat1, col_stat2 = st.columns(2)
+            
+            with col_stat1:
+                st.metric("총 단어 수", len(stat_df))
+                if '구분' in stat_df.columns:
+                    origin_counts = stat_df['구분'].value_counts()
+                    st.write("**어종별 비율**")
+                    st.bar_chart(origin_counts)
+            
+            with col_stat2:
+                if '출연횟수' in stat_df.columns:
+                    top_words = stat_df.sort_values('출연횟수', ascending=False).head(10)
+                    st.write("**최다 빈도 단어 TOP 10**")
+                    st.dataframe(top_words[['구분', '자료', '출연횟수']], hide_index=True)
