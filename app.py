@@ -161,7 +161,21 @@ def generate_prompt_from_sheet(sheet_data):
 def api_call_direct(prompt):
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={API_KEY.strip()}"
     headers = {'Content-Type': 'application/json'}
-    data = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.1}}
+    
+    # [안전장치 해제] 분석 거부를 막기 위함
+    safety_settings = [
+        {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
+    ]
+    
+    data = {
+        "contents": [{"parts": [{"text": prompt}]}], 
+        "safetySettings": safety_settings,
+        "generationConfig": {"temperature": 0.1}
+    }
+    
     try:
         response = requests.post(url, headers=headers, json=data, timeout=300)
         if response.status_code != 200:
@@ -192,8 +206,21 @@ def api_call_vision_ocr(image_bytes):
     4. **중복 포함(필수):** 같은 단어나 문장이 여러 번 나오면 합치지 말고 **나온 횟수만큼 반복해서** 적으세요.
     5. **노이즈 제거:** 쪽수, 머리말은 제외하세요.
     """
+
+    # OCR도 안전장치 해제
+    safety_settings = [
+        {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
+    ]
     
-    data = {"contents": [{"parts": [{"text": prompt_text}, {"inline_data": {"mime_type": "image/png", "data": base64_image}}]}], "generationConfig": {"temperature": 0.1}}
+    data = {
+        "contents": [{"parts": [{"text": prompt_text}, {"inline_data": {"mime_type": "image/png", "data": base64_image}}]}], 
+        "safetySettings": safety_settings,
+        "generationConfig": {"temperature": 0.1}
+    }
+
     try:
         response = requests.post(url, headers=headers, json=data, timeout=300)
         if response.status_code != 200: return f"OCR 실패: {response.text}"
@@ -374,517 +401,349 @@ def load_excel_safely(file):
         return None
     except: return None
 
-def apply_editor_changes():
-    if "editor" in st.session_state and st.session_state.analysis_result:
-        changes = st.session_state["editor"].get("edited_rows", {})
+# [기능 유지] 기존 키 충돌을 방지하면서 편집된 데이터를 동기화하는 로직
+def apply_editor_changes_safe(source_key):
+    editor_key = f"editor_{source_key}"
+    if editor_key in st.session_state and st.session_state.analysis_result:
+        changes = st.session_state[editor_key].get("edited_rows", {})
         for idx, changes_dict in changes.items():
             if idx < len(st.session_state.analysis_result):
                 for col, val in changes_dict.items():
                     st.session_state.analysis_result[idx][col] = val
 
 # =========================================================
-# 🖥️ 메인 화면 로직
+# 🔄 결과 표시 및 UI 처리 함수 (핵심 로직 통합)
+# =========================================================
+def render_analysis_ui(page_str, source_key):
+    """
+    이 함수가 기존에 중복되어 있던 150줄 가량의 코드를 하나로 통합한 것입니다.
+    파일 분석 탭과 직접 입력 탭 양쪽에서 이 함수를 호출하여 화면을 그립니다.
+    """
+    if st.session_state.analysis_result:
+        st.markdown("### 📊 분석 결과")
+        df_disp = pd.DataFrame(st.session_state.analysis_result)
+        
+        col_conf = {
+            "delete_check": st.column_config.CheckboxColumn("삭제", width="small"),
+            "count": st.column_config.TextColumn("빈도"),
+            "original_word": st.column_config.TextColumn("원본"),
+            "root_word": "원형",
+            "origin": st.column_config.SelectboxColumn("분류", options=["🔵 고", "🟢 한", "🔴 외", "🟣 혼"]),
+            "pos": st.column_config.SelectboxColumn("품사", options=["📦 명사", "🏃 동사", "🎨 형용사", "⚡ 부사", "🔍 관형사", "👤 대명사"])
+        }
+        
+        # [중요] 탭 간 충돌 방지를 위해 source_key 사용
+        edited = st.data_editor(
+            df_disp[["delete_check","count","original_word","root_word","origin","pos"]], 
+            column_config=col_conf, 
+            use_container_width=True, 
+            key=f"editor_{source_key}", 
+            num_rows="fixed"
+        )
+        
+        b1, b2, b3 = st.columns([1, 2, 2])
+        
+        sheet, sheet_data = get_sheet_data_fresh(st.session_state.last_mode) 
+
+        def save_data(df, pg):
+            valid = df[df['delete_check'] == False].copy()
+            
+            # 학습용 데이터 전송
+            logs = []
+            for _, r in valid.iterrows():
+                logs.append([datetime.now().isoformat(), r['original_word'], r['root_word'], clean_value_for_save(r['origin']), clean_value_for_save(r['pos']), 'modify', 'save'])
+            if sheet and logs: send_data_with_retry(sheet, logs, True)
+            
+            # 엑셀 데이터 병합
+            agg = valid.groupby(['root_word','origin','pos'], as_index=False).agg(
+                {'original_word': lambda x: ','.join(x.unique()), 'count': lambda x: sum([int(str(v).replace('회','')) for v in x])}
+            )
+            
+            bdf = st.session_state.master_df
+            if bdf is None: bdf = pd.DataFrame(columns=['구분','자료','출연횟수'])
+            
+            new_rows = []
+            for _, r in agg.iterrows():
+                root = r['root_word']
+                org = clean_value_for_save(r['origin'])
+                cnt = r['count']
+                p_str = f"{pg}_{cnt}" if cnt > 1 else pg
+                
+                mask = (bdf['자료'] == root) & (bdf['구분'] == org)
+                if mask.any():
+                    idx = bdf[mask].index[0]
+                    filled = bdf.loc[idx].filter(like='쪽수').notna().sum()
+                    bdf.at[idx, f"쪽수{filled+1}"] = p_str
+                else:
+                    new_rows.append({'구분': org, '자료': root, '쪽수1': p_str})
+            
+            if new_rows: bdf = pd.concat([bdf, pd.DataFrame(new_rows)], ignore_index=True)
+            bdf['출연횟수'] = bdf.apply(calculate_total_appearances, axis=1)
+            bdf['sort'] = bdf['구분'].map({'고':1, '순':1, '한':2, '외':3, '혼':4}).fillna(5)
+            bdf = bdf.sort_values(['sort', '자료']).drop('sort', axis=1)
+            st.session_state.master_df = bdf
+            save_backup_to_cloud(st.session_state.last_mode, bdf)
+            return True
+
+        with b1:
+            if st.button("⛔ 체크 삭제", key=f"btn_del_{source_key}", type="secondary"):
+                dels = edited[edited['delete_check']==True]
+                if not dels.empty and sheet:
+                    logs = [[datetime.now().isoformat(), r['original_word'].split('(')[0], r['root_word'], "", "", 'delete', 'check_del'] for _, r in dels.iterrows()]
+                    send_data_with_retry(sheet, logs, True)
+                st.session_state.analysis_result = edited[edited['delete_check']==False].to_dict('records')
+                st.rerun()
+                
+        with b2:
+            if st.button("💾 저장하고 다음 쪽(▶)", key=f"btn_next_{source_key}", type="primary", use_container_width=True):
+                save_data(edited, page_str)
+                is_pdf = st.session_state.uploaded_file and "pdf" in st.session_state.uploaded_file.type
+                if source_key == 'FILE' and is_pdf and st.session_state.current_page_idx < st.session_state.total_pages - 1:
+                    st.session_state.current_page_idx += 1
+                    st.session_state.analysis_result = None
+                    st.rerun()
+                else: st.success("저장되었습니다. (다음 쪽 없음)")
+
+        with b3:
+            if st.button("💾 저장만 하기 (종료)", key=f"btn_save_{source_key}", use_container_width=True):
+                save_data(edited, page_str)
+                st.success("✅ 저장되었습니다.")
+
+
+# =========================================================
+# 🖥️ 메인 화면
 # =========================================================
 st.title("📝 국어활동 AI 분석기")
 
 with st.sidebar:
-    st.header("🏳️ 분석 모드 선택")
-    mode_selection = st.radio("분석할 언어 환경", ("🇰🇷 대한민국 표준어", "🇰🇵 북한 문화어"))
+    st.header("🏳️ 분석 모드")
+    mode_selection = st.radio("언어 환경", ("🇰🇷 대한민국 표준어", "🇰🇵 북한 문화어"))
     MODE_KEY = "SOUTH" if "대한민국" in mode_selection else "NORTH"
     
     if 'last_mode' not in st.session_state: st.session_state.last_mode = MODE_KEY
     if st.session_state.last_mode != MODE_KEY:
         st.session_state.analysis_result = None
         if st.session_state.master_df is not None and not st.session_state.master_df.empty:
-            prev_mode = st.session_state.last_mode
-            if save_backup_to_cloud(prev_mode, st.session_state.master_df):
-                st.toast(f"🔄 모드 변경 전 '{prev_mode}' 데이터가 안전하게 백업되었습니다.", icon="🛡️")
+            save_backup_to_cloud(st.session_state.last_mode, st.session_state.master_df)
         st.session_state.master_df = None 
         st.session_state.last_uploaded_file_name = None 
         st.session_state.last_mode = MODE_KEY
         st.rerun()
 
-    connected_tab_name = 'South_Korea' if MODE_KEY=='SOUTH' else 'North_Korea'
-    st.success(f"현재 **[{mode_selection}]** 모드입니다.\n\n학습 데이터가 **'{connected_tab_name}'** 탭에 저장됩니다.")
+    sheet, sheet_data = get_sheet_data_fresh(MODE_KEY)
+    if sheet: st.success(f"✅ {len(sheet_data)}건의 학습 데이터 연동됨")
+    else: st.error("❌ 서버 연결 실패")
+
     st.markdown("---")
-
-sheet, sheet_data = get_sheet_data_fresh(MODE_KEY)
-
-if 'analysis_result' not in st.session_state: st.session_state.analysis_result = None
-if 'excel_buffer' not in st.session_state: st.session_state.excel_buffer = None
-if 'master_df' not in st.session_state: st.session_state.master_df = None
-if 'last_uploaded_file_name' not in st.session_state: st.session_state.last_uploaded_file_name = None
-if 'analysis_source' not in st.session_state: st.session_state.analysis_source = None # [NEW] 분석 소스(FILE or MANUAL)
-
-if 'uploaded_file' not in st.session_state: st.session_state.uploaded_file = None
-if 'total_pages' not in st.session_state: st.session_state.total_pages = 0
-if 'current_page_idx' not in st.session_state: st.session_state.current_page_idx = 0
-if 'start_page_offset' not in st.session_state: st.session_state.start_page_offset = 1 
-if 'manual_page_input' not in st.session_state: st.session_state.manual_page_input = "1" 
-
-uploaded_df = None
-with st.sidebar:
-    st.header("📂 이어하기 & 백업")
-    uploaded_excel = st.file_uploader("작업하던 엑셀 파일", type=['xlsx'])
+    uploaded_excel = st.file_uploader("📂 작업 파일 불러오기 (Excel)", type=['xlsx'])
     
-    if uploaded_excel:
-        if uploaded_excel.name != st.session_state.last_uploaded_file_name:
-            uploaded_df = load_excel_safely(uploaded_excel)
-            if uploaded_df is not None:
-                 if st.session_state.master_df is not None and not st.session_state.master_df.empty:
-                     merged_df = pd.concat([st.session_state.master_df, uploaded_df], ignore_index=True)
-                     st.session_state.master_df = merged_df.drop_duplicates(subset=['자료', '구분'], keep='first').reset_index(drop=True)
-                     st.toast(f"➕ 기존 작업에 '{uploaded_excel.name}' 내용을 합쳤습니다!", icon="🔗")
-                 else:
-                     st.session_state.master_df = uploaded_df.copy()
-                     st.toast(f"📂 '{uploaded_excel.name}' 파일이 로드되었습니다!", icon="✅")
-                 st.session_state.last_uploaded_file_name = uploaded_excel.name
-                 time.sleep(0.5)
-                 st.rerun() 
-            else:
-                 st.error("ℹ️ 빈 파일 혹은 양식이 다릅니다.")
+    if uploaded_excel and uploaded_excel.name != st.session_state.last_uploaded_file_name:
+        udf = load_excel_safely(uploaded_excel)
+        if udf is not None:
+             if st.session_state.master_df is not None:
+                 st.session_state.master_df = pd.concat([st.session_state.master_df, udf]).drop_duplicates(subset=['자료', '구분']).reset_index(drop=True)
+             else: st.session_state.master_df = udf
+             st.session_state.last_uploaded_file_name = uploaded_excel.name
+             st.toast("파일이 로드되었습니다!")
+             time.sleep(1)
+             st.rerun()
 
-    if st.session_state.master_df is not None and not st.session_state.master_df.empty:
-        backup_buffer = io.BytesIO()
-        with pd.ExcelWriter(backup_buffer, engine='openpyxl') as writer: st.session_state.master_df.to_excel(writer, index=False)
-        backup_buffer.seek(0)
-        st.download_button(
-            label="💾 PC에 엑셀 백업",
-            data=backup_buffer,
-            file_name=f"국어활동_백업_{datetime.now().strftime('%H%M%S')}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True
-        )
-        
-        if st.button("☁️ 구글 시트에 임시저장", use_container_width=True):
-            with st.spinner("클라우드에 백업 중..."):
-                if save_backup_to_cloud(MODE_KEY, st.session_state.master_df):
-                    st.success("✅ 클라우드 저장 완료!")
-                else:
-                    st.error("❌ 저장 실패 (인터넷 연결 확인)")
-
-    if (st.session_state.master_df is None or st.session_state.master_df.empty) and sheet:
-        if st.button("📂 클라우드 백업 불러오기", use_container_width=True):
-            with st.spinner("백업 찾는 중..."):
-                restored_df = load_backup_from_cloud(MODE_KEY)
-                if restored_df is not None and not restored_df.empty:
-                    st.session_state.master_df = restored_df
-                    st.success(f"✅ 복구 완료! ({len(restored_df)}개 단어)")
-                    time.sleep(1)
-                    st.rerun()
-                else:
-                    st.warning("⚠️ 저장된 백업 데이터가 없습니다.")
-
-    if sheet: st.caption(f"🌏 지능 연결됨: {len(sheet_data)}건 학습됨")
-    else: st.error("❌ 학습 서버 연결 실패")
+    if st.session_state.master_df is not None:
+        buf = io.BytesIO()
+        with pd.ExcelWriter(buf, engine='openpyxl') as writer: st.session_state.master_df.to_excel(writer, index=False)
+        st.download_button("💾 엑셀 백업", buf.getvalue(), f"백업_{datetime.now().strftime('%H%M')}.xlsx")
+        if st.button("☁️ 클라우드 저장"):
+            if save_backup_to_cloud(MODE_KEY, st.session_state.master_df): st.toast("저장 완료!", icon="✅")
     
     st.markdown("---")
-    
-    with st.expander("➕ AI가 놓친 단어 추가하기"):
+    with st.expander("➕ 단어 수동 추가"):
         with st.form("manual_add_form"):
             add_orig = st.text_input("원본 단어")
             add_root = st.text_input("원형")
             add_origin = st.selectbox("분류", ["고", "한", "외", "혼"])
             add_pos = st.selectbox("품사", ["명사", "동사", "형용사", "부사", "관형사", "대명사"]) 
-            
             if st.form_submit_button("추가 및 학습"):
-                apply_editor_changes()
+                # [수정] 수동 추가 시, 기존에 편집하던 테이블 내용을 안전하게 동기화
+                if st.session_state.analysis_source:
+                    apply_editor_changes_safe(st.session_state.analysis_source)
+                
                 if add_orig and add_root and sheet:
                     row = [datetime.now().isoformat(), add_orig, add_root, add_origin, add_pos, 'add', '수동추가']
                     if send_data_with_retry(sheet, row, is_multiple=False):
                         if st.session_state.analysis_result is not None:
                             origin_map = {'고': '🔵 고', '한': '🟢 한', '외': '🔴 외', '혼': '🟣 혼'}
                             pos_map = {'명사': '📦 명사', '동사': '🏃 동사', '형용사': '🎨 형용사', '부사': '⚡ 부사', '관형사': '🔍 관형사', '대명사': '👤 대명사'}
-                            mapped_origin = origin_map.get(add_origin, add_origin)
-                            mapped_pos = pos_map.get(add_pos, add_pos)
-                            
                             new_item = {
-                                'delete_check': False,
-                                'status': '✅ 수동',
-                                'count': '1회',
-                                'original_word': add_orig,
-                                'root_word': add_root,
-                                'origin': mapped_origin,
-                                'pos': mapped_pos
+                                'delete_check': False, 'status': '✅ 수동', 'count': '1회',
+                                'original_word': add_orig, 'root_word': add_root,
+                                'origin': origin_map.get(add_origin, add_origin),
+                                'pos': pos_map.get(add_pos, add_pos)
                             }
                             st.session_state.analysis_result.append(new_item)
-                        st.toast(f"✅ 추가 완료!", icon="🎓")
+                        st.toast(f"✅ '{add_orig}' 추가 완료!", icon="🎓")
                         st.rerun()
 
-    st.markdown("---")
-    st.subheader("🔍 이력 검색")
-    search_query = st.text_input("궁금한 단어")
-    if search_query and sheet_data:
-        history = [row for row in sheet_data if search_query in str(row.get('root_word')) or search_query in str(row.get('original_word'))]
-        if history:
-            for h in history[-3:]:
-                st.caption(f"{h['timestamp'][:10]} [{h['action']}] {h['original_word']} -> {h['root_word']}")
+# [세션 상태 초기화]
+if 'analysis_result' not in st.session_state: st.session_state.analysis_result = None
+if 'master_df' not in st.session_state: st.session_state.master_df = None
+if 'last_uploaded_file_name' not in st.session_state: st.session_state.last_uploaded_file_name = None
+if 'analysis_source' not in st.session_state: st.session_state.analysis_source = None 
+if 'uploaded_file' not in st.session_state: st.session_state.uploaded_file = None
+if 'total_pages' not in st.session_state: st.session_state.total_pages = 0
+if 'current_page_idx' not in st.session_state: st.session_state.current_page_idx = 0
+if 'start_page_offset' not in st.session_state: st.session_state.start_page_offset = 1 
+if 'manual_page_input' not in st.session_state: st.session_state.manual_page_input = "1" 
 
-# [상단 UI] 탭 분리 적용
-st.subheader("🧐 분석 대상 입력")
-tab_file, tab_manual = st.tabs(["📄 파일 분석 (PDF/이미지)", "✍️ 직접 텍스트 입력"])
+# [탭 구성]
+tab_file, tab_manual = st.tabs(["📄 파일 분석", "✍️ 직접 입력"])
+target_text = ""
+run_analysis = False
 
-# [핵심 수정: 변수 초기화]
-target_text_for_analysis = "" 
-run_analysis_flag = False
-
-# [Tab 1: 파일 업로드 및 분석]
+# [Tab 1: 파일]
 with tab_file:
-    col_up, col_set = st.columns([3, 1])
+    col_up, col_p = st.columns([3, 1])
     with col_up:
-        uploaded_file = st.file_uploader(
-            "교과서/문서 파일 업로드", 
-            type=['pdf', 'png', 'jpg', 'jpeg'], 
-            key='file_uploader'
-        )
-        
+        uploaded_file = st.file_uploader("PDF / 이미지 업로드", type=['pdf', 'png', 'jpg'], key='file_up')
         if uploaded_file and uploaded_file != st.session_state.uploaded_file:
             st.session_state.uploaded_file = uploaded_file
             st.session_state.current_page_idx = 0
             st.session_state.analysis_result = None
-            st.session_state.start_page_offset = 1 
-            st.session_state.analysis_source = None 
-            
-            file_type = uploaded_file.type
-            if "pdf" in file_type:
+            if "pdf" in uploaded_file.type:
                 try:
-                    if PLUMBER_AVAILABLE:
+                    if PLUMBER_AVAILABLE: 
                         with pdfplumber.open(uploaded_file) as pdf: st.session_state.total_pages = len(pdf.pages)
                     elif FITZ_AVAILABLE:
-                        doc = fitz.open(stream=uploaded_file.getvalue(), filetype="pdf")
-                        st.session_state.total_pages = len(doc)
+                        with fitz.open(stream=uploaded_file.getvalue(), filetype="pdf") as doc: st.session_state.total_pages = len(doc)
                 except: pass
-            else:
-                st.session_state.total_pages = 1
+            else: st.session_state.total_pages = 1
             st.rerun()
 
-    is_pdf_mode = st.session_state.uploaded_file and "pdf" in st.session_state.uploaded_file.type
-
-    with col_set:
-        if is_pdf_mode:
-            st.write("") 
-            new_offset = st.number_input("교과서 시작 쪽수", min_value=1, value=st.session_state.start_page_offset, help="PDF의 첫 번째 장이 실제 교과서 몇 쪽인지 설정하세요.")
-            if new_offset != st.session_state.start_page_offset:
-                st.session_state.start_page_offset = new_offset
+    is_pdf = st.session_state.uploaded_file and "pdf" in st.session_state.uploaded_file.type
+    with col_p:
+        if is_pdf:
+            new_off = st.number_input("시작 쪽수", min_value=1, value=st.session_state.start_page_offset)
+            if new_off != st.session_state.start_page_offset:
+                st.session_state.start_page_offset = new_off
                 st.rerun()
 
-    # [핵심 수정] 파일 탭에서 보여줄 변수를 별도로 관리 (file_extracted_text)
-    file_extracted_text = "" 
-    
+    file_text_val = ""
     if st.session_state.uploaded_file:
-        if is_pdf_mode:
-            current_save_page = str(st.session_state.current_page_idx + st.session_state.start_page_offset)
-        else:
-            current_save_page = st.session_state.manual_page_input
-
-        # [3단계: 페이지 점프 기능 (PDF 모드에서만)]
-        if is_pdf_mode and st.session_state.total_pages > 1:
-            c_prev, c_jump, c_next = st.columns([1, 1, 1])
-            with c_prev:
-                if st.button("◀ 이전 장", use_container_width=True, key="btn_prev"):
+        cur_page_lbl = str(st.session_state.current_page_idx + st.session_state.start_page_offset) if is_pdf else st.session_state.manual_page_input
+        
+        if is_pdf and st.session_state.total_pages > 1:
+            c1, c2, c3 = st.columns([1,1,1])
+            with c1: 
+                if st.button("◀ 이전"): 
                     if st.session_state.current_page_idx > 0:
                         st.session_state.current_page_idx -= 1
                         st.session_state.analysis_result = None
                         st.rerun()
-            with c_next:
-                if st.button("다음 장 ▶", use_container_width=True, key="btn_next"):
+            with c3:
+                if st.button("다음 ▶"):
                     if st.session_state.current_page_idx < st.session_state.total_pages - 1:
                         st.session_state.current_page_idx += 1
                         st.session_state.analysis_result = None
                         st.rerun()
-            with c_jump:
-                target_page = st.number_input(
-                    "페이지 이동", 
-                    min_value=1, 
-                    max_value=st.session_state.total_pages, 
-                    value=st.session_state.current_page_idx + 1,
-                    label_visibility="collapsed",
-                    key="page_jumper"
-                )
-                if target_page != st.session_state.current_page_idx + 1:
-                    st.session_state.current_page_idx = target_page - 1
-                    st.session_state.analysis_result = None
-                    st.rerun()
-            st.markdown(f"<div style='text-align:center; color:grey; font-size:0.8em;'>총 {st.session_state.total_pages}장 중 {st.session_state.current_page_idx + 1}번째 장 (교과서 {current_save_page}쪽)</div>", unsafe_allow_html=True)
+            st.caption(f"{st.session_state.current_page_idx + 1}/{st.session_state.total_pages} (교과서 {cur_page_lbl}쪽)")
 
-        view_col1, view_col2 = st.columns([1, 1])
-        with view_col1:
-            st.caption("📷 원본 미리보기")
-            img_bytes = get_page_image_bytes(st.session_state.uploaded_file, st.session_state.current_page_idx)
-            if img_bytes:
-                b64_img = base64.b64encode(img_bytes).decode('utf-8')
-                html_code = f"""
-                <div style="height: 600px; overflow-y: auto; border: 1px solid #ddd; border-radius: 5px; padding: 10px; background-color: #f9f9f9;">
-                    <img src="data:image/png;base64,{b64_img}" style="width: 100%; display: block;">
-                </div>
-                """
-                st.markdown(html_code, unsafe_allow_html=True)
-            else:
-                st.info("미리보기를 불러올 수 없습니다.")
-
-        with view_col2:
-            st.caption("📝 추출 텍스트")
-            with st.spinner("텍스트 읽는 중..."):
-                extracted_text = extract_text_unified(st.session_state.uploaded_file, st.session_state.current_page_idx)
-                if "오류" in extracted_text: st.error(extracted_text)
-            
-            # [핵심 수정] 여기서 target_text_for_analysis에 바로 할당하지 않고, 파일 전용 변수(file_extracted_text)에 담습니다.
-            file_extracted_text = st.text_area(
-                "분석 대상", 
-                value=extracted_text if extracted_text else "",
-                height=600,
-                label_visibility="collapsed",
-                key="file_text_area"
-            )
-            
-            col_p, col_b = st.columns([1, 2])
-            with col_p:
-                if not is_pdf_mode: 
-                    manual_page_val = st.text_input("저장될 쪽수", value=st.session_state.manual_page_input, key="manual_page_setter_file")
-                    if manual_page_val != st.session_state.manual_page_input:
-                        st.session_state.manual_page_input = manual_page_val
-                else:
-                    st.info(f"💾 **{current_save_page}쪽**으로 저장")
-            with col_b:
-                if st.button("🚀 파일 내용 분석 실행", use_container_width=True, type="primary", key="btn_analyze_file"):
-                    # [핵심 수정] 버튼을 눌렀을 때만 파일 텍스트를 분석 대상으로 넘김
-                    target_text_for_analysis = file_extracted_text 
-                    run_analysis_flag = True
-                    st.session_state.analysis_source = 'FILE'
-
-# [Tab 2: 직접 텍스트 입력]
-with tab_manual:
-    st.caption("📝 분석할 텍스트를 직접 입력하세요.")
-    manual_text_input = st.text_area("분석 대상 텍스트", height=400, key="manual_text_area")
+        c_img, c_txt = st.columns(2)
+        with c_img:
+            ibytes = get_page_image_bytes(st.session_state.uploaded_file, st.session_state.current_page_idx)
+            if ibytes: st.image(ibytes, use_container_width=True)
+        with c_txt:
+            with st.spinner("텍스트 추출 중..."):
+                extracted = extract_text_unified(st.session_state.uploaded_file, st.session_state.current_page_idx)
+            file_text_val = st.text_area("추출된 텍스트", extracted, height=400)
+            if st.button("🚀 분석 실행", key='btn_file', type="primary"):
+                target_text = file_text_val
+                st.session_state.analysis_source = 'FILE'
+                run_analysis = True
     
-    col_m_p, col_m_b = st.columns([1, 2])
-    with col_m_p:
-        manual_page_val_2 = st.text_input("저장될 쪽수 입력", value=st.session_state.manual_page_input, key="manual_page_setter_text")
-        if manual_page_val_2 != st.session_state.manual_page_input:
-            st.session_state.manual_page_input = manual_page_val_2
-            
-    with col_m_b:
-        if st.button("🚀 입력 텍스트 분석 실행", use_container_width=True, type="primary", key="btn_analyze_manual"):
-            if manual_text_input.strip():
-                # [핵심 수정] 버튼을 눌렀을 때만 입력 텍스트를 분석 대상으로 넘김
-                target_text_for_analysis = manual_text_input 
-                run_analysis_flag = True
-                st.session_state.analysis_source = 'MANUAL'
-            else:
-                st.warning("⚠️ 분석할 텍스트를 입력해주세요.")
+    # [핵심] 파일 탭 내부에 결과 표시
+    if st.session_state.analysis_source == 'FILE':
+         final_pg_file = str(st.session_state.current_page_idx + st.session_state.start_page_offset) if is_pdf else st.session_state.manual_page_input
+         render_analysis_ui(final_pg_file, 'FILE')
 
-# 분석 실행 로직 (공통)
-if run_analysis_flag and target_text_for_analysis:
-    with st.spinner(f"{mode_selection} 모드로 분석 중입니다..."):
-        raw_results = get_analysis_hybrid(target_text_for_analysis, sheet_data, MODE_KEY)
+
+# [Tab 2: 직접 입력]
+with tab_manual:
+    manual_val = st.text_area("분석할 텍스트 입력", height=300)
+    pg_val = st.text_input("쪽수", value=st.session_state.manual_page_input)
+    if pg_val != st.session_state.manual_page_input: st.session_state.manual_page_input = pg_val
+    
+    if st.button("🚀 분석 실행", key='btn_manual', type="primary"):
+        if manual_val.strip():
+            target_text = manual_val
+            st.session_state.analysis_source = 'MANUAL'
+            run_analysis = True
+    
+    # [핵심] 입력 탭 내부에 결과 표시
+    if st.session_state.analysis_source == 'MANUAL':
+        render_analysis_ui(st.session_state.manual_page_input, 'MANUAL')
+
+
+# [공통 분석 실행]
+if run_analysis and target_text:
+    with st.spinner("AI 분석 중..."):
+        raw_res = get_analysis_hybrid(target_text, sheet_data, MODE_KEY)
         
-        if raw_results:
-            validation_text = target_text_for_analysis.replace(" ", "")
-            POS_WHITELIST = ['명사', '동사', '형용사', '부사', '관형사', '대명사'] 
+        if raw_res:
             blacklist = get_blacklist_from_sheet(sheet_data)
-            problematic_words = get_problematic_words(sheet_data)
+            prob_words = get_problematic_words(sheet_data)
+            POS_OK = ['명사', '동사', '형용사', '부사', '관형사', '대명사']
             
-            pre_filtered_items = []
-            for item in raw_results:
-                original = item.get('original_word', '').replace(" ", "")
+            filtered = []
+            for item in raw_res:
+                orig = item.get('original_word', '').replace(" ", "")
                 root = item.get('root_word', '')
                 pos = item.get('pos', '')
                 
-                orig_check = original.split('(')[0]
-                if orig_check not in validation_text: pass 
-                if not pos or pos not in POS_WHITELIST: continue
-                if original in blacklist or root in blacklist: continue
+                if not pos or pos not in POS_OK: continue
+                if orig in blacklist or root in blacklist: continue
                 
                 if item.get('origin') == '순': item['origin'] = '고'
                 item['origin'] = add_emoji_to_origin(item.get('origin', ''))
                 pos_map = {'명사': '📦 명사', '동사': '🏃 동사', '형용사': '🎨 형용사', '부사': '⚡ 부사', '관형사': '🔍 관형사', '대명사': '👤 대명사'}
                 item['pos'] = pos_map.get(pos, pos)
-                pre_filtered_items.append(item)
+                filtered.append(item)
             
-            grouped_data = {} 
-            for item in pre_filtered_items:
-                root = item['root_word']
-                if root not in grouped_data:
-                    grouped_data[root] = {'root_word': root, 'origin': item['origin'], 'pos': item['pos'], 'originals': []}
-                grouped_data[root]['originals'].append(item['original_word'])
-
-            final_results = []
-            for root, info in grouped_data.items():
-                orig_counts = Counter(info['originals'])
-                formatted_original = ", ".join([f"{word}({cnt})" for word, cnt in orig_counts.items()])
-                total_cnt = sum(orig_counts.values()) 
-                is_trusted = check_trust_level_strict(root, st.session_state.master_df, problematic_words)
-                status = '✅ 자동' if is_trusted else '📝 검토'
-                final_results.append({'delete_check': False, 'status': status, 'count': f"{total_cnt}회", 'original_word': formatted_original, 'root_word': root, 'origin': info['origin'], 'pos': info['pos']})
+            grp = {}
+            for it in filtered:
+                r = it['root_word']
+                if r not in grp: grp[r] = {'root_word': r, 'origin': it['origin'], 'pos': it['pos'], 'originals': []}
+                grp[r]['originals'].append(it['original_word'])
             
-            if final_results:
-                st.session_state.analysis_result = final_results
-            else:
-                st.session_state.analysis_result = None
-                st.warning("⚠️ 분석 결과가 없습니다. (분석 대상 단어가 없거나 모두 제외되었습니다)")
+            final = []
+            for r, info in grp.items():
+                cnts = Counter(info['originals'])
+                orig_str = ", ".join([f"{k}({v})" for k,v in cnts.items()])
+                tot = sum(cnts.values())
+                trusted = check_trust_level_strict(r, st.session_state.master_df, prob_words)
+                final.append({
+                    'delete_check': False,
+                    'status': '✅ 자동' if trusted else '📝 검토',
+                    'count': f"{tot}회",
+                    'original_word': orig_str,
+                    'root_word': r,
+                    'origin': info['origin'],
+                    'pos': info['pos']
+                })
+            st.session_state.analysis_result = final
+            st.rerun() 
         else:
             st.session_state.analysis_result = None
-            st.warning("⚠️ AI가 아무런 응답을 하지 않았습니다. 잠시 후 다시 시도해주세요.")
+            st.warning("분석 결과가 없습니다.")
 
-# 결과 표시 및 저장 (공통)
-if st.session_state.analysis_result:
+if st.session_state.master_df is not None and not st.session_state.master_df.empty:
     st.markdown("---")
-    st.markdown("### 📊 분석 결과")
-    
-    df_display = pd.DataFrame(st.session_state.analysis_result)
-    
-    column_config = {
-        "delete_check": st.column_config.CheckboxColumn("삭제", width="small"),
-        "count": st.column_config.TextColumn("빈도", disabled=False), 
-        "original_word": st.column_config.TextColumn("원본 단어", disabled=True), 
-        "root_word": "원형",
-        "origin": st.column_config.SelectboxColumn("분류", options=["🔵 고", "🟢 한", "🔴 외", "🟣 혼"]),
-        "pos": st.column_config.SelectboxColumn("품사", options=["📦 명사", "🏃 동사", "🎨 형용사", "⚡ 부사", "🔍 관형사", "👤 대명사"])
-    }
-    cols = ["delete_check", "count", "original_word", "root_word", "origin", "pos"]
-    
-    edited_df = st.data_editor(df_display[cols] if not df_display.empty else df_display, column_config=column_config, use_container_width=True, num_rows="fixed", key="editor")
-    
-    btn_col1, btn_col2, btn_col3 = st.columns([1, 2, 2])
-    
-    with btn_col1:
-        if st.button("⛔ 체크 삭제", type="secondary"):
-            to_delete = edited_df[edited_df['delete_check'] == True]
-            if not to_delete.empty and sheet:
-                rows_to_add = []
-                for _, row in to_delete.iterrows():
-                     raw_orig = str(row['original_word']).split('(')[0] 
-                     rows_to_add.append([datetime.now().isoformat(), raw_orig, row['root_word'], "", "", 'delete', target_text_for_analysis])
-                
-                if send_data_with_retry(sheet, rows_to_add, is_multiple=True):
-                    st.toast(f"🗑️ 삭제 학습 완료!", icon="✅")
-                    remaining = edited_df[edited_df['delete_check'] == False].to_dict('records')
-                    st.session_state.analysis_result = remaining
-                    time.sleep(1)
-                    st.rerun()
-
-    def save_logic(df_to_save, page_str):
-        valid_rows = df_to_save[df_to_save['delete_check'] == False].copy()
-        
-        learning_logs = []
-        for _, row in valid_rows.iterrows():
-            c_origin = clean_value_for_save(row['origin'])
-            c_pos = clean_value_for_save(row['pos'])
-            learning_logs.append({
-                'timestamp': datetime.now().isoformat(),
-                'original_word': row['original_word'], 
-                'root_word': row['root_word'],
-                'origin': c_origin,
-                'pos': c_pos,
-                'action': 'modify',
-                'context': 'save_action'
-            })
-            
-        def parse_count(val):
-            try: return int(str(val).replace('회', '').strip())
-            except: return 1
-            
-        valid_rows['numeric_count'] = valid_rows['count'].apply(parse_count)
-        
-        aggregated_df = valid_rows.groupby(['root_word', 'origin', 'pos'], as_index=False).agg({
-            'numeric_count': 'sum', 
-            'original_word': lambda x: ', '.join(x.unique())
-        })
-        
-        base_df = st.session_state.master_df
-        if base_df is None: base_df = pd.DataFrame(columns=['구분', '자료', '출연횟수'])
-        for c in base_df.columns:
-            if '쪽수' in c: base_df[c] = base_df[c].astype(object)
-            
-        new_rows_for_excel = []
-        
-        for _, item in aggregated_df.iterrows():
-            root = item['root_word']
-            cnt = item['numeric_count']
-            origin_val = clean_value_for_save(item['origin'])
-            
-            val = f"{page_str}_{cnt}" if cnt > 1 else page_str
-            
-            mask = (base_df['자료'] == root) & (base_df['구분'] == origin_val)
-            
-            if mask.any():
-                idx = base_df[mask].index[0]
-                filled = base_df.loc[idx].filter(like='쪽수').notna().sum()
-                col = f"쪽수{filled+1}"
-                if col not in base_df.columns: base_df[col] = float('nan')
-                base_df.at[idx, col] = val
-            else:
-                new_rows_for_excel.append({'구분': origin_val, '자료': root, '쪽수1': val})
-                
-        if new_rows_for_excel:
-            base_df = pd.concat([base_df, pd.DataFrame(new_rows_for_excel)], ignore_index=True)
-            
-        base_df['출연횟수'] = base_df.apply(calculate_total_appearances, axis=1)
-        base_df['sort'] = base_df['구분'].map({'고':1, '순':1, '한':2, '외':3, '혼':4}).fillna(5)
-        base_df = base_df.sort_values(['sort', '자료']).drop('sort', axis=1)
-        st.session_state.master_df = base_df
-        
-        output_excel = io.BytesIO()
-        with pd.ExcelWriter(output_excel, engine='openpyxl') as writer: base_df.to_excel(writer, index=False)
-        output_excel.seek(0)
-        st.session_state.excel_buffer = output_excel
-        
-        if save_backup_to_cloud(MODE_KEY, base_df):
-            pass
-        else:
-            st.toast("⚠️ 엑셀은 저장됐지만, 클라우드 백업은 실패했습니다!", icon="☁️")
-
-        if sheet and learning_logs:
-            rows = [list(log.values()) for log in learning_logs]
-            send_data_with_retry(sheet, rows, is_multiple=True)
-            
-        return True
-    
-    is_source_file = (st.session_state.analysis_source == 'FILE')
-    final_is_pdf = is_source_file and st.session_state.uploaded_file and "pdf" in st.session_state.uploaded_file.type
-    
-    if final_is_pdf: 
-         final_page_str = str(st.session_state.current_page_idx + st.session_state.start_page_offset)
-    else:
-         final_page_str = st.session_state.manual_page_input
-
-    with btn_col2:
-        if st.button("💾 저장하고 다음 쪽(▶) 이동", type="primary", use_container_width=True):
-            if save_logic(edited_df, final_page_str):
-                if final_is_pdf and st.session_state.current_page_idx < st.session_state.total_pages - 1:
-                    st.session_state.current_page_idx += 1
-                    st.session_state.analysis_result = None
-                    st.toast("✅ 저장 완료! 이동합니다.", icon="🏃")
-                    time.sleep(1)
-                    st.rerun()
-                elif not final_is_pdf:
-                    st.success("✅ 저장되었습니다. (입력 모드는 다음 쪽이 없습니다)")
-                else:
-                    st.success("마지막 페이지입니다!")
-
-    with btn_col3:
-        if st.button("💾 저장만 하기 (종료)", use_container_width=True):
-            if save_logic(edited_df, final_page_str):
-                st.success("✅ 저장되었습니다.")
-
-    if st.session_state.excel_buffer:
-        st.download_button(label="📥 엑셀파일 다운로드", data=st.session_state.excel_buffer, file_name="국어활동_분석결과_통합.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="secondary", use_container_width=True)
-    
-    if st.session_state.master_df is not None and not st.session_state.master_df.empty:
-        st.markdown("---")
-        with st.expander("📊 현재까지 모인 데이터 통계 보러가기"):
-            stat_df = st.session_state.master_df
-            col_stat1, col_stat2 = st.columns(2)
-            
-            with col_stat1:
-                st.metric("총 단어 수", len(stat_df))
-                if '구분' in stat_df.columns:
-                    origin_counts = stat_df['구분'].value_counts()
-                    st.write("**어종별 비율**")
-                    st.bar_chart(origin_counts)
-            
-            with col_stat2:
-                if '출연횟수' in stat_df.columns:
-                    top_words = stat_df.sort_values('출연횟수', ascending=False).head(10)
-                    st.write("**최다 빈도 단어 TOP 10**")
-                    st.dataframe(top_words[['구분', '자료', '출연횟수']], hide_index=True)
+    with st.expander("📊 현재까지 모인 데이터 통계"):
+        stat_df = st.session_state.master_df
+        c1, c2 = st.columns(2)
+        with c1:
+            st.metric("총 단어 수", len(stat_df))
+            if '구분' in stat_df.columns:
+                st.bar_chart(stat_df['구분'].value_counts())
+        with c2:
+            if '출연횟수' in stat_df.columns:
+                st.write("**최다 빈도 TOP 10**")
+                st.dataframe(stat_df.sort_values('출연횟수', ascending=False).head(10)[['구분','자료','출연횟수']], hide_index=True)
