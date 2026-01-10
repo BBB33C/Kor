@@ -26,7 +26,7 @@ except ImportError:
     FITZ_AVAILABLE = False
 
 # =========================================================
-# ⚙️ 설정 & 세션 초기화 (최상단 배치)
+# ⚙️ 설정 & 세션 초기화 (최상단 배치 - 에러 방지)
 # =========================================================
 try:
     if "GEMINI_API_KEY" in st.secrets:
@@ -42,7 +42,7 @@ TRUST_THRESHOLD = 3
 
 st.set_page_config(page_title="국어활동 AI 분석기", page_icon="📝", layout="wide")
 
-# [핵심 수정] 변수 초기화를 최상단에서 먼저 수행하여 AttributeError 방지
+# [변수 초기화] AttributeError 방지를 위해 최상단 실행
 if 'analysis_result' not in st.session_state: st.session_state.analysis_result = None
 if 'master_df' not in st.session_state: st.session_state.master_df = None
 if 'last_uploaded_file_name' not in st.session_state: st.session_state.last_uploaded_file_name = None
@@ -52,7 +52,8 @@ if 'total_pages' not in st.session_state: st.session_state.total_pages = 0
 if 'current_page_idx' not in st.session_state: st.session_state.current_page_idx = 0
 if 'start_page_offset' not in st.session_state: st.session_state.start_page_offset = 1 
 if 'manual_page_input' not in st.session_state: st.session_state.manual_page_input = "1"
-if 'last_mode' not in st.session_state: st.session_state.last_mode = "SOUTH" # 기본값
+if 'last_mode' not in st.session_state: st.session_state.last_mode = "SOUTH"
+if 'excel_buffer' not in st.session_state: st.session_state.excel_buffer = None # [복원] 엑셀 버퍼 초기화
 
 # =========================================================
 # 🔐 구글 시트 연결
@@ -409,6 +410,7 @@ def load_excel_safely(file):
         return None
     except: return None
 
+# [기능 유지] 기존 키 충돌을 방지하면서 편집된 데이터를 동기화하는 로직
 def apply_editor_changes_safe(source_key):
     editor_key = f"editor_{source_key}"
     if editor_key in st.session_state and st.session_state.analysis_result:
@@ -419,13 +421,9 @@ def apply_editor_changes_safe(source_key):
                     st.session_state.analysis_result[idx][col] = val
 
 # =========================================================
-# 🔄 결과 표시 및 UI 처리 함수 (위치 이동 및 통합)
+# 🔄 결과 표시 및 UI 처리 함수 (다운로드 버튼 복원 완료)
 # =========================================================
 def render_analysis_ui(page_str, source_key):
-    """
-    이 함수가 기존에 중복되어 있던 코드를 하나로 통합한 것입니다.
-    파일 분석 탭과 직접 입력 탭 양쪽에서 이 함수를 호출하여 화면을 그립니다.
-    """
     if st.session_state.analysis_result:
         st.markdown("### 📊 분석 결과")
         df_disp = pd.DataFrame(st.session_state.analysis_result)
@@ -439,7 +437,6 @@ def render_analysis_ui(page_str, source_key):
             "pos": st.column_config.SelectboxColumn("품사", options=["📦 명사", "🏃 동사", "🎨 형용사", "⚡ 부사", "🔍 관형사", "👤 대명사"])
         }
         
-        # [중요] 탭 간 충돌 방지를 위해 source_key 사용
         edited = st.data_editor(
             df_disp[["delete_check","count","original_word","root_word","origin","pos"]], 
             column_config=col_conf, 
@@ -489,6 +486,13 @@ def render_analysis_ui(page_str, source_key):
             bdf['sort'] = bdf['구분'].map({'고':1, '순':1, '한':2, '외':3, '혼':4}).fillna(5)
             bdf = bdf.sort_values(['sort', '자료']).drop('sort', axis=1)
             st.session_state.master_df = bdf
+            
+            # [복원] 엑셀 버퍼 생성 및 세션 저장
+            output_excel = io.BytesIO()
+            with pd.ExcelWriter(output_excel, engine='openpyxl') as writer: bdf.to_excel(writer, index=False)
+            output_excel.seek(0)
+            st.session_state.excel_buffer = output_excel
+            
             save_backup_to_cloud(st.session_state.last_mode, bdf)
             return True
 
@@ -515,6 +519,18 @@ def render_analysis_ui(page_str, source_key):
             if st.button("💾 저장만 하기 (종료)", key=f"btn_save_{source_key}", use_container_width=True):
                 save_data(edited, page_str)
                 st.success("✅ 저장되었습니다.")
+        
+        # [복원] 다운로드 버튼 UI 복구
+        if st.session_state.excel_buffer:
+            st.download_button(
+                label="📥 엑셀파일 다운로드", 
+                data=st.session_state.excel_buffer, 
+                file_name="국어활동_분석결과_통합.xlsx", 
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", 
+                type="secondary", 
+                use_container_width=True,
+                key=f"dl_btn_{source_key}"
+            )
 
 
 # =========================================================
@@ -569,7 +585,7 @@ with st.sidebar:
             add_origin = st.selectbox("분류", ["고", "한", "외", "혼"])
             add_pos = st.selectbox("품사", ["명사", "동사", "형용사", "부사", "관형사", "대명사"]) 
             if st.form_submit_button("추가 및 학습"):
-                # [수정] 수동 추가 시, 기존에 편집하던 테이블 내용을 안전하게 동기화
+                # [기능 유지] 수동 추가 시, 기존에 편집하던 테이블 내용을 안전하게 동기화
                 if st.session_state.analysis_source:
                     apply_editor_changes_safe(st.session_state.analysis_source)
                 
@@ -588,6 +604,16 @@ with st.sidebar:
                             st.session_state.analysis_result.append(new_item)
                         st.toast(f"✅ '{add_orig}' 추가 완료!", icon="🎓")
                         st.rerun()
+    
+    # [복원] 사이드바 이력 검색 기능 복구
+    st.markdown("---")
+    st.subheader("🔍 이력 검색")
+    search_query = st.text_input("궁금한 단어")
+    if search_query and sheet_data:
+        history = [row for row in sheet_data if search_query in str(row.get('root_word')) or search_query in str(row.get('original_word'))]
+        if history:
+            for h in history[-3:]:
+                st.caption(f"{h['timestamp'][:10]} [{h['action']}] {h['original_word']} -> {h['root_word']}")
 
 # [탭 구성]
 tab_file, tab_manual = st.tabs(["📄 파일 분석", "✍️ 직접 입력"])
