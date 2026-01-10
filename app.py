@@ -4,15 +4,15 @@ import requests
 import json
 import re
 import io
+import os
 import time
 import base64
 from datetime import datetime
 from collections import Counter
 
 # =========================================================
-# [0] 라이브러리 임포트 및 상태 체크
+# [0] 라이브러리 및 환경 설정 (GP9의 안전장치 포함)
 # =========================================================
-# PDF 처리 라이브러리 확인
 try:
     import pdfplumber
     PLUMBER_AVAILABLE = True
@@ -25,7 +25,6 @@ try:
 except ImportError:
     FITZ_AVAILABLE = False
 
-# 구글 시트 라이브러리 확인
 try:
     import gspread
     from oauth2client.service_account import ServiceAccountCredentials
@@ -35,44 +34,50 @@ except ImportError:
 
 # 페이지 기본 설정
 st.set_page_config(
-    page_title="국어활동 AI 분석기 (Ultimate)", 
+    page_title="국어활동 AI 분석기 (Ultimate Full Version)", 
     page_icon="📚", 
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
 # =========================================================
-# [1] API 및 기본 설정
+# [1] 스타일 및 API 설정 (눈 보호 CSS 적용)
 # =========================================================
-# API 키 로드 (secrets.toml 우선, 없으면 로컬 변수)
 try:
     if "GEMINI_API_KEY" in st.secrets:
         API_KEY = st.secrets["GEMINI_API_KEY"]
     else:
-        API_KEY = "" # 로컬 테스트용 키 입력
+        # 로컬 테스트용 (필요시 입력)
+        API_KEY = "" 
 except:
     API_KEY = ""
 
-MODEL_NAME = "gemini-2.0-flash-exp" # 최신 모델 사용
-SHEET_NAME = "Korean_DB" # 구글 시트 이름
+MODEL_NAME = "gemini-2.0-flash-exp"
+SHEET_NAME = "Korean_DB"
+TRUST_THRESHOLD = 3 
 
-# 스타일 설정 (가독성 최적화 및 입력창 고정)
+# [CSS] 텍스트창 회색 배경 + 검정 글씨 (눈 보호)
 st.markdown("""
     <style>
+        /* 메인 텍스트 입력창 스타일링 */
         .stTextArea textarea { 
-            font-size: 15px !important; 
+            font-size: 16px !important; 
             line-height: 1.6 !important; 
             font-family: 'Malgun Gothic', sans-serif !important; 
-            border: 1px solid #ddd !important;
-            background-color: #fcfcfc;
+            background-color: #f0f2f6 !important; /* 눈이 편안한 회색 */
+            color: #000000 !important; /* 가독성 좋은 검정 */
+            border: 1px solid #ccc !important;
+            font-weight: 500 !important;
         }
-        .stDataFrame { border: 1px solid #ccc; }
+        .stDataFrame { border: 1px solid #ddd; }
         .block-container { padding-top: 2rem; }
+        
         /* 확장 패널 스타일 */
         div[data-testid="stExpander"] details summary p {
             font-size: 1.05rem;
             font-weight: 600;
         }
+        
         /* 버튼 스타일 */
         div.stButton > button {
             font-weight: bold;
@@ -81,19 +86,20 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # =========================================================
-# [2] 구글 시트 & 백업 시스템 (_GP9 핵심 기능 복구)
+# [2] 구글 시트 & 클라우드 백업 시스템 (GP9 원본 로직 복구)
 # =========================================================
 @st.cache_resource
 def get_google_sheet_client():
-    """구글 시트 인증 클라이언트 생성"""
+    """구글 시트 인증 클라이언트 생성 (예외 처리 포함)"""
     if not GSPREAD_AVAILABLE: return None
     try:
-        if "gcp_service_account" not in st.secrets: return None
+        if "gcp_service_account" not in st.secrets:
+            return None
         
         scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
         creds_dict = dict(st.secrets["gcp_service_account"])
         
-        # 개행 문자 처리 (TOML 파일 특성상 필요)
+        # TOML 파일의 개행 문자 처리
         if "private_key" in creds_dict:
              creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
         
@@ -105,7 +111,7 @@ def get_google_sheet_client():
         return None
 
 def get_sheet_data_fresh(mode_key):
-    """모드(남/북)에 맞는 시트 데이터 로드 및 시트 자동 생성"""
+    """모드(남/북)에 맞는 시트 데이터 로드 및 자동 생성"""
     client = get_google_sheet_client()
     if not client: return None, []
     
@@ -113,64 +119,69 @@ def get_sheet_data_fresh(mode_key):
     
     try:
         spreadsheet = client.open(SHEET_NAME)
-        try: 
-            worksheet = spreadsheet.worksheet(target_sheet_name)
-        except: 
-            # 시트가 없으면 생성
-            worksheet = spreadsheet.add_worksheet(title=target_sheet_name, rows=1000, cols=20)
+        try:
+            sheet = spreadsheet.worksheet(target_sheet_name)
+        except gspread.WorksheetNotFound:
+            # 시트가 없으면 자동으로 생성
+            st.warning(f"⚠️ '{target_sheet_name}' 시트가 없어 새로 생성합니다.")
+            sheet = spreadsheet.add_worksheet(title=target_sheet_name, rows=1000, cols=20)
             # 헤더 추가
-            worksheet.append_row(["timestamp", "original_word", "root_word", "origin", "pos", "action", "context", "meaning"])
+            sheet.append_row(["timestamp", "original_word", "root_word", "origin", "pos", "action", "context", "meaning"])
             
-        return worksheet, worksheet.get_all_records()
+        data = sheet.get_all_records()
+        return sheet, data
     except Exception as e:
-        # 연결 실패 시 조용히 넘어가거나 로그 출력
-        # st.error(f"시트 로드 에러: {e}") 
+        # st.error(f"구글 시트 연결 오류: {e}") # 사용자 혼란 방지 위해 주석 처리
         return None, []
 
 def send_data_with_retry(sheet_obj, data, is_multiple=False):
-    """데이터 전송 실패 시 재시도 로직 (안전장치)"""
+    """데이터 전송 실패 시 재시도 로직 (GP9의 안전장치)"""
     if not sheet_obj: return False
     
     max_retries = 3
-    for i in range(max_retries):
+    for attempt in range(max_retries):
         try:
             if is_multiple:
-                # 2차원 리스트 전송 (대량 학습)
+                # 대량 전송: 모든 데이터를 문자열로 변환하여 전송
                 clean_data = [[str(item) for item in row] for row in data]
                 sheet_obj.append_rows(clean_data)
             else:
-                # 1차원 리스트 전송 (단건 학습)
+                # 단건 전송
                 clean_data = [str(item) for item in data]
                 sheet_obj.append_row(clean_data)
             return True
         except Exception as e:
-            time.sleep(1) # 1초 대기 후 재시도
-            if i == max_retries - 1:
-                st.error(f"데이터 전송 실패: {e}")
+            if attempt < max_retries - 1:
+                time.sleep(1) # 잠시 대기 후 재시도
+                continue
+            else:
+                st.error(f"❌ 데이터 전송 최종 실패: {str(e)}")
+                return False
     return False
 
 def save_backup_to_cloud(mode_key, df):
-    """현재 작업 내용을 클라우드 백업 시트에 통째로 저장 (안전장치)"""
+    """[핵심] 현재 작업 데이터를 클라우드 백업 시트에 통째로 저장"""
     client = get_google_sheet_client()
     if not client or df is None or df.empty: return False
     
-    backup_tab_name = f"Backup_{'South' if mode_key=='SOUTH' else 'North'}"
+    backup_sheet_name = f"Backup_{'South' if mode_key == 'SOUTH' else 'North'}"
     
     try:
-        sh = client.open(SHEET_NAME)
-        try: 
-            ws = sh.worksheet(backup_tab_name)
-            ws.clear() # 기존 백업 삭제
-        except: 
-            ws = sh.add_worksheet(title=backup_tab_name, rows=1000, cols=20)
+        spreadsheet = client.open(SHEET_NAME)
+        try:
+            worksheet = spreadsheet.worksheet(backup_sheet_name)
+            worksheet.clear() # 기존 데이터 삭제
+        except gspread.WorksheetNotFound:
+            worksheet = spreadsheet.add_worksheet(title=backup_sheet_name, rows=1000, cols=20)
         
-        # DataFrame 전체를 문자열로 변환하여 업로드 (NaN 방지)
+        # DataFrame을 리스트로 변환 (NaN 처리 포함)
         df_str = df.fillna("").astype(str)
-        payload = [df_str.columns.tolist()] + df_str.values.tolist()
-        ws.update(payload)
+        data_to_upload = [df_str.columns.values.tolist()] + df_str.values.tolist()
+        
+        worksheet.update(data_to_upload)
         return True
-    except Exception as e: 
-        print(f"백업 실패: {e}")
+    except Exception as e:
+        print(f"자동 백업 실패: {e}") 
         return False
 
 def load_backup_from_cloud(mode_key):
@@ -178,72 +189,107 @@ def load_backup_from_cloud(mode_key):
     client = get_google_sheet_client()
     if not client: return None
     
-    backup_tab_name = f"Backup_{'South' if mode_key=='SOUTH' else 'North'}"
+    backup_sheet_name = f"Backup_{'South' if mode_key == 'SOUTH' else 'North'}"
     try:
-        sh = client.open(SHEET_NAME)
-        ws = sh.worksheet(backup_tab_name)
-        data = ws.get_all_records()
-        return pd.DataFrame(data) if data else None
+        spreadsheet = client.open(SHEET_NAME)
+        worksheet = spreadsheet.worksheet(backup_sheet_name)
+        data = worksheet.get_all_records()
+        
+        if not data: return None
+        return pd.DataFrame(data)
     except: return None
 
 # =========================================================
-# [3] AI 엔진 (1~7단계 요구사항 + 동음이의어 + CoT)
+# [3] AI 엔진 (1~7단계 개선 + GP9 OCR 통합)
 # =========================================================
 def generate_prompt_from_sheet(sheet_data):
-    """[요구사항 7] 시트 데이터를 기반으로 학습 규칙 프롬프트 생성"""
+    """[Req 7] 구글 시트 데이터를 기반으로 학습 규칙 프롬프트 생성"""
     if not sheet_data: return ""
     
     rules = []
-    # 최신 학습된 내용 우선 반영 (최신 50개)
-    # _GP9.py의 action 컬럼(add, modify, delete) 활용
+    # GP9의 로직대로 action 컬럼 분석
+    # 최근 학습된 내용 우선 반영을 위해 뒤에서부터 처리 (50개 제한)
     for row in sheet_data[-50:]:
         if row.get('action') == 'delete':
             rules.append(f"- [삭제 규칙]: '{row.get('original_word')}'는 분석 결과에서 제외하세요.")
         elif row.get('action') in ['add', 'modify']:
+            # 의미(meaning) 정보가 있으면 포함
             meaning_info = f", 의미:'{row.get('meaning')}'" if row.get('meaning') else ""
             rules.append(f"- [고정 규칙]: '{row.get('original_word')}' -> 원형:'{row.get('root_word')}'{meaning_info}, 분류:'{row.get('origin')}', 품사:'{row.get('pos')}'")
     
     if rules:
-        return "\n[사용자 학습 규칙 (최우선 적용)]:\n" + "\n".join(rules) + "\n"
+        return "\n[🚨 최우선 사용자 학습 규칙 (이것이 법이다)]:\n" + "\n".join(rules) + "\n"
     return ""
 
 def api_call_direct(prompt, image_bytes=None):
     """Gemini API 호출 (Text Only 또는 Vision)"""
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={API_KEY}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={API_KEY.strip()}"
     headers = {'Content-Type': 'application/json'}
     
     parts = [{"text": prompt}]
     
     if image_bytes:
-        # Vision 모드: 이미지 데이터를 base64로 인코딩하여 전송
-        b64_data = base64.b64encode(image_bytes).decode('utf-8')
-        parts.append({"inline_data": {"mime_type": "image/png", "data": b64_data}})
+        # Vision 모드: 이미지를 base64로 인코딩하여 전송
+        b64_image = base64.b64encode(image_bytes).decode('utf-8')
+        parts.append({"inline_data": {"mime_type": "image/png", "data": b64_image}})
     
     data = {
         "contents": [{"parts": parts}],
         "generationConfig": {
-            "temperature": 0.1, # 창의성 억제 (정확도 우선)
+            "temperature": 0.1, # 정확도 우선
             "maxOutputTokens": 8192
         }
     }
     
     try:
-        response = requests.post(url, headers=headers, json=data, timeout=60)
-        if response.status_code == 200:
-            result = response.json()
-            if 'candidates' in result:
-                return result['candidates'][0]['content']['parts'][0]['text']
-        else:
-            # 에러 발생 시 로그 출력 (디버깅용)
-            print(f"API Error: {response.status_code} - {response.text}")
+        response = requests.post(url, headers=headers, json=data, timeout=300) # 타임아웃 300초 (GP9 설정)
+        if response.status_code != 200:
+            # 에러 로그 출력
+            # st.error(f"❌ AI 응답 실패 (코드 {response.status_code}): {response.text}")
+            return None
+            
+        result_json = response.json()
+        if 'candidates' in result_json:
+            return result_json['candidates'][0]['content']['parts'][0]['text']
         return None
     except Exception as e:
-        print(f"Connection Error: {e}")
+        # st.error(f"❌ 서버 통신 오류: {e}")
         return None
+
+def api_call_vision_ocr(image_bytes):
+    """[GP9 기능] Vision API를 이용한 정밀 OCR"""
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={API_KEY.strip()}"
+    headers = {'Content-Type': 'application/json'}
+    base64_image = base64.b64encode(image_bytes).decode('utf-8')
+    
+    # GP9의 상세한 OCR 프롬프트 복원
+    prompt_text = """
+    이 이미지에 있는 텍스트를 보이는 그대로 추출해주세요.
+    
+    [중요한 형식 규칙]
+    1. **공간 분리 준수:** 말풍선, 단락, 표 등으로 시각적으로 분리된 텍스트 덩어리는 반드시 **줄바꿈(Enter)**으로 명확히 구분하세요.
+    2. **세로쓰기 대응:** 글자가 세로로(위에서 아래로) 쓰여 있다면, 자연스러운 독해 순서(우측 상단 -> 좌측 하단)를 따르세요.
+    3. **표기 유지:** 두음법칙을 적용하지 않은 표기(예: 로동, 녀자)는 수정하지 말고 그대로 적으세요.
+    4. **중복 포함(필수):** 같은 단어나 문장이 여러 번 나오면 합치지 말고 **나온 횟수만큼 반복해서** 적으세요.
+    5. **노이즈 제거:** 쪽수, 머리말은 제외하세요.
+    """
+    
+    data = {
+        "contents": [{"parts": [{"text": prompt_text}, {"inline_data": {"mime_type": "image/png", "data": base64_image}}]}],
+        "generationConfig": {"temperature": 0.1}
+    }
+    
+    try:
+        response = requests.post(url, headers=headers, json=data, timeout=300)
+        if response.status_code == 200:
+            return response.json()['candidates'][0]['content']['parts'][0]['text']
+        return ""
+    except Exception as e:
+        return f"OCR 통신 오류: {e}"
 
 def get_analysis_hybrid(text, image_bytes, sheet_data, mode_key):
     """
-    [요구사항 5, 6, 7 반영] CoT + 하다 처리 + 동음이의어 + 학습 반영 통합 분석 함수
+    [요구사항 5, 6, 7] CoT + 하다 처리 + 동음이의어 + 학습 반영 통합 분석
     """
     learning_prompt = generate_prompt_from_sheet(sheet_data)
     
@@ -259,14 +305,14 @@ def get_analysis_hybrid(text, image_bytes, sheet_data, mode_key):
     [분석 단계 (Chain of Thought)]
     1. **문맥 파악**: 텍스트의 맥락을 읽고 '{mode_desc}' 규칙을 적용하세요.
     2. **형태소 분리**: 조사(은/는/이/가/을/를/에/에게 등)와 어미를 철저히 분리하여 제거합니다.
-       - 예: '친구를' -> '친구'
+       - 예: '친구를' -> '친구', '학교에서' -> '학교'
     3. **'하다' 용언 처리 (중요)**: '명사+하다' 형태는 기계적으로 나누지 말고 문맥을 봅니다.
        - 동작성이 강하면 동사 (예: '공부하다', '생각하다')
        - 명사성이 강하면 명사 (예: '사랑', '감사')
        - 문맥상 더 자연스러운 원형을 선택하세요.
     4. **동음이의어 구분**: 같은 단어라도 뜻이 다르면 'meaning' 필드에 간략히 적어 구분합니다.
        - 예: 배(과일), 배(선박), 배(신체)
-    5. **품사 필터링**: 명사, 동사, 형용사, 부사, 관형사, 대명사만 남깁니다.
+    5. **품사 필터링**: 명사, 동사, 형용사, 부사, 관형사, 대명사만 남깁니다. (의존명사, 수사 제외)
     6. **출력**: 아래 JSON 포맷을 엄수하세요. (코드 블록 없이 순수 JSON만 출력하면 더 좋습니다)
 
     [JSON 예시]
@@ -304,7 +350,7 @@ def get_analysis_hybrid(text, image_bytes, sheet_data, mode_key):
     return []
 
 # =========================================================
-# [4] 파일 처리 및 텍스트 추출 (_GP9 복원)
+# [4] 파일 처리 및 텍스트 추출 (_GP9 복원 및 강화)
 # =========================================================
 def extract_text_unified(file_obj, page_idx):
     """PDF/이미지 통합 텍스트 추출기 (폴백 로직 포함)"""
@@ -312,7 +358,9 @@ def extract_text_unified(file_obj, page_idx):
     
     # 이미지는 Vision으로 처리하므로 텍스트 추출 안 함 (빈 문자열 반환)
     if "image" in file_type:
-        return "" 
+        # 하지만 사용자가 "텍스트 보기"를 원할 수 있으므로 OCR 시도
+        try: return api_call_vision_ocr(file_obj.getvalue())
+        except: return ""
         
     elif "pdf" in file_type:
         text = ""
@@ -333,8 +381,16 @@ def extract_text_unified(file_obj, page_idx):
                     text = doc[page_idx].get_text()
             except: pass
         
-        # 3. 텍스트가 여전히 없거나 너무 짧으면(이미지형 PDF), Vision OCR 유도를 위해 빈 값 반환
-        # (메인 로직에서 텍스트가 비어있으면 이미지를 전송하도록 되어 있음)
+        # 3. 텍스트가 여전히 없거나 너무 짧으면(이미지형 PDF), Vision OCR 시도 (GP9의 강력한 기능)
+        if (not text or len(text.strip()) < 10) and FITZ_AVAILABLE:
+            try:
+                doc = fitz.open(stream=file_obj.getvalue(), filetype="pdf")
+                if page_idx < len(doc):
+                    pix = doc[page_idx].get_pixmap(matrix=fitz.Matrix(2, 2))
+                    img_bytes = pix.tobytes("png")
+                    return api_call_vision_ocr(img_bytes)
+            except: pass
+            
         return text if text else ""
         
     return ""
@@ -357,7 +413,7 @@ def get_page_image_bytes(file_obj, page_idx):
     return None
 
 # =========================================================
-# [5] 데이터 저장 로직 (_GP9 핵심 - 동적 컬럼 & 백업)
+# [5] 데이터 저장 로직 (_GP9 핵심 - 동적 컬럼)
 # =========================================================
 def clean_val(v):
     """이모지 및 특수문자 제거"""
@@ -501,9 +557,9 @@ def save_logic(edited_df, page_str, sheet_obj, context_text):
     return True
 
 # =========================================================
-# [6] 메인 UI 구성
+# [6] 메인 UI 구성 (입력창 고정 및 탭 이동 금지)
 # =========================================================
-# 세션 상태 변수 초기화 (새로고침 시 데이터 증발 방지)
+# 세션 상태 변수 초기화
 if 'master_df' not in st.session_state: st.session_state.master_df = None
 if 'analysis_result' not in st.session_state: st.session_state.analysis_result = []
 if 'page_idx' not in st.session_state: st.session_state.page_idx = 0
@@ -511,7 +567,7 @@ if 'file_hash' not in st.session_state: st.session_state.file_hash = None
 if 'start_page_offset' not in st.session_state: st.session_state.start_page_offset = 1
 if 'manual_page_input' not in st.session_state: st.session_state.manual_page_input = "1"
 if 'last_uploaded_file_name' not in st.session_state: st.session_state.last_uploaded_file_name = None
-# [핵심] 입력 텍스트 상태 보존용
+# [핵심] 입력 텍스트 상태 보존용 (새로고침 방지)
 if 'editor_text_content' not in st.session_state: st.session_state.editor_text_content = ""
 
 st.title("📝 국어활동 AI 분석기")
@@ -651,7 +707,6 @@ if main_file and "pdf" in main_file.type:
             total_pages = len(doc)
     except: pass
 
-# 2단 컬럼 레이아웃 (뷰어 | 입력창)
 col_view, col_input = st.columns([1, 1])
 
 # [좌측] 뷰어 및 네비게이션
@@ -679,7 +734,7 @@ with col_view:
                     st.session_state.editor_text_content = extract_text_unified(main_file, st.session_state.page_idx)
                     st.rerun()
             with c_jump:
-                target = st.number_input("페이지 이동", 1, total_pages, st.session_state.page_idx+1)
+                target = st.number_input("이동", 1, total_pages, st.session_state.page_idx+1)
                 if target-1 != st.session_state.page_idx:
                     st.session_state.page_idx = target-1
                     st.session_state.editor_text_content = extract_text_unified(main_file, st.session_state.page_idx)
@@ -766,69 +821,38 @@ if st.session_state.analysis_result:
         df_r,
         column_config={
             "delete_check": st.column_config.CheckboxColumn("삭제"),
-            "count": st.column_config.TextColumn("빈도", disabled=True),
-            "original_word": st.column_config.TextColumn("원본"),
-            "root_word": st.column_config.TextColumn("원형"),
-            "meaning": st.column_config.TextColumn("의미(동음이의어)"),
             "origin": st.column_config.SelectboxColumn("분류", options=["🔵 고", "🟢 한", "🔴 외", "🟣 혼"]),
             "pos": st.column_config.SelectboxColumn("품사", options=["📦 명사", "🏃 동사", "🎨 형용사", "⚡ 부사", "🔍 관형사", "👤 대명사"]),
+            "meaning": st.column_config.TextColumn("의미")
         },
-        num_rows="dynamic", # 행 추가 허용 (엔터로 추가)
+        num_rows="dynamic",
         use_container_width=True
     )
     
-    # 하단 액션 버튼들
     c1, c2, c3 = st.columns(3)
-    
-    # [버튼 1] 체크 항목 삭제 (학습 포함)
     with c1:
-        if st.button("⛔ 체크 항목 삭제"):
-            dels = edited[edited['delete_check'] == True]
+        if st.button("⛔ 체크 삭제"):
+            dels = edited[edited['delete_check']==True]
             if not dels.empty and sheet:
-                # 삭제 규칙 학습 전송
-                logs = [[
-                    datetime.now().isoformat(), 
-                    r['original_word'], 
-                    r['root_word'], 
-                    "", "", 'delete', 
-                    'User Delete', ''
-                ] for _, r in dels.iterrows()]
-                
-                send_data_with_retry(sheet, logs, True)
-                st.toast("삭제 규칙이 학습되었습니다.", icon="🗑️")
-                
-                # 화면 갱신 (삭제된 행 제외)
-                leftover = edited[edited['delete_check'] == False].to_dict('records')
-                st.session_state.analysis_result = leftover
+                l = [[datetime.now().isoformat(), r['original_word'], r['root_word'], "", "", 'delete', 'User', ''] for _, r in dels.iterrows()]
+                send_data_with_retry(sheet, l, True)
+                st.session_state.analysis_result = edited[edited['delete_check']==False].to_dict('records')
                 st.rerun()
-
-    # [버튼 2] 저장하고 다음 페이지로
     with c2:
         if st.button("💾 저장하고 다음 (▶)"):
             if save_logic(edited, page_str, sheet, txt_val):
-                st.toast("저장되었습니다!")
-                
-                # PDF 모드면 다음 페이지로 자동 이동
-                if main_file and "pdf" in main_file.type and st.session_state.page_idx < total_pages - 1:
+                st.toast("저장됨")
+                if main_file and "pdf" in main_file.type and st.session_state.page_idx < total_pages-1:
                     st.session_state.page_idx += 1
-                    # 다음 페이지 텍스트 로드
-                    nx_txt = extract_text_unified(main_file, st.session_state.page_idx)
-                    st.session_state.editor_text_content = nx_txt
-                    st.session_state.analysis_result = [] # 결과창 초기화
-                    time.sleep(0.5)
-                    st.rerun()
-                elif main_file and "pdf" in main_file.type:
-                    st.success("마지막 페이지입니다.")
-                else:
-                    st.success("저장 완료. (이미지/직접입력 모드는 다음 페이지가 없습니다)")
-
-    # [버튼 3] 저장만 하기
+                    st.session_state.editor_text_content = extract_text_unified(main_file, st.session_state.page_idx)
+                    st.session_state.analysis_result = []
+                    time.sleep(0.5); st.rerun()
+                else: st.success("마지막 페이지입니다.")
     with c3:
         if st.button("💾 저장만 하기"):
-            if save_logic(edited, page_str, sheet, txt_val):
-                st.success("저장되었습니다.")
+            if save_logic(edited, page_str, sheet, txt_val): st.success("저장됨")
 
-# [하단] 전체 누적 데이터 표시
+# [하단] 전체 누적 데이터 표시 (GP9 기능)
 if st.session_state.master_df is not None:
     st.markdown("---")
     st.subheader("📊 전체 누적 데이터")
@@ -837,9 +861,7 @@ if st.session_state.master_df is not None:
     
     # 엑셀 다운로드 버튼
     buf = io.BytesIO()
-    with pd.ExcelWriter(buf, engine='openpyxl') as w: 
-        st.session_state.master_df.to_excel(w, index=False)
-    
+    with pd.ExcelWriter(buf, engine='openpyxl') as w: st.session_state.master_df.to_excel(w, index=False)
     st.download_button(
         label="📥 전체 엑셀 다운로드", 
         data=buf.getvalue(), 
