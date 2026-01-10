@@ -438,14 +438,27 @@ with st.sidebar:
     st.header("📂 이어하기 & 백업")
     uploaded_excel = st.file_uploader("작업하던 엑셀 파일", type=['xlsx'])
     
-    # [핵심 수정] 파일 변경 감지 로직 (이어하기 버그 해결)
+    # [핵심 수정: 1번 문제 해결 - 데이터 병합 로직 적용]
     if uploaded_excel:
         if uploaded_excel.name != st.session_state.last_uploaded_file_name:
             uploaded_df = load_excel_safely(uploaded_excel)
             if uploaded_df is not None:
-                 st.session_state.master_df = uploaded_df.copy()
+                 # 기존 데이터가 있다면 합치기 (Concatenate)
+                 if st.session_state.master_df is not None and not st.session_state.master_df.empty:
+                     # 1. 두 데이터를 합침 (현재 작업분 + 불러온 파일)
+                     merged_df = pd.concat([st.session_state.master_df, uploaded_df], ignore_index=True)
+                     
+                     # 2. 중복 제거 (자료와 구분이 완벽히 같은 경우 하나만 남김)
+                     # keep='first': 현재 작업중이던 내용이 있다면 그것을 우선함 (또는 취향에 따라 'last'로 변경 가능)
+                     st.session_state.master_df = merged_df.drop_duplicates(subset=['자료', '구분'], keep='first').reset_index(drop=True)
+                     
+                     st.toast(f"➕ 기존 작업에 '{uploaded_excel.name}' 내용을 합쳤습니다!", icon="🔗")
+                 else:
+                     # 기존 데이터가 없으면 그냥 로드
+                     st.session_state.master_df = uploaded_df.copy()
+                     st.toast(f"📂 '{uploaded_excel.name}' 파일이 로드되었습니다!", icon="✅")
+                 
                  st.session_state.last_uploaded_file_name = uploaded_excel.name
-                 st.toast(f"📂 '{uploaded_excel.name}' 파일이 로드되었습니다!", icon="✅")
                  time.sleep(0.5)
                  st.rerun() 
             else:
