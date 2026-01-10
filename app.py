@@ -12,10 +12,7 @@ from collections import Counter
 from datetime import datetime
 import time
 
-# =========================================================
-# 📦 라이브러리 로드 (안전장치 포함)
-# =========================================================
-# [1] PDF 처리
+# [라이브러리 상태 체크]
 try:
     import pdfplumber
     PLUMBER_AVAILABLE = True
@@ -28,23 +25,13 @@ try:
 except ImportError:
     FITZ_AVAILABLE = False
 
-# [2] 형태소 분석기 (Kiwi) - 5단계 핵심 기능
-# 설치가 안 되어 있어도 코드가 멈추지 않고 기존 방식(Gemini 단독)으로 작동하게 함
-try:
-    from kiwipiepy import Kiwi
-    kiwi = Kiwi()
-    KIWI_AVAILABLE = True
-except ImportError:
-    KIWI_AVAILABLE = False
-
 # =========================================================
-# ⚙️ 설정 & 세션 초기화 (최상단 배치 - 에러 방지)
+# ⚙️ 설정 & 세션 초기화 (최상단)
 # =========================================================
 try:
     if "GEMINI_API_KEY" in st.secrets:
         API_KEY = st.secrets["GEMINI_API_KEY"]
     else:
-        # 여기에 본인의 API KEY를 입력하세요
         API_KEY = "AIzaSyCC6oyL7POpbWq2FZrJ2zIJuiosupFQZYk" 
 except:
     API_KEY = "AIzaSyCC6oyL7POpbWq2FZrJ2zIJuiosupFQZYk"
@@ -55,7 +42,7 @@ TRUST_THRESHOLD = 3
 
 st.set_page_config(page_title="국어활동 AI 분석기", page_icon="📝", layout="wide")
 
-# [변수 초기화]
+# [세션 변수 초기화]
 if 'analysis_result' not in st.session_state: st.session_state.analysis_result = None
 if 'master_df' not in st.session_state: st.session_state.master_df = None
 if 'last_uploaded_file_name' not in st.session_state: st.session_state.last_uploaded_file_name = None
@@ -69,7 +56,7 @@ if 'last_mode' not in st.session_state: st.session_state.last_mode = "SOUTH"
 if 'excel_buffer' not in st.session_state: st.session_state.excel_buffer = None 
 
 # =========================================================
-# 🔐 구글 시트 연결
+# 🔐 구글 시트 연결 및 데이터 전처리 (7단계 핵심)
 # =========================================================
 @st.cache_resource
 def get_google_sheet_client():
@@ -83,6 +70,29 @@ def get_google_sheet_client():
         return client
     except: return None
 
+def filter_latest_rules(raw_data):
+    """
+    [7단계 적용] 학습 데이터 중복 시, 가장 최신(마지막) 규칙만 남기고 필터링하는 함수.
+    이것이 '최신 학습 우선순위'를 보장합니다.
+    """
+    if not raw_data: return []
+    
+    df = pd.DataFrame(raw_data)
+    if df.empty or 'timestamp' not in df.columns or 'original_word' not in df.columns:
+        return raw_data
+    
+    # 시간순 정렬 (최신이 위로 오게) -> 사실 구글시트는 아래에 추가되므로 역순 정렬이 안전
+    try:
+        df['timestamp'] = pd.to_datetime(df['timestamp'])
+        df = df.sort_values('timestamp', ascending=False)
+    except:
+        pass # 날짜 변환 실패 시 인덱스 역순(나중에 들어온게 위로) 가정
+        
+    # 같은 단어('original_word')가 있으면 가장 위에 있는(최신) 것만 남김
+    df_unique = df.drop_duplicates(subset=['original_word'], keep='first')
+    
+    return df_unique.to_dict('records')
+
 def get_sheet_data_fresh(mode_key):
     client = get_google_sheet_client()
     if not client: return None, []
@@ -90,7 +100,12 @@ def get_sheet_data_fresh(mode_key):
     try:
         spreadsheet = client.open(SHEET_NAME)
         sheet = spreadsheet.worksheet(target_sheet_name)
-        return sheet, sheet.get_all_records()
+        raw_data = sheet.get_all_records()
+        
+        # [7단계 적용] 데이터를 가져오자마자 최신 규칙만 남기도록 필터링
+        clean_data = filter_latest_rules(raw_data)
+        
+        return sheet, clean_data
     except: return None, []
 
 def send_data_with_retry(sheet_obj, data, is_multiple=False):
@@ -138,27 +153,27 @@ def load_backup_from_cloud(mode_key):
     except: return None
 
 # =========================================================
-# 🧠 AI 및 전처리 로직 (5단계: 3중 합주 로직 적용)
+# 🧠 AI 분석 로직 (6단계: 명사+하다 로직 삭제 및 개선)
 # =========================================================
 def generate_prompt_from_sheet(sheet_data):
     if not sheet_data: return ""
+    # 이미 최신순으로 정렬된 데이터를 받음
     df = pd.DataFrame(sheet_data)
     if df.empty: return ""
     prompt_lines = []
     
     if 'action' in df.columns:
         deleted = df[df['action'] == 'delete']
-        for _, row in deleted.tail(10).iterrows(): 
-            prompt_lines.append(f"- [제외 대상]: '{row['original_word']}'")
-        added = df[df['action'] == 'add']
-        for _, row in added.tail(10).iterrows():
-            prompt_lines.append(f"- [필수 포함]: '{row['original_word']}'")
-        modified = df[df['action'] == 'modify']
-        for _, row in modified.tail(15).iterrows():
-             prompt_lines.append(f"- [분석 규칙]: '{row['original_word']}' -> 원형:'{row['root_word']}', 분류:'{row['origin']}'")
+        for _, row in deleted.tail(20).iterrows(): # 예시 개수 늘림
+            prompt_lines.append(f"- [삭제 규칙]: '{row['original_word']}'는 분석 결과에서 무조건 제외하세요.")
+        
+        # 추가/수정된 단어는 AI에게 강력한 힌트로 제공
+        forced = df[df['action'].isin(['add', 'modify'])]
+        for _, row in forced.tail(30).iterrows():
+            prompt_lines.append(f"- [고정 규칙]: '{row['original_word']}'는 반드시 원형: '{row['root_word']}', 품사: '{row['pos']}', 분류: '{row['origin']}'으로 분석하세요.")
              
     if prompt_lines:
-         return "\n[사용자 정의 학습 규칙 (우선순위 높음)]:\n" + "\n".join(prompt_lines) + "\n"
+         return "\n[🚨 사용자 정의 최우선 규칙 (이 규칙을 어기면 안됨)]:\n" + "\n".join(prompt_lines) + "\n"
     return ""
 
 def api_call_direct(prompt):
@@ -196,13 +211,7 @@ def api_call_vision_ocr(image_bytes):
     
     prompt_text = "이미지의 텍스트를 추출하세요. 줄바꿈을 준수하고, 중복 단어도 그대로 적으세요."
     
-    safety_settings = [
-        {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-        {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-        {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-        {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
-    ]
-    
+    safety_settings = [{"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"}, {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"}, {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"}, {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}]
     data = {"contents": [{"parts": [{"text": prompt_text}, {"inline_data": {"mime_type": "image/png", "data": base64_image}}]}], "safetySettings": safety_settings}
 
     try:
@@ -266,106 +275,71 @@ def get_page_image_bytes(file_obj, page_index):
         except: return None
     return None
 
-# [5단계] 학습 데이터와 대조하여 처리 방법 결정 (DB 권한 최우선)
-def check_learning_data_match(word, sheet_data):
-    if not sheet_data: return None
-    for row in sheet_data:
-        # 1. 삭제된 단어인지 확인
-        if row.get('action') == 'delete':
-            if row.get('original_word') == word or row.get('root_word') == word:
-                return 'DELETE'
-        # 2. 이미 학습된(수정/추가) 단어인지 확인
-        if row.get('action') in ['modify', 'add']:
-            if row.get('original_word') == word:
-                return row # 학습된 전체 정보 반환 (Gemini 호출 불필요)
-    return None
-
-def get_analysis_hybrid(text, sheet_data, mode_key):
+# [DB 우선권 보장] Gemini 결과가 나왔어도 DB에 다른 규칙이 있으면 덮어씌움
+def apply_db_override(gemini_results, sheet_data):
+    if not sheet_data or not gemini_results: return gemini_results
     
-    # [Case A] Kiwi 사용 가능 시 -> 3중 합주 로직 실행
-    if KIWI_AVAILABLE:
-        try:
-            tokens = kiwi.tokenize(text)
-            extracted_candidates = []
-            # 실질 형태소 태그만 허용 (NNG:일반명사, NNP:고유명사, VV:동사, VA:형용사, XR:어근, MAG:부사, IC:감탄사)
-            # 단, 감탄사(IC)는 추후 필터링되더라도 일단 후보엔 포함
-            target_tags = ['NNG', 'NNP', 'VV', 'VA', 'XR', 'MAG'] 
+    # 빠른 검색을 위해 DB를 딕셔너리로 변환
+    db_map = {}
+    for row in sheet_data:
+        # sheet_data는 이미 최신순으로 정렬되어 중복 제거된 상태임 (7단계)
+        db_map[row['original_word']] = row
+        
+    final_list = []
+    for item in gemini_results:
+        word = item.get('original_word')
+        
+        if word in db_map:
+            rule = db_map[word]
+            if rule['action'] == 'delete':
+                continue # DB에서 삭제하라고 했으면 결과 리스트에 넣지 않음
+            else:
+                # DB에 있는 내용으로 강제 교체 (AI보다 사용자 규칙 우선)
+                item['root_word'] = rule['root_word']
+                item['origin'] = rule['origin']
+                item['pos'] = rule['pos']
+                final_list.append(item)
+        else:
+            final_list.append(item)
             
-            for t in tokens:
-                if t.tag in target_tags:
-                    if len(t.form) < 1: continue # 1글자 미만 제외
-                    extracted_candidates.append({'original': t.form, 'root': t.form, 'pos': t.tag})
-            
-            final_results = []
-            unknown_words = []
-            
-            for item in extracted_candidates:
-                word = item['original']
-                
-                # [Step 1] DB(학습데이터) 체크 - 사용자 규칙 최우선
-                db_match = check_learning_data_match(word, sheet_data)
-                
-                if db_match == 'DELETE':
-                    continue # 사용자가 지운 단어는 과감히 버림
-                elif isinstance(db_match, dict):
-                    # 이미 아는 단어는 Gemini 호출 없이 바로 추가 (속도/비용 최적화)
-                    final_results.append({
-                        "original_word": word,
-                        "root_word": db_match.get('root_word'),
-                        "origin": db_match.get('origin'),
-                        "pos": db_match.get('pos')
-                    })
-                else:
-                    # 모르는 단어만 리스트에 담음
-                    unknown_words.append(word)
-            
-            # [Step 2] 모르는 단어(Unknown)만 Gemini에게 분석 요청
-            if unknown_words:
-                unique_unknowns = list(set(unknown_words))
-                prompt = f"""
-                단어 목록: {unique_unknowns}
-                위 단어들의 '원형', '어원(고/한/외/혼)', '품사'를 분석해 JSON 리스트로 줘.
-                형식: [{{"original_word": "...", "root_word": "...", "origin": "고", "pos": "명사"}}]
-                """
-                gemini_res = api_call_direct(prompt)
-                
-                if gemini_res:
-                    for res in gemini_res:
-                        # 원문에 나온 횟수만큼 복제하여 추가 (빈도수 계산 위해)
-                        cnt = unknown_words.count(res.get('original_word'))
-                        for _ in range(cnt):
-                            final_results.append(res)
-                            
-            return final_results
+    return final_list
 
-        except Exception as e:
-            st.error(f"Kiwi 분석 중 오류 발생 (Gemini 모드로 전환): {e}")
-            # 오류 나면 아래 기존 Gemini 로직으로 넘어감
-
-    # [Case B] Kiwi 실패 또는 미설치 시 -> 기존 순수 Gemini 로직 (Fallback)
+def get_analysis_gemini(text, sheet_data, mode_key):
     learning_prompt = generate_prompt_from_sheet(sheet_data)
-    role = "당신은 국어학 전문가입니다. 실질 형태소(알맹이 단어)를 분석하세요."
-    instr = "[북한 문화어] 두음법칙 미적용" if mode_key == "NORTH" else "[대한민국 표준어] 두음법칙 준수"
+    
+    role = "당신은 국립국어원 표준국어대사전 편찬 전문가입니다."
+    if mode_key == "NORTH": instr = "[북한 문화어 모드] 두음법칙을 적용하지 마세요 (예: 로동)."
+    else: instr = "[대한민국 표준어 모드] 표준 맞춤법과 두음법칙을 준수하세요."
 
+    # [6단계 적용] 명사+하다 분리 로직 삭제 및 원형 유지 지시
     base_instruction = f"""
     {role}\n{instr}
-    [규칙]
-    1. '명사+하다' -> 명사만 추출.
-    2. 조사, 어미, 문장부호, 감탄사, 인사말 제외.
-    3. JSON 리스트 포맷만 출력.
-    형식: [{{"original_word": "...", "root_word": "...", "origin": "고", "pos": "명사"}}]
+    
+    [핵심 분석 규칙]
+    1. **품사 유지:** 문맥에 따라 명사, 동사, 형용사 등을 정확히 구분하세요.
+    2. **[중요] '하다' 용언 처리:** '공부하다', '사랑하다'와 같은 단어는 **무조건 명사로 자르지 말고**, 사전에 등재된 **기본형(Root Form) 그대로** 추출하세요.
+       - 예: "그는 공부했다" -> 원형: "공부하다", 품사: "동사" (O) / 원형: "공부", 품사: "명사" (X)
+       - 예: "행복한 하루" -> 원형: "행복하다", 품사: "형용사" (O)
+    3. 조사, 어미, 문장부호, 감탄사는 분석에서 제외하세요.
+    4. 결과는 오직 JSON 리스트 형식으로만 출력하세요.
+    
+    형식: [{{"original_word": "...", "root_word": "...", "origin": "고", "pos": "동사"}}]
     """
     
     chunks = split_text_smartly(text)
-    all_results = []
+    raw_results = []
     
     for i, chunk in enumerate(chunks):
         if not chunk.strip(): continue
         prompt = f"""{learning_prompt}\n{base_instruction}\n\n분석할 문장:\n"{chunk}" """
         chunk_result = api_call_direct(prompt)
-        if chunk_result: all_results.extend(chunk_result)
+        if chunk_result: raw_results.extend(chunk_result)
         time.sleep(0.1)
-    return all_results
+    
+    # [DB 강제 적용] AI가 분석한 결과를 DB 규칙으로 재검열
+    final_results = apply_db_override(raw_results, sheet_data)
+    
+    return final_results
 
 def calculate_total_appearances(row):
     total = 0
@@ -434,7 +408,7 @@ def apply_editor_changes_safe(source_key):
                     st.session_state.analysis_result[idx][col] = val
 
 # =========================================================
-# 🔄 결과 표시 및 UI 처리 함수 (검증 완료)
+# 🔄 결과 표시 및 UI 처리 함수
 # =========================================================
 def render_analysis_ui(page_str, source_key):
     if st.session_state.analysis_result:
@@ -561,7 +535,6 @@ with st.sidebar:
         udf = load_excel_safely(uploaded_excel)
         if udf is not None:
              if st.session_state.master_df is not None:
-                 # [검증 1] 병합 로직 확인 완료
                  st.session_state.master_df = pd.concat([st.session_state.master_df, udf]).drop_duplicates(subset=['자료', '구분']).reset_index(drop=True)
              else: 
                  st.session_state.master_df = udf
@@ -585,7 +558,6 @@ with st.sidebar:
             add_origin = st.selectbox("분류", ["고", "한", "외", "혼"])
             add_pos = st.selectbox("품사", ["명사", "동사", "형용사", "부사", "관형사", "대명사"]) 
             if st.form_submit_button("추가 및 학습"):
-                # [검증 2] 수정 데이터 보존 로직 확인 완료
                 if st.session_state.analysis_source:
                     apply_editor_changes_safe(st.session_state.analysis_source)
                 
@@ -650,7 +622,6 @@ with tab_file:
     if st.session_state.uploaded_file:
         cur_page_lbl = str(st.session_state.current_page_idx + st.session_state.start_page_offset) if is_pdf else st.session_state.manual_page_input
         
-        # [검증 3] 페이지 점프 기능 확인 완료
         if is_pdf and st.session_state.total_pages > 1:
             c1, c2, c3 = st.columns([1,1,1])
             with c1: 
@@ -686,9 +657,6 @@ with tab_file:
                 st.session_state.analysis_source = 'FILE'
                 run_analysis = True
     
-    # [검증 4] 탭 유지 (render_analysis_ui 호출 위치 확인 완료 - with 블록 안에서 렌더링하도록 조건부 실행)
-    # **중요**: 탭 내부에서 그리기 위해 with 블록을 다시 열거나 indentation을 유지해야 하지만,
-    # 여기서는 탭 선택 상태에 따라 아래에서 호출하는 방식이 Streamlit 리런 구조상 탭을 유지해 줌.
     if st.session_state.analysis_source == 'FILE':
          final_pg_file = str(st.session_state.current_page_idx + st.session_state.start_page_offset) if is_pdf else st.session_state.manual_page_input
          render_analysis_ui(final_pg_file, 'FILE')
@@ -710,13 +678,14 @@ with tab_manual:
 
 # [공통 분석 실행]
 if run_analysis and target_text:
-    with st.spinner("AI & 형태소 분석 중..."):
-        raw_res = get_analysis_hybrid(target_text, sheet_data, MODE_KEY)
+    with st.spinner("AI 분석 및 DB 검증 중..."):
+        # 6~7단계 적용된 함수 호출 (Gemini 메인 + DB 강제 오버라이드)
+        raw_res = get_analysis_gemini(target_text, sheet_data, MODE_KEY)
         
         if raw_res:
             blacklist = get_blacklist_from_sheet(sheet_data)
             prob_words = get_problematic_words(sheet_data)
-            POS_OK = ['명사', '동사', '형용사', '부사', '관형사', '대명사', 'NNG', 'NNP', 'VV', 'VA', 'MAG', 'MM', 'NP']
+            POS_OK = ['명사', '동사', '형용사', '부사', '관형사', '대명사']
             
             filtered = []
             for item in raw_res:
@@ -724,10 +693,7 @@ if run_analysis and target_text:
                 root = item.get('root_word', '')
                 pos = item.get('pos', '')
                 
-                kiwi_map = {'NNG':'명사', 'NNP':'명사', 'VV':'동사', 'VA':'형용사', 'MAG':'부사', 'MM':'관형사', 'NP':'대명사'}
-                pos = kiwi_map.get(pos, pos)
-
-                if pos not in ['명사', '동사', '형용사', '부사', '관형사', '대명사']: continue
+                if pos not in POS_OK: continue
                 if orig in blacklist or root in blacklist: continue
                 
                 if item.get('origin') == '순': item['origin'] = '고'
