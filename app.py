@@ -524,7 +524,8 @@ with st.sidebar:
 st.subheader("🧐 분석 대상 입력")
 tab_file, tab_manual = st.tabs(["📄 파일 분석 (PDF/이미지)", "✍️ 직접 텍스트 입력"])
 
-target_text_for_analysis = ""
+# [핵심 수정: 변수 초기화]
+target_text_for_analysis = "" 
 run_analysis_flag = False
 
 # [Tab 1: 파일 업로드 및 분석]
@@ -567,6 +568,9 @@ with tab_file:
                 st.session_state.start_page_offset = new_offset
                 st.rerun()
 
+    # [핵심 수정] 파일 탭에서 보여줄 변수를 별도로 관리 (file_extracted_text)
+    file_extracted_text = "" 
+    
     if st.session_state.uploaded_file:
         if is_pdf_mode:
             current_save_page = str(st.session_state.current_page_idx + st.session_state.start_page_offset)
@@ -624,7 +628,8 @@ with tab_file:
                 extracted_text = extract_text_unified(st.session_state.uploaded_file, st.session_state.current_page_idx)
                 if "오류" in extracted_text: st.error(extracted_text)
             
-            target_text_for_analysis = st.text_area(
+            # [핵심 수정] 여기서 target_text_for_analysis에 바로 할당하지 않고, 파일 전용 변수(file_extracted_text)에 담습니다.
+            file_extracted_text = st.text_area(
                 "분석 대상", 
                 value=extracted_text if extracted_text else "",
                 height=600,
@@ -642,6 +647,8 @@ with tab_file:
                     st.info(f"💾 **{current_save_page}쪽**으로 저장")
             with col_b:
                 if st.button("🚀 파일 내용 분석 실행", use_container_width=True, type="primary", key="btn_analyze_file"):
+                    # [핵심 수정] 버튼을 눌렀을 때만 파일 텍스트를 분석 대상으로 넘김
+                    target_text_for_analysis = file_extracted_text 
                     run_analysis_flag = True
                     st.session_state.analysis_source = 'FILE'
 
@@ -659,7 +666,8 @@ with tab_manual:
     with col_m_b:
         if st.button("🚀 입력 텍스트 분석 실행", use_container_width=True, type="primary", key="btn_analyze_manual"):
             if manual_text_input.strip():
-                target_text_for_analysis = manual_text_input
+                # [핵심 수정] 버튼을 눌렀을 때만 입력 텍스트를 분석 대상으로 넘김
+                target_text_for_analysis = manual_text_input 
                 run_analysis_flag = True
                 st.session_state.analysis_source = 'MANUAL'
             else:
@@ -670,7 +678,6 @@ if run_analysis_flag and target_text_for_analysis:
     with st.spinner(f"{mode_selection} 모드로 분석 중입니다..."):
         raw_results = get_analysis_hybrid(target_text_for_analysis, sheet_data, MODE_KEY)
         
-        # [핵심 수정: 분석 결과가 없을 때의 피드백 추가]
         if raw_results:
             validation_text = target_text_for_analysis.replace(" ", "")
             POS_WHITELIST = ['명사', '동사', '형용사', '부사', '관형사', '대명사'] 
@@ -710,7 +717,6 @@ if run_analysis_flag and target_text_for_analysis:
                 status = '✅ 자동' if is_trusted else '📝 검토'
                 final_results.append({'delete_check': False, 'status': status, 'count': f"{total_cnt}회", 'original_word': formatted_original, 'root_word': root, 'origin': info['origin'], 'pos': info['pos']})
             
-            # 필터링 후 결과가 있으면 저장, 없으면 경고
             if final_results:
                 st.session_state.analysis_result = final_results
             else:
@@ -834,8 +840,6 @@ if st.session_state.analysis_result:
             
         return True
     
-    # [핵심 수정: 저장 로직의 충돌 해결]
-    # analysis_source를 기준으로 쪽수를 결정하여, 파일 업로드 상태에서도 수동 저장이 가능하게 함
     is_source_file = (st.session_state.analysis_source == 'FILE')
     final_is_pdf = is_source_file and st.session_state.uploaded_file and "pdf" in st.session_state.uploaded_file.type
     
@@ -847,7 +851,6 @@ if st.session_state.analysis_result:
     with btn_col2:
         if st.button("💾 저장하고 다음 쪽(▶) 이동", type="primary", use_container_width=True):
             if save_logic(edited_df, final_page_str):
-                # PDF 모드이고 다음 장이 있을 때만 이동
                 if final_is_pdf and st.session_state.current_page_idx < st.session_state.total_pages - 1:
                     st.session_state.current_page_idx += 1
                     st.session_state.analysis_result = None
