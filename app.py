@@ -519,139 +519,157 @@ with st.sidebar:
             for h in history[-3:]:
                 st.caption(f"{h['timestamp'][:10]} [{h['action']}] {h['original_word']} -> {h['root_word']}")
 
-# [상단 UI] 파일 업로드
-st.subheader("📄 파일 분석 (PDF 또는 이미지)")
+# [상단 UI] 탭 분리 적용 (4단계)
+st.subheader("🧐 분석 대상 입력")
+tab_file, tab_manual = st.tabs(["📄 파일 분석 (PDF/이미지)", "✍️ 직접 텍스트 입력"])
 
-col_up, col_set = st.columns([3, 1])
-with col_up:
-    uploaded_file = st.file_uploader(
-        "교과서 파일 업로드", 
-        type=['pdf', 'png', 'jpg', 'jpeg'], 
-        key='file_uploader'
-    )
-    
-    if uploaded_file and uploaded_file != st.session_state.uploaded_file:
-        st.session_state.uploaded_file = uploaded_file
-        st.session_state.current_page_idx = 0
-        st.session_state.analysis_result = None
-        st.session_state.start_page_offset = 1 
-        
-        file_type = uploaded_file.type
-        if "pdf" in file_type:
-            try:
-                if PLUMBER_AVAILABLE:
-                    with pdfplumber.open(uploaded_file) as pdf: st.session_state.total_pages = len(pdf.pages)
-                elif FITZ_AVAILABLE:
-                    doc = fitz.open(stream=uploaded_file.getvalue(), filetype="pdf")
-                    st.session_state.total_pages = len(doc)
-            except: pass
-        else:
-            st.session_state.total_pages = 1
-        st.rerun()
+target_text_for_analysis = ""
+run_analysis_flag = False
 
-is_pdf_mode = st.session_state.uploaded_file and "pdf" in st.session_state.uploaded_file.type
-
-with col_set:
-    if is_pdf_mode:
-        st.write("") 
-        new_offset = st.number_input("교과서 시작 쪽수", min_value=1, value=st.session_state.start_page_offset, help="PDF의 첫 번째 장이 실제 교과서 몇 쪽인지 설정하세요.")
-        if new_offset != st.session_state.start_page_offset:
-            st.session_state.start_page_offset = new_offset
-            st.rerun()
-
-extracted_text = ""
-
-if st.session_state.uploaded_file:
-    if is_pdf_mode:
-        current_save_page = str(st.session_state.current_page_idx + st.session_state.start_page_offset)
-    else:
-        current_save_page = st.session_state.manual_page_input
-
-    # [핵심 수정 3단계: 페이지 점프 기능 추가]
-    if is_pdf_mode and st.session_state.total_pages > 1:
-        c_prev, c_jump, c_next = st.columns([1, 1, 1])
-        
-        with c_prev:
-            if st.button("◀ 이전 장", use_container_width=True):
-                if st.session_state.current_page_idx > 0:
-                    st.session_state.current_page_idx -= 1
-                    st.session_state.analysis_result = None
-                    st.rerun()
-                    
-        with c_next:
-            if st.button("다음 장 ▶", use_container_width=True):
-                if st.session_state.current_page_idx < st.session_state.total_pages - 1:
-                    st.session_state.current_page_idx += 1
-                    st.session_state.analysis_result = None
-                    st.rerun()
-                    
-        with c_jump:
-            # 직접 입력 가능한 숫자 창 (Enter 누르면 이동)
-            target_page = st.number_input(
-                "페이지 이동", 
-                min_value=1, 
-                max_value=st.session_state.total_pages, 
-                value=st.session_state.current_page_idx + 1,
-                label_visibility="collapsed"
-            )
-            if target_page != st.session_state.current_page_idx + 1:
-                st.session_state.current_page_idx = target_page - 1
-                st.session_state.analysis_result = None
-                st.rerun()
-                
-        st.markdown(f"<div style='text-align:center; color:grey; font-size:0.8em;'>총 {st.session_state.total_pages}장 중 {st.session_state.current_page_idx + 1}번째 장 (교과서 {current_save_page}쪽)</div>", unsafe_allow_html=True)
-
-    view_col1, view_col2 = st.columns([1, 1])
-    
-    with view_col1:
-        st.caption("📷 원본 미리보기 (휠로 스크롤 가능)")
-        img_bytes = get_page_image_bytes(st.session_state.uploaded_file, st.session_state.current_page_idx)
-        if img_bytes:
-            b64_img = base64.b64encode(img_bytes).decode('utf-8')
-            html_code = f"""
-            <div style="height: 600px; overflow-y: auto; border: 1px solid #ddd; border-radius: 5px; padding: 10px; background-color: #f9f9f9;">
-                <img src="data:image/png;base64,{b64_img}" style="width: 100%; display: block;">
-            </div>
-            """
-            st.markdown(html_code, unsafe_allow_html=True)
-        else:
-            st.info("미리보기를 불러올 수 없습니다.")
-
-    with view_col2:
-        st.caption("📝 추출 텍스트 (수정 가능)")
-        with st.spinner("텍스트 읽는 중..."):
-            extracted_text = extract_text_unified(st.session_state.uploaded_file, st.session_state.current_page_idx)
-            if "오류" in extracted_text: st.error(extracted_text)
-            
-        input_text = st.text_area(
-            "분석 대상", 
-            value=extracted_text if extracted_text else "",
-            height=600,
-            label_visibility="collapsed"
+# [Tab 1: 파일 업로드 및 분석]
+with tab_file:
+    col_up, col_set = st.columns([3, 1])
+    with col_up:
+        uploaded_file = st.file_uploader(
+            "교과서/문서 파일 업로드", 
+            type=['pdf', 'png', 'jpg', 'jpeg'], 
+            key='file_uploader'
         )
         
-        col_p, col_b = st.columns([1, 2])
-        with col_p:
-            if not is_pdf_mode: 
-                manual_page = st.text_input("저장될 쪽수 입력", value=st.session_state.manual_page_input, key="manual_page_setter")
-                if manual_page != st.session_state.manual_page_input:
-                    st.session_state.manual_page_input = manual_page
+        if uploaded_file and uploaded_file != st.session_state.uploaded_file:
+            st.session_state.uploaded_file = uploaded_file
+            st.session_state.current_page_idx = 0
+            st.session_state.analysis_result = None
+            st.session_state.start_page_offset = 1 
+            
+            file_type = uploaded_file.type
+            if "pdf" in file_type:
+                try:
+                    if PLUMBER_AVAILABLE:
+                        with pdfplumber.open(uploaded_file) as pdf: st.session_state.total_pages = len(pdf.pages)
+                    elif FITZ_AVAILABLE:
+                        doc = fitz.open(stream=uploaded_file.getvalue(), filetype="pdf")
+                        st.session_state.total_pages = len(doc)
+                except: pass
             else:
-                st.info(f"💾 **{current_save_page}쪽**으로 저장됩니다.")
+                st.session_state.total_pages = 1
+            st.rerun()
 
-        with col_b:
-            analyze_btn = st.button("🚀 분석 실행", use_container_width=True, type="primary")
+    is_pdf_mode = st.session_state.uploaded_file and "pdf" in st.session_state.uploaded_file.type
 
-else:
-    st.info("👆 위에서 파일을 업로드해주세요.")
-    analyze_btn = False
-    input_text = ""
+    with col_set:
+        if is_pdf_mode:
+            st.write("") 
+            new_offset = st.number_input("교과서 시작 쪽수", min_value=1, value=st.session_state.start_page_offset, help="PDF의 첫 번째 장이 실제 교과서 몇 쪽인지 설정하세요.")
+            if new_offset != st.session_state.start_page_offset:
+                st.session_state.start_page_offset = new_offset
+                st.rerun()
 
-if analyze_btn and input_text:
+    if st.session_state.uploaded_file:
+        if is_pdf_mode:
+            current_save_page = str(st.session_state.current_page_idx + st.session_state.start_page_offset)
+        else:
+            current_save_page = st.session_state.manual_page_input
+
+        # [3단계: 페이지 점프 기능 (PDF 모드에서만)]
+        if is_pdf_mode and st.session_state.total_pages > 1:
+            c_prev, c_jump, c_next = st.columns([1, 1, 1])
+            with c_prev:
+                if st.button("◀ 이전 장", use_container_width=True, key="btn_prev"):
+                    if st.session_state.current_page_idx > 0:
+                        st.session_state.current_page_idx -= 1
+                        st.session_state.analysis_result = None
+                        st.rerun()
+            with c_next:
+                if st.button("다음 장 ▶", use_container_width=True, key="btn_next"):
+                    if st.session_state.current_page_idx < st.session_state.total_pages - 1:
+                        st.session_state.current_page_idx += 1
+                        st.session_state.analysis_result = None
+                        st.rerun()
+            with c_jump:
+                target_page = st.number_input(
+                    "페이지 이동", 
+                    min_value=1, 
+                    max_value=st.session_state.total_pages, 
+                    value=st.session_state.current_page_idx + 1,
+                    label_visibility="collapsed",
+                    key="page_jumper"
+                )
+                if target_page != st.session_state.current_page_idx + 1:
+                    st.session_state.current_page_idx = target_page - 1
+                    st.session_state.analysis_result = None
+                    st.rerun()
+            st.markdown(f"<div style='text-align:center; color:grey; font-size:0.8em;'>총 {st.session_state.total_pages}장 중 {st.session_state.current_page_idx + 1}번째 장 (교과서 {current_save_page}쪽)</div>", unsafe_allow_html=True)
+
+        view_col1, view_col2 = st.columns([1, 1])
+        with view_col1:
+            st.caption("📷 원본 미리보기")
+            img_bytes = get_page_image_bytes(st.session_state.uploaded_file, st.session_state.current_page_idx)
+            if img_bytes:
+                b64_img = base64.b64encode(img_bytes).decode('utf-8')
+                html_code = f"""
+                <div style="height: 600px; overflow-y: auto; border: 1px solid #ddd; border-radius: 5px; padding: 10px; background-color: #f9f9f9;">
+                    <img src="data:image/png;base64,{b64_img}" style="width: 100%; display: block;">
+                </div>
+                """
+                st.markdown(html_code, unsafe_allow_html=True)
+            else:
+                st.info("미리보기를 불러올 수 없습니다.")
+
+        with view_col2:
+            st.caption("📝 추출 텍스트")
+            with st.spinner("텍스트 읽는 중..."):
+                extracted_text = extract_text_unified(st.session_state.uploaded_file, st.session_state.current_page_idx)
+                if "오류" in extracted_text: st.error(extracted_text)
+            
+            target_text_for_analysis = st.text_area(
+                "분석 대상", 
+                value=extracted_text if extracted_text else "",
+                height=600,
+                label_visibility="collapsed",
+                key="file_text_area"
+            )
+            
+            col_p, col_b = st.columns([1, 2])
+            with col_p:
+                if not is_pdf_mode: 
+                    manual_page_val = st.text_input("저장될 쪽수", value=st.session_state.manual_page_input, key="manual_page_setter_file")
+                    if manual_page_val != st.session_state.manual_page_input:
+                        st.session_state.manual_page_input = manual_page_val
+                else:
+                    st.info(f"💾 **{current_save_page}쪽**으로 저장")
+            with col_b:
+                if st.button("🚀 파일 내용 분석 실행", use_container_width=True, type="primary", key="btn_analyze_file"):
+                    run_analysis_flag = True
+
+# [Tab 2: 직접 텍스트 입력]
+with tab_manual:
+    st.caption("📝 분석할 텍스트를 직접 입력하세요.")
+    manual_text_input = st.text_area("분석 대상 텍스트", height=400, key="manual_text_area")
+    
+    col_m_p, col_m_b = st.columns([1, 2])
+    with col_m_p:
+        manual_page_val_2 = st.text_input("저장될 쪽수 입력", value=st.session_state.manual_page_input, key="manual_page_setter_text")
+        if manual_page_val_2 != st.session_state.manual_page_input:
+            st.session_state.manual_page_input = manual_page_val_2
+            
+    with col_m_b:
+        if st.button("🚀 입력 텍스트 분석 실행", use_container_width=True, type="primary", key="btn_analyze_manual"):
+            if manual_text_input.strip():
+                target_text_for_analysis = manual_text_input
+                run_analysis_flag = True
+                # 직접 입력 시 PDF 모드 해제 (저장 로직 위해)
+                is_pdf_mode = False 
+                current_save_page = st.session_state.manual_page_input
+            else:
+                st.warning("분석할 텍스트를 입력해주세요.")
+
+# 분석 실행 로직 (공통)
+if run_analysis_flag and target_text_for_analysis:
     with st.spinner(f"{mode_selection} 모드로 분석 중입니다..."):
-        raw_results = get_analysis_hybrid(input_text, sheet_data, MODE_KEY)
+        raw_results = get_analysis_hybrid(target_text_for_analysis, sheet_data, MODE_KEY)
         if raw_results:
-            validation_text = input_text.replace(" ", "")
+            validation_text = target_text_for_analysis.replace(" ", "")
             POS_WHITELIST = ['명사', '동사', '형용사', '부사', '관형사', '대명사'] 
             blacklist = get_blacklist_from_sheet(sheet_data)
             problematic_words = get_problematic_words(sheet_data)
@@ -691,6 +709,7 @@ if analyze_btn and input_text:
             
             st.session_state.analysis_result = final_results
 
+# 결과 표시 및 저장 (공통)
 if st.session_state.analysis_result:
     st.markdown("---")
     st.markdown("### 📊 분석 결과")
@@ -718,7 +737,7 @@ if st.session_state.analysis_result:
                 rows_to_add = []
                 for _, row in to_delete.iterrows():
                      raw_orig = str(row['original_word']).split('(')[0] 
-                     rows_to_add.append([datetime.now().isoformat(), raw_orig, row['root_word'], "", "", 'delete', input_text])
+                     rows_to_add.append([datetime.now().isoformat(), raw_orig, row['root_word'], "", "", 'delete', target_text_for_analysis])
                 
                 if send_data_with_retry(sheet, rows_to_add, is_multiple=True):
                     st.toast(f"🗑️ 삭제 학습 완료!", icon="✅")
@@ -741,7 +760,7 @@ if st.session_state.analysis_result:
                 'origin': c_origin,
                 'pos': c_pos,
                 'action': 'modify',
-                'context': input_text
+                'context': 'save_action'
             })
             
         def parse_count(val):
@@ -803,23 +822,27 @@ if st.session_state.analysis_result:
             send_data_with_retry(sheet, rows, is_multiple=True)
             
         return True
-
-    if is_pdf_mode:
-        final_page_str = str(st.session_state.current_page_idx + st.session_state.start_page_offset)
+    
+    # 저장 시 페이지 문자열 결정 (직접 입력 모드면 수동 입력값 사용)
+    # 위에서 is_pdf_mode가 Tab 2 진입 시 False로 설정되었을 수 있으므로 재확인
+    final_is_pdf = st.session_state.uploaded_file and "pdf" in st.session_state.uploaded_file.type
+    if final_is_pdf and run_analysis_flag == False: # 분석 직후가 아니라면 세션 상태 따름
+         final_page_str = str(st.session_state.current_page_idx + st.session_state.start_page_offset)
     else:
-        final_page_str = st.session_state.manual_page_input
+         final_page_str = st.session_state.manual_page_input
 
     with btn_col2:
         if st.button("💾 저장하고 다음 쪽(▶) 이동", type="primary", use_container_width=True):
             if save_logic(edited_df, final_page_str):
-                if is_pdf_mode and st.session_state.current_page_idx < st.session_state.total_pages - 1:
+                # PDF 모드이고 다음 장이 있을 때만 이동
+                if final_is_pdf and st.session_state.current_page_idx < st.session_state.total_pages - 1:
                     st.session_state.current_page_idx += 1
                     st.session_state.analysis_result = None
                     st.toast("✅ 저장 완료! 이동합니다.", icon="🏃")
                     time.sleep(1)
                     st.rerun()
-                elif not is_pdf_mode:
-                    st.success("이미지 파일은 다음 쪽이 없습니다. (저장 완료)")
+                elif not final_is_pdf:
+                    st.success("✅ 저장되었습니다. (입력 모드는 다음 쪽이 없습니다)")
                 else:
                     st.success("마지막 페이지입니다!")
 
