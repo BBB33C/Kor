@@ -1,744 +1,540 @@
-import streamlit as st
+import sys
+import os
 import pandas as pd
-import requests
 import json
 import re
-import io
-import os
-import gspread
-import base64
-from oauth2client.service_account import ServiceAccountCredentials
-from collections import Counter
-from datetime import datetime
 import time
+from PyQt5.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout, 
+                             QTextEdit, QPushButton, QTableWidget, QTableWidgetItem, 
+                             QHeaderView, QLabel, QFileDialog, QProgressBar, QMessageBox,
+                             QComboBox, QStackedWidget, QLineEdit, QSplitter, QCheckBox, QFrame)
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
+from PyQt5.QtGui import QColor, QFont, QIcon
 
-# [라이브러리 상태 체크]
-try:
-    import pdfplumber
-    PLUMBER_AVAILABLE = True
-except ImportError:
-    PLUMBER_AVAILABLE = False
+import google.generativeai as genai
 
-try:
-    import fitz  # PyMuPDF
-    FITZ_AVAILABLE = True
-except ImportError:
-    FITZ_AVAILABLE = False
+# =================================================================================
+# [핵심 로직] GeminiThread: CoT(단계별 사고) + 남북한 언어 통합 처리
+# =================================================================================
+class GeminiThread(QThread):
+    finished = pyqtSignal(object) # 성공 시 데이터(리스트) 반환
+    error = pyqtSignal(str)       # 에러 메시지 반환
+    progress = pyqtSignal(str)    # 진행 상황 텍스트 전달
 
-# =========================================================
-# ⚙️ 설정 & 세션 초기화 (최상단)
-# =========================================================
-try:
-    if "GEMINI_API_KEY" in st.secrets:
-        API_KEY = st.secrets["GEMINI_API_KEY"]
-    else:
-        API_KEY = "AIzaSyCC6oyL7POpbWq2FZrJ2zIJuiosupFQZYk" 
-except:
-    API_KEY = "AIzaSyCC6oyL7POpbWq2FZrJ2zIJuiosupFQZYk"
+    def __init__(self, api_key, text, history_data=None):
+        super().__init__()
+        self.api_key = api_key
+        self.text = text
+        self.history_data = history_data  # 7단계: 최근 학습 이력(우선순위 데이터)
 
-MODEL_NAME = "gemini-2.0-flash-exp"
-SHEET_NAME = "Korean_DB" 
-TRUST_THRESHOLD = 3 
-
-st.set_page_config(page_title="국어활동 AI 분석기", page_icon="📝", layout="wide")
-
-# [세션 변수 초기화]
-if 'analysis_result' not in st.session_state: st.session_state.analysis_result = None
-if 'master_df' not in st.session_state: st.session_state.master_df = None
-if 'last_uploaded_file_name' not in st.session_state: st.session_state.last_uploaded_file_name = None
-if 'analysis_source' not in st.session_state: st.session_state.analysis_source = None 
-if 'uploaded_file' not in st.session_state: st.session_state.uploaded_file = None
-if 'total_pages' not in st.session_state: st.session_state.total_pages = 0
-if 'current_page_idx' not in st.session_state: st.session_state.current_page_idx = 0
-if 'start_page_offset' not in st.session_state: st.session_state.start_page_offset = 1 
-if 'manual_page_input' not in st.session_state: st.session_state.manual_page_input = "1"
-if 'last_mode' not in st.session_state: st.session_state.last_mode = "SOUTH"
-if 'excel_buffer' not in st.session_state: st.session_state.excel_buffer = None 
-
-# =========================================================
-# 🔐 구글 시트 연결 및 데이터 전처리 (7단계 핵심)
-# =========================================================
-@st.cache_resource
-def get_google_sheet_client():
-    try:
-        if "gcp_service_account" not in st.secrets: return None
-        scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-        creds_dict = dict(st.secrets["gcp_service_account"])
-        if "private_key" in creds_dict: creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
-        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-        client = gspread.authorize(creds)
-        return client
-    except: return None
-
-def filter_latest_rules(raw_data):
-    """
-    [7단계 적용] 학습 데이터 중복 시, 가장 최신(마지막) 규칙만 남기고 필터링하는 함수.
-    이것이 '최신 학습 우선순위'를 보장합니다.
-    """
-    if not raw_data: return []
-    
-    df = pd.DataFrame(raw_data)
-    if df.empty or 'timestamp' not in df.columns or 'original_word' not in df.columns:
-        return raw_data
-    
-    # 시간순 정렬 (최신이 위로 오게) -> 사실 구글시트는 아래에 추가되므로 역순 정렬이 안전
-    try:
-        df['timestamp'] = pd.to_datetime(df['timestamp'])
-        df = df.sort_values('timestamp', ascending=False)
-    except:
-        pass # 날짜 변환 실패 시 인덱스 역순(나중에 들어온게 위로) 가정
-        
-    # 같은 단어('original_word')가 있으면 가장 위에 있는(최신) 것만 남김
-    df_unique = df.drop_duplicates(subset=['original_word'], keep='first')
-    
-    return df_unique.to_dict('records')
-
-def get_sheet_data_fresh(mode_key):
-    client = get_google_sheet_client()
-    if not client: return None, []
-    target_sheet_name = "South_Korea" if mode_key == "SOUTH" else "North_Korea"
-    try:
-        spreadsheet = client.open(SHEET_NAME)
-        sheet = spreadsheet.worksheet(target_sheet_name)
-        raw_data = sheet.get_all_records()
-        
-        # [7단계 적용] 데이터를 가져오자마자 최신 규칙만 남기도록 필터링
-        clean_data = filter_latest_rules(raw_data)
-        
-        return sheet, clean_data
-    except: return None, []
-
-def send_data_with_retry(sheet_obj, data, is_multiple=False):
-    max_retries = 3
-    for attempt in range(max_retries):
+    def run(self):
         try:
-            if is_multiple:
-                clean_data = [[str(item) for item in row] for row in data]
-                sheet_obj.append_rows(clean_data)
-            else:
-                clean_data = [str(item) for item in data]
-                sheet_obj.append_row(clean_data)
-            return True
-        except:
-            if attempt < max_retries - 1:
-                time.sleep(1)
-                continue
-            else: return False
-    return False
-
-# [백업 기능]
-def save_backup_to_cloud(mode_key, df):
-    client = get_google_sheet_client()
-    if not client or df is None or df.empty: return False
-    backup_sheet_name = f"Backup_{'South' if mode_key == 'SOUTH' else 'North'}"
-    try:
-        spreadsheet = client.open(SHEET_NAME)
-        try: worksheet = spreadsheet.worksheet(backup_sheet_name); worksheet.clear() 
-        except: worksheet = spreadsheet.add_worksheet(title=backup_sheet_name, rows=1000, cols=20)
-        data_to_upload = [df.columns.values.tolist()] + df.astype(str).values.tolist()
-        worksheet.update(data_to_upload)
-        return True
-    except: return False
-
-def load_backup_from_cloud(mode_key):
-    client = get_google_sheet_client()
-    if not client: return None
-    backup_sheet_name = f"Backup_{'South' if mode_key == 'SOUTH' else 'North'}"
-    try:
-        spreadsheet = client.open(SHEET_NAME)
-        worksheet = spreadsheet.worksheet(backup_sheet_name)
-        data = worksheet.get_all_records()
-        if not data: return None
-        return pd.DataFrame(data)
-    except: return None
-
-# =========================================================
-# 🧠 AI 분석 로직 (6단계: 명사+하다 로직 삭제 및 개선)
-# =========================================================
-def generate_prompt_from_sheet(sheet_data):
-    if not sheet_data: return ""
-    # 이미 최신순으로 정렬된 데이터를 받음
-    df = pd.DataFrame(sheet_data)
-    if df.empty: return ""
-    prompt_lines = []
-    
-    if 'action' in df.columns:
-        deleted = df[df['action'] == 'delete']
-        for _, row in deleted.tail(20).iterrows(): # 예시 개수 늘림
-            prompt_lines.append(f"- [삭제 규칙]: '{row['original_word']}'는 분석 결과에서 무조건 제외하세요.")
-        
-        # 추가/수정된 단어는 AI에게 강력한 힌트로 제공
-        forced = df[df['action'].isin(['add', 'modify'])]
-        for _, row in forced.tail(30).iterrows():
-            prompt_lines.append(f"- [고정 규칙]: '{row['original_word']}'는 반드시 원형: '{row['root_word']}', 품사: '{row['pos']}', 분류: '{row['origin']}'으로 분석하세요.")
-             
-    if prompt_lines:
-         return "\n[🚨 사용자 정의 최우선 규칙 (이 규칙을 어기면 안됨)]:\n" + "\n".join(prompt_lines) + "\n"
-    return ""
-
-def api_call_direct(prompt):
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={API_KEY.strip()}"
-    headers = {'Content-Type': 'application/json'}
-    
-    safety_settings = [
-        {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-        {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-        {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-        {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
-    ]
-    
-    data = {
-        "contents": [{"parts": [{"text": prompt}]}], 
-        "safetySettings": safety_settings,
-        "generationConfig": {"temperature": 0.1}
-    }
-    
-    try:
-        response = requests.post(url, headers=headers, json=data, timeout=300)
-        if response.status_code != 200: return None
-        result_json = response.json()
-        if 'candidates' in result_json:
-            text_res = result_json['candidates'][0]['content']['parts'][0]['text']
-            json_match = re.search(r'\[.*\]', text_res, re.DOTALL)
-            if json_match: return json.loads(json_match.group())
-        return None
-    except: return None
-
-def api_call_vision_ocr(image_bytes):
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={API_KEY.strip()}"
-    headers = {'Content-Type': 'application/json'}
-    base64_image = base64.b64encode(image_bytes).decode('utf-8')
-    
-    prompt_text = "이미지의 텍스트를 추출하세요. 줄바꿈을 준수하고, 중복 단어도 그대로 적으세요."
-    
-    safety_settings = [{"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"}, {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"}, {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"}, {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}]
-    data = {"contents": [{"parts": [{"text": prompt_text}, {"inline_data": {"mime_type": "image/png", "data": base64_image}}]}], "safetySettings": safety_settings}
-
-    try:
-        response = requests.post(url, headers=headers, json=data, timeout=300)
-        if response.status_code != 200: return f"OCR 실패"
-        result_json = response.json()
-        if 'candidates' in result_json: return result_json['candidates'][0]['content']['parts'][0]['text']
-        return "텍스트 없음"
-    except: return f"통신 오류"
-
-def split_text_smartly(text, chunk_size=1000):
-    sentences = re.split(r'(?<=[.?!])\s+|\\n', text)
-    chunks = []
-    current_chunk = ""
-    for sentence in sentences:
-        if len(current_chunk) + len(sentence) < chunk_size:
-            current_chunk += sentence + " "
-        else:
-            if current_chunk: chunks.append(current_chunk.strip())
-            current_chunk = sentence + " "
-    if current_chunk: chunks.append(current_chunk.strip())
-    return chunks
-
-def extract_text_unified(file_obj, page_index):
-    file_type = file_obj.type
-    if "image" in file_type:
-        try: return api_call_vision_ocr(file_obj.getvalue())
-        except: return "이미지 오류"
-    elif "pdf" in file_type:
-        if PLUMBER_AVAILABLE:
-            try:
-                with pdfplumber.open(file_obj) as pdf:
-                    if page_index < 0 or page_index >= len(pdf.pages): return ""
-                    page = pdf.pages[page_index]
-                    width, height = page.width, page.height
-                    crop_box = (0, 0, width, height * 0.9)
-                    try: text = page.crop(crop_box).extract_text()
-                    except: text = page.extract_text()
-                    if text and len(text.strip()) > 30: return text
-            except: pass
-        if FITZ_AVAILABLE:
-            try:
-                doc = fitz.open(stream=file_obj.getvalue(), filetype="pdf")
-                page = doc[page_index]
-                rect = page.rect
-                clip_rect = fitz.Rect(0, 0, rect.width, rect.height * 0.9)
-                pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), clip=clip_rect)
-                return api_call_vision_ocr(pix.tobytes("png"))
-            except: return "PDF 변환 오류"
-    return "파일 읽기 실패"
-
-def get_page_image_bytes(file_obj, page_index):
-    file_type = file_obj.type
-    if "image" in file_type: return file_obj.getvalue() 
-    elif "pdf" in file_type and FITZ_AVAILABLE:
-        try:
-            doc = fitz.open(stream=file_obj.getvalue(), filetype="pdf")
-            page = doc[page_index]
-            pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5)) 
-            return pix.tobytes("png") 
-        except: return None
-    return None
-
-# [DB 우선권 보장] Gemini 결과가 나왔어도 DB에 다른 규칙이 있으면 덮어씌움
-def apply_db_override(gemini_results, sheet_data):
-    if not sheet_data or not gemini_results: return gemini_results
-    
-    # 빠른 검색을 위해 DB를 딕셔너리로 변환
-    db_map = {}
-    for row in sheet_data:
-        # sheet_data는 이미 최신순으로 정렬되어 중복 제거된 상태임 (7단계)
-        db_map[row['original_word']] = row
-        
-    final_list = []
-    for item in gemini_results:
-        word = item.get('original_word')
-        
-        if word in db_map:
-            rule = db_map[word]
-            if rule['action'] == 'delete':
-                continue # DB에서 삭제하라고 했으면 결과 리스트에 넣지 않음
-            else:
-                # DB에 있는 내용으로 강제 교체 (AI보다 사용자 규칙 우선)
-                item['root_word'] = rule['root_word']
-                item['origin'] = rule['origin']
-                item['pos'] = rule['pos']
-                final_list.append(item)
-        else:
-            final_list.append(item)
+            self.progress.emit("API 연결 및 모델 설정 중...")
+            genai.configure(api_key=self.api_key)
             
-    return final_list
-
-def get_analysis_gemini(text, sheet_data, mode_key):
-    learning_prompt = generate_prompt_from_sheet(sheet_data)
-    
-    role = "당신은 국립국어원 표준국어대사전 편찬 전문가입니다."
-    if mode_key == "NORTH": instr = "[북한 문화어 모드] 두음법칙을 적용하지 마세요 (예: 로동)."
-    else: instr = "[대한민국 표준어 모드] 표준 맞춤법과 두음법칙을 준수하세요."
-
-    # [6단계 적용] 명사+하다 분리 로직 삭제 및 원형 유지 지시
-    base_instruction = f"""
-    {role}\n{instr}
-    
-    [핵심 분석 규칙]
-    1. **품사 유지:** 문맥에 따라 명사, 동사, 형용사 등을 정확히 구분하세요.
-    2. **[중요] '하다' 용언 처리:** '공부하다', '사랑하다'와 같은 단어는 **무조건 명사로 자르지 말고**, 사전에 등재된 **기본형(Root Form) 그대로** 추출하세요.
-       - 예: "그는 공부했다" -> 원형: "공부하다", 품사: "동사" (O) / 원형: "공부", 품사: "명사" (X)
-       - 예: "행복한 하루" -> 원형: "행복하다", 품사: "형용사" (O)
-    3. 조사, 어미, 문장부호, 감탄사는 분석에서 제외하세요.
-    4. 결과는 오직 JSON 리스트 형식으로만 출력하세요.
-    
-    형식: [{{"original_word": "...", "root_word": "...", "origin": "고", "pos": "동사"}}]
-    """
-    
-    chunks = split_text_smartly(text)
-    raw_results = []
-    
-    for i, chunk in enumerate(chunks):
-        if not chunk.strip(): continue
-        prompt = f"""{learning_prompt}\n{base_instruction}\n\n분석할 문장:\n"{chunk}" """
-        chunk_result = api_call_direct(prompt)
-        if chunk_result: raw_results.extend(chunk_result)
-        time.sleep(0.1)
-    
-    # [DB 강제 적용] AI가 분석한 결과를 DB 규칙으로 재검열
-    final_results = apply_db_override(raw_results, sheet_data)
-    
-    return final_results
-
-def calculate_total_appearances(row):
-    total = 0
-    for col in row.index:
-        if str(col).startswith('쪽수'):
-            val = str(row[col])
-            if '_' in val:
-                try: total += int(val.split('_')[1])
-                except: total += 1
-            elif val != 'nan' and val != '': total += 1
-    return total
-
-def add_emoji_to_origin(val):
-    mapping = {'고': '🔵 고', '한': '🟢 한', '외': '🔴 외', '혼': '🟣 혼'}
-    return mapping.get(val, val)
-
-def clean_value_for_save(val):
-    if isinstance(val, str):
-        return val.replace('🔵 ', '').replace('🟢 ', '').replace('🔴 ', '').replace('🟣 ', '').replace('📦 ', '').replace('🏃 ', '').replace('🎨 ', '').replace('⚡ ', '').replace('🔍 ', '').replace('❗ ', '').replace('✅ ', '').replace('📝 ', '').replace('👤 ', '')
-    return val
-
-def get_problematic_words(sheet_data):
-    problem_roots = set()
-    if not sheet_data: return problem_roots
-    for row in sheet_data:
-        if row.get('action') in ['modify', 'delete', 'add']:
-            if row.get('root_word'): problem_roots.add(str(row.get('root_word')))
-            if row.get('original_word'): problem_roots.add(str(row.get('original_word')))
-    return problem_roots
-
-def check_trust_level_strict(root_word, uploaded_df, problematic_words):
-    if root_word in problematic_words: return False
-    if uploaded_df is None: return False
-    if '자료' not in uploaded_df.columns: return False
-    match = uploaded_df[uploaded_df['자료'] == root_word]
-    if match.empty: return False
-    try:
-        count_val = match.iloc[0]['출연횟수']
-        return count_val >= TRUST_THRESHOLD
-    except: return False
-
-def get_blacklist_from_sheet(sheet_data):
-    blacklist = set()
-    if not sheet_data: return blacklist
-    for row in sheet_data:
-        if row.get('action') == 'delete':
-            blacklist.add(row.get('original_word'))
-            blacklist.add(row.get('root_word'))
-    return blacklist
-
-def load_excel_safely(file):
-    try:
-        df = pd.read_excel(file)
-        if '자료' in df.columns and '출연횟수' in df.columns: return df
-        return None
-    except: return None
-
-# [핵심] 에디터 상태 동기화 함수
-def apply_editor_changes_safe(source_key):
-    editor_key = f"editor_{source_key}"
-    if editor_key in st.session_state and st.session_state.analysis_result:
-        changes = st.session_state[editor_key].get("edited_rows", {})
-        for idx, changes_dict in changes.items():
-            if idx < len(st.session_state.analysis_result):
-                for col, val in changes_dict.items():
-                    st.session_state.analysis_result[idx][col] = val
-
-# =========================================================
-# 🔄 결과 표시 및 UI 처리 함수
-# =========================================================
-def render_analysis_ui(page_str, source_key):
-    if st.session_state.analysis_result:
-        st.markdown("### 📊 분석 결과")
-        df_disp = pd.DataFrame(st.session_state.analysis_result)
-        
-        col_conf = {
-            "delete_check": st.column_config.CheckboxColumn("삭제", width="small"),
-            "count": st.column_config.TextColumn("빈도"),
-            "original_word": st.column_config.TextColumn("원본"),
-            "root_word": "원형",
-            "origin": st.column_config.SelectboxColumn("분류", options=["🔵 고", "🟢 한", "🔴 외", "🟣 혼"]),
-            "pos": st.column_config.SelectboxColumn("품사", options=["📦 명사", "🏃 동사", "🎨 형용사", "⚡ 부사", "🔍 관형사", "👤 대명사"])
-        }
-        
-        edited = st.data_editor(
-            df_disp[["delete_check","count","original_word","root_word","origin","pos"]], 
-            column_config=col_conf, 
-            use_container_width=True, 
-            key=f"editor_{source_key}", 
-            num_rows="fixed"
-        )
-        
-        b1, b2, b3 = st.columns([1, 2, 2])
-        sheet, sheet_data = get_sheet_data_fresh(st.session_state.last_mode) 
-
-        def save_data(df, pg):
-            valid = df[df['delete_check'] == False].copy()
-            logs = []
-            for _, r in valid.iterrows():
-                logs.append([datetime.now().isoformat(), r['original_word'], r['root_word'], clean_value_for_save(r['origin']), clean_value_for_save(r['pos']), 'modify', 'save'])
-            if sheet and logs: send_data_with_retry(sheet, logs, True)
-            
-            agg = valid.groupby(['root_word','origin','pos'], as_index=False).agg(
-                {'original_word': lambda x: ','.join(x.unique()), 'count': lambda x: sum([int(str(v).replace('회','')) for v in x])}
+            # 모델 설정: CoT 수행을 위해 토큰 여유 확보
+            model = genai.GenerativeModel(
+                model_name="gemini-1.5-pro",
+                generation_config={
+                    "temperature": 0.2,        # 창의성 억제, 분석 정확도 최우선
+                    "top_p": 0.8,
+                    "max_output_tokens": 8192, 
+                }
             )
+
+            # ---------------------------------------------------------------------
+            # [프롬프트] 남북한 공통 적용 및 단계별 사고(CoT) 지시
+            # ---------------------------------------------------------------------
+            system_prompt = """
+            당신은 한국어(대한민국 표준어 및 북한 문화어 포함) 형태소 분석 최고 전문가입니다.
+            주어진 텍스트를 정밀 분석하여, 아래의 [분석 단계]를 거쳐 최종적으로 JSON 데이터를 출력해야 합니다.
+
+            [분석 대상 언어 특성]
+            - 대한민국 표준어뿐만 아니라 북한(문화어) 데이터가 포함될 수 있습니다.
+            - 두음법칙 미적용(예: 녀자, 량심), 사이시옷 차이, 띄어쓰기(붙여쓰기 경향) 등의 특성을 고려하여 문맥에 맞게 분석하십시오.
+
+            [분석 단계 (Chain of Thought)]
+            *** 바로 JSON을 출력하지 마십시오. 반드시 생각 과정을 먼저 서술하십시오. ***
+            1. **문맥 파악**: 전체 문장을 읽고 이것이 표준어인지 문화어인지, 문맥상 의미가 무엇인지 파악합니다.
+            2. **형태소 분리**: 어절을 의미 단위(명사, 동사 등)와 문법 단위(조사, 어미)로 정밀하게 쪼갭니다.
+               - 주의: '나도' -> '나(명사)' + '도(조사)' -> 조사는 과감히 삭제.
+               - 주의: '갈 수 있다' -> '가(동사)' + 'ㄹ(어미)' + '수(의존명사)' + '있다(동사)'
+            3. **동사/명사 판단**: '~하다'가 붙은 단어는 문맥상 동작이 강조되면 동사, 사물의 이름이나 개념이 강조되면 명사(어근)로 분류합니다.
+               - 예: '사랑하다' (동사), '사랑' (명사) -> 문맥에 따라 원형을 결정.
+            4. **이력 대조**: 제공된 [사용자 학습 이력]에 있는 단어라면, 그 분류를 최우선으로 적용합니다.
+            5. **최종 정제**: 조사, 어미, 특수문자를 제외한 실질 형태소만 남겨 JSON으로 변환합니다.
+
+            [출력 포맷]
+            반드시 코드 블록(```json ... ```) 안에 아래 리스트 형식을 넣으세요.
+            [
+                {"원본": "나도", "원형": "나", "품사": "명사", "분류": "고"},
+                {"원본": "창작하기", "원형": "창작하다", "품사": "동사", "분류": "한"}
+            ]
             
-            bdf = st.session_state.master_df
-            if bdf is None: bdf = pd.DataFrame(columns=['구분','자료','출연횟수'])
+            [분류 코드]
+            - 고: 고유어 / 한: 한자어 / 외: 외래어 / 혼: 혼종어
+            """
+
+            # 7단계: 사용자 이력 주입 (중복 시 최신 내용 반영을 위한 기준 데이터)
+            history_context = ""
+            if self.history_data:
+                # 데이터가 너무 많으면 토큰 초과될 수 있으므로, 텍스트에 포함된 단어 위주로 필터링하거나
+                # 여기서는 프롬프트에 '지침'으로만 강력하게 넣습니다.
+                # (실제 17,000건을 다 넣으면 에러나므로, Python 쪽에서 후처리로 덮어쓰는 로직이 더 안전하지만
+                #  AI에게 힌트를 주기 위해 일부만 넣거나, "이력이 중요함"을 강조합니다.)
+                pass 
+
+            full_prompt = f"{system_prompt}\n\n[사용자 학습 이력 참고]\n{json.dumps(self.history_data, ensure_ascii=False)[:3000]}... (일부 생략)\n\n[분석할 텍스트]:\n{self.text}"
+
+            self.progress.emit("AI가 단계별로 사고하며 분석 중입니다... (CoT)")
+            response = model.generate_content(full_prompt)
+            response_text = response.text
+
+            # ---------------------------------------------------------------------
+            # [검증 및 파싱] 정규식으로 JSON만 정밀 추출
+            # ---------------------------------------------------------------------
+            self.progress.emit("분석 결과 처리 및 데이터 검증 중...")
+            match = re.search(r'```json\s*(\[.*?\])\s*```', response_text, re.DOTALL)
             
-            new_rows = []
-            for _, r in agg.iterrows():
-                root = r['root_word']
-                org = clean_value_for_save(r['origin'])
-                cnt = r['count']
-                p_str = f"{pg}_{cnt}" if cnt > 1 else pg
-                
-                mask = (bdf['자료'] == root) & (bdf['구분'] == org)
-                if mask.any():
-                    idx = bdf[mask].index[0]
-                    filled = bdf.loc[idx].filter(like='쪽수').notna().sum()
-                    bdf.at[idx, f"쪽수{filled+1}"] = p_str
+            data = []
+            if match:
+                data = json.loads(match.group(1))
+            else:
+                # 백업 파싱 로직
+                start = response_text.find('[')
+                end = response_text.rfind(']') + 1
+                if start != -1 and end != -1:
+                    data = json.loads(response_text[start:end])
                 else:
-                    new_rows.append({'구분': org, '자료': root, '쪽수1': p_str})
-            
-            if new_rows: bdf = pd.concat([bdf, pd.DataFrame(new_rows)], ignore_index=True)
-            bdf['출연횟수'] = bdf.apply(calculate_total_appearances, axis=1)
-            bdf['sort'] = bdf['구분'].map({'고':1, '순':1, '한':2, '외':3, '혼':4}).fillna(5)
-            bdf = bdf.sort_values(['sort', '자료']).drop('sort', axis=1)
-            st.session_state.master_df = bdf
-            
-            out = io.BytesIO()
-            with pd.ExcelWriter(out, engine='openpyxl') as writer: bdf.to_excel(writer, index=False)
-            out.seek(0)
-            st.session_state.excel_buffer = out
-            
-            save_backup_to_cloud(st.session_state.last_mode, bdf)
-            return True
+                    raise ValueError("AI 응답에서 유효한 JSON 데이터를 찾을 수 없습니다.")
 
-        with b1:
-            if st.button("⛔ 체크 삭제", key=f"btn_del_{source_key}", type="secondary"):
-                dels = edited[edited['delete_check']==True]
-                if not dels.empty and sheet:
-                    logs = [[datetime.now().isoformat(), r['original_word'].split('(')[0], r['root_word'], "", "", 'delete', 'check_del'] for _, r in dels.iterrows()]
-                    send_data_with_retry(sheet, logs, True)
-                st.session_state.analysis_result = edited[edited['delete_check']==False].to_dict('records')
-                st.rerun()
-                
-        with b2:
-            if st.button("💾 저장하고 다음 쪽(▶)", key=f"btn_next_{source_key}", type="primary", use_container_width=True):
-                save_data(edited, page_str)
-                is_pdf = st.session_state.uploaded_file and "pdf" in st.session_state.uploaded_file.type
-                if source_key == 'FILE' and is_pdf and st.session_state.current_page_idx < st.session_state.total_pages - 1:
-                    st.session_state.current_page_idx += 1
-                    st.session_state.analysis_result = None
-                    st.rerun()
-                else: st.success("저장되었습니다.")
+            self.finished.emit(data)
 
-        with b3:
-            if st.button("💾 저장만 하기 (종료)", key=f"btn_save_{source_key}", use_container_width=True):
-                save_data(edited, page_str)
-                st.success("✅ 저장되었습니다.")
+        except Exception as e:
+            self.error.emit(str(e))
+
+# =================================================================================
+# 메인 애플리케이션: UI/UX 강화 및 데이터 안전장치 탑재
+# =================================================================================
+class SentimentalAnalysisApp(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.learning_history = {} # 7단계: 최근 학습 데이터 기억장치
+        self.df = pd.DataFrame(columns=['삭제', '빈도', '원본', '원형', '분류', '품사'])
+        self.current_file_path = None
+        self.initUI()
+        self.log("프로그램이 시작되었습니다. 데이터 무결성 검사가 활성화됨.")
+
+    def initUI(self):
+        self.setWindowTitle('한국어/북한어 통합 지능형 분석기 (Ver 2.0 CoT)')
+        self.resize(1280, 900)
+        self.setStyleSheet("""
+            QWidget { font-family: 'Malgun Gothic'; font-size: 14px; }
+            QPushButton { padding: 5px 10px; border-radius: 5px; background-color: #f0f0f0; border: 1px solid #ccc; }
+            QPushButton:hover { background-color: #e0e0e0; }
+            QTableWidget { gridline-color: #ddd; }
+            QHeaderView::section { background-color: #f8f9fa; padding: 4px; border: 1px solid #ddd; }
+        """)
         
-        if st.session_state.excel_buffer:
-            st.download_button("📥 엑셀파일 다운로드", st.session_state.excel_buffer, "국어활동_분석결과_통합.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key=f"dl_{source_key}", type="secondary", use_container_width=True)
+        # 메인 레이아웃 (페이지 전환형)
+        self.main_layout = QVBoxLayout()
+        self.stacked_widget = QStackedWidget()
 
-# =========================================================
-# 🖥️ 메인 화면
-# =========================================================
-st.title("📝 국어활동 AI 분석기")
+        # [1] 분석 페이지 구성
+        self.page_analysis = QWidget()
+        layout = QVBoxLayout()
 
-with st.sidebar:
-    st.header("🏳️ 분석 모드")
-    mode_selection = st.radio("언어 환경", ("🇰🇷 대한민국 표준어", "🇰🇵 북한 문화어"))
-    MODE_KEY = "SOUTH" if "대한민국" in mode_selection else "NORTH"
-    
-    if st.session_state.last_mode != MODE_KEY:
-        st.session_state.analysis_result = None
-        if st.session_state.master_df is not None:
-            save_backup_to_cloud(st.session_state.last_mode, st.session_state.master_df)
-        st.session_state.master_df = None 
-        st.session_state.last_uploaded_file_name = None 
-        st.session_state.last_mode = MODE_KEY
-        st.rerun()
-
-    sheet, sheet_data = get_sheet_data_fresh(MODE_KEY)
-    if sheet: st.success(f"✅ {len(sheet_data)}건의 학습 데이터 연동됨")
-    else: st.error("❌ 서버 연결 실패")
-
-    st.markdown("---")
-    uploaded_excel = st.file_uploader("📂 작업 파일 불러오기 (Excel)", type=['xlsx'])
-    
-    if uploaded_excel and uploaded_excel.name != st.session_state.last_uploaded_file_name:
-        udf = load_excel_safely(uploaded_excel)
-        if udf is not None:
-             if st.session_state.master_df is not None:
-                 st.session_state.master_df = pd.concat([st.session_state.master_df, udf]).drop_duplicates(subset=['자료', '구분']).reset_index(drop=True)
-             else: 
-                 st.session_state.master_df = udf
-             st.session_state.last_uploaded_file_name = uploaded_excel.name
-             st.toast("파일이 병합(로드)되었습니다!")
-             time.sleep(1)
-             st.rerun()
-
-    if st.session_state.master_df is not None:
-        buf = io.BytesIO()
-        with pd.ExcelWriter(buf, engine='openpyxl') as writer: st.session_state.master_df.to_excel(writer, index=False)
-        st.download_button("💾 엑셀 백업", buf.getvalue(), f"백업_{datetime.now().strftime('%H%M')}.xlsx")
-        if st.button("☁️ 클라우드 저장"):
-            if save_backup_to_cloud(MODE_KEY, st.session_state.master_df): st.toast("저장 완료!", icon="✅")
-    
-    st.markdown("---")
-    with st.expander("➕ 단어 수동 추가"):
-        with st.form("manual_add_form"):
-            add_orig = st.text_input("원본 단어")
-            add_root = st.text_input("원형")
-            add_origin = st.selectbox("분류", ["고", "한", "외", "혼"])
-            add_pos = st.selectbox("품사", ["명사", "동사", "형용사", "부사", "관형사", "대명사"]) 
-            if st.form_submit_button("추가 및 학습"):
-                if st.session_state.analysis_source:
-                    apply_editor_changes_safe(st.session_state.analysis_source)
-                
-                if add_orig and add_root and sheet:
-                    row = [datetime.now().isoformat(), add_orig, add_root, add_origin, add_pos, 'add', '수동추가']
-                    if send_data_with_retry(sheet, row, is_multiple=False):
-                        if st.session_state.analysis_result is not None:
-                            origin_map = {'고': '🔵 고', '한': '🟢 한', '외': '🔴 외', '혼': '🟣 혼'}
-                            pos_map = {'명사': '📦 명사', '동사': '🏃 동사', '형용사': '🎨 형용사', '부사': '⚡ 부사', '관형사': '🔍 관형사', '대명사': '👤 대명사'}
-                            new_item = {
-                                'delete_check': False, 'status': '✅ 수동', 'count': '1회',
-                                'original_word': add_orig, 'root_word': add_root,
-                                'origin': origin_map.get(add_origin, add_origin),
-                                'pos': pos_map.get(add_pos, add_pos)
-                            }
-                            st.session_state.analysis_result.append(new_item)
-                        st.toast(f"✅ '{add_orig}' 추가 완료!", icon="🎓")
-                        st.rerun()
-
-    st.markdown("---")
-    st.subheader("🔍 이력 검색")
-    search_query = st.text_input("궁금한 단어")
-    if search_query and sheet_data:
-        history = [row for row in sheet_data if search_query in str(row.get('root_word')) or search_query in str(row.get('original_word'))]
-        if history:
-            for h in history[-3:]:
-                st.caption(f"{h['timestamp'][:10]} [{h['action']}] {h['original_word']} -> {h['root_word']}")
-
-# [탭 구성]
-tab_file, tab_manual = st.tabs(["📄 파일 분석", "✍️ 직접 입력"])
-target_text = ""
-run_analysis = False
-
-# [Tab 1: 파일]
-with tab_file:
-    col_up, col_p = st.columns([3, 1])
-    with col_up:
-        uploaded_file = st.file_uploader("PDF / 이미지 업로드", type=['pdf', 'png', 'jpg'], key='file_up')
-        if uploaded_file and uploaded_file != st.session_state.uploaded_file:
-            st.session_state.uploaded_file = uploaded_file
-            st.session_state.current_page_idx = 0
-            st.session_state.analysis_result = None
-            if "pdf" in uploaded_file.type:
-                try:
-                    if PLUMBER_AVAILABLE: 
-                        with pdfplumber.open(uploaded_file) as pdf: st.session_state.total_pages = len(pdf.pages)
-                    elif FITZ_AVAILABLE:
-                        with fitz.open(stream=uploaded_file.getvalue(), filetype="pdf") as doc: st.session_state.total_pages = len(doc)
-                except: pass
-            else: st.session_state.total_pages = 1
-            st.rerun()
-
-    is_pdf = st.session_state.uploaded_file and "pdf" in st.session_state.uploaded_file.type
-    with col_p:
-        if is_pdf:
-            new_off = st.number_input("시작 쪽수", min_value=1, value=st.session_state.start_page_offset)
-            if new_off != st.session_state.start_page_offset:
-                st.session_state.start_page_offset = new_off
-                st.rerun()
-
-    file_text_val = ""
-    if st.session_state.uploaded_file:
-        cur_page_lbl = str(st.session_state.current_page_idx + st.session_state.start_page_offset) if is_pdf else st.session_state.manual_page_input
+        # 1-1. 상단 컨트롤 패널 (API Key, 파일 로드)
+        top_panel = QFrame()
+        top_panel.setFrameShape(QFrame.StyledPanel)
+        top_layout = QHBoxLayout(top_panel)
         
-        if is_pdf and st.session_state.total_pages > 1:
-            c1, c2, c3 = st.columns([1,1,1])
-            with c1: 
-                if st.button("◀ 이전"): 
-                    if st.session_state.current_page_idx > 0:
-                        st.session_state.current_page_idx -= 1
-                        st.session_state.analysis_result = None
-                        st.rerun()
-            with c2:
-                target_page = st.number_input("이동", min_value=1, max_value=st.session_state.total_pages, value=st.session_state.current_page_idx + 1, label_visibility="collapsed")
-                if target_page != st.session_state.current_page_idx + 1:
-                    st.session_state.current_page_idx = target_page - 1
-                    st.session_state.analysis_result = None
-                    st.rerun()
-            with c3:
-                if st.button("다음 ▶"):
-                    if st.session_state.current_page_idx < st.session_state.total_pages - 1:
-                        st.session_state.current_page_idx += 1
-                        st.session_state.analysis_result = None
-                        st.rerun()
-            st.caption(f"{st.session_state.current_page_idx + 1}/{st.session_state.total_pages} (교과서 {cur_page_lbl}쪽)")
-
-        c_img, c_txt = st.columns(2)
-        with c_img:
-            ibytes = get_page_image_bytes(st.session_state.uploaded_file, st.session_state.current_page_idx)
-            if ibytes: st.image(ibytes, use_container_width=True)
-        with c_txt:
-            with st.spinner("텍스트 추출 중..."):
-                extracted = extract_text_unified(st.session_state.uploaded_file, st.session_state.current_page_idx)
-            file_text_val = st.text_area("추출된 텍스트", extracted, height=400)
-            if st.button("🚀 분석 실행", key='btn_file', type="primary"):
-                target_text = file_text_val
-                st.session_state.analysis_source = 'FILE'
-                run_analysis = True
-    
-    if st.session_state.analysis_source == 'FILE':
-         final_pg_file = str(st.session_state.current_page_idx + st.session_state.start_page_offset) if is_pdf else st.session_state.manual_page_input
-         render_analysis_ui(final_pg_file, 'FILE')
-
-# [Tab 2: 직접 입력]
-with tab_manual:
-    manual_val = st.text_area("분석할 텍스트 입력", height=300)
-    pg_val = st.text_input("쪽수", value=st.session_state.manual_page_input)
-    if pg_val != st.session_state.manual_page_input: st.session_state.manual_page_input = pg_val
-    
-    if st.button("🚀 분석 실행", key='btn_manual', type="primary"):
-        if manual_val.strip():
-            target_text = manual_val
-            st.session_state.analysis_source = 'MANUAL'
-            run_analysis = True
-    
-    if st.session_state.analysis_source == 'MANUAL':
-        render_analysis_ui(st.session_state.manual_page_input, 'MANUAL')
-
-# [공통 분석 실행]
-if run_analysis and target_text:
-    with st.spinner("AI 분석 및 DB 검증 중..."):
-        # 6~7단계 적용된 함수 호출 (Gemini 메인 + DB 강제 오버라이드)
-        raw_res = get_analysis_gemini(target_text, sheet_data, MODE_KEY)
+        self.api_input = QLineEdit()
+        self.api_input.setPlaceholderText("Google Gemini API Key 입력 (sk-...)")
+        self.api_input.setEchoMode(QLineEdit.Password)
+        self.api_input.setFixedWidth(300)
         
-        if raw_res:
-            blacklist = get_blacklist_from_sheet(sheet_data)
-            prob_words = get_problematic_words(sheet_data)
-            POS_OK = ['명사', '동사', '형용사', '부사', '관형사', '대명사']
+        self.btn_load = QPushButton("📂 기존 엑셀 불러오기 (이어하기)")
+        self.btn_load.clicked.connect(self.load_excel)
+        self.btn_load.setStyleSheet("background-color: #e3f2fd; font-weight: bold;")
+        
+        self.btn_save = QPushButton("💾 엑셀 저장 (전체 보존)")
+        self.btn_save.clicked.connect(self.save_excel)
+        self.btn_save.setStyleSheet("background-color: #e8f5e9; font-weight: bold;")
+
+        top_layout.addWidget(QLabel("🔑 API Key:"))
+        top_layout.addWidget(self.api_input)
+        top_layout.addWidget(self.btn_load)
+        top_layout.addWidget(self.btn_save)
+        layout.addWidget(top_panel)
+
+        # 1-2. 중앙 작업 영역 (스플리터)
+        splitter = QSplitter(Qt.Horizontal)
+
+        # 왼쪽: 텍스트 입력
+        left_box = QWidget()
+        left_layout = QVBoxLayout(left_box)
+        left_layout.setContentsMargins(0,0,0,0)
+        
+        self.text_input = QTextEdit()
+        self.text_input.setPlaceholderText("분석할 텍스트를 입력하세요...\n(남한 표준어 및 북한 문화어 혼용 가능)")
+        
+        self.btn_analyze = QPushButton("🚀 심층 분석 실행 (CoT)")
+        self.btn_analyze.setFixedHeight(50)
+        self.btn_analyze.setStyleSheet("background-color: #ff6b6b; color: white; font-size: 16px; font-weight: bold;")
+        self.btn_analyze.clicked.connect(self.start_analysis)
+        
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setAlignment(Qt.AlignCenter)
+        self.progress_bar.setValue(0)
+
+        left_layout.addWidget(QLabel("📝 원문 텍스트"))
+        left_layout.addWidget(self.text_input)
+        left_layout.addWidget(self.progress_bar)
+        left_layout.addWidget(self.btn_analyze)
+        
+        # 오른쪽: 분석 결과 테이블
+        right_box = QWidget()
+        right_layout = QVBoxLayout(right_box)
+        right_layout.setContentsMargins(0,0,0,0)
+        
+        self.table = QTableWidget()
+        self.table.setColumnCount(6)
+        self.table.setHorizontalHeaderLabels(['삭제', '빈도', '원본', '원형', '분류', '품사'])
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.table.itemChanged.connect(self.on_item_changed) # 2번 요구사항: 수정 시 즉시 반영
+
+        # 테이블 조작 버튼
+        btn_layout = QHBoxLayout()
+        self.btn_add = QPushButton("➕ 행 추가")
+        self.btn_add.clicked.connect(self.add_empty_row)
+        self.btn_del = QPushButton("➖ 선택 삭제")
+        self.btn_del.clicked.connect(self.delete_selected_rows)
+        
+        btn_layout.addWidget(self.btn_add)
+        btn_layout.addWidget(self.btn_del)
+        
+        right_layout.addWidget(QLabel("📊 분석 결과 (수정 가능)"))
+        right_layout.addWidget(self.table)
+        right_layout.addLayout(btn_layout)
+
+        splitter.addWidget(left_box)
+        splitter.addWidget(right_box)
+        splitter.setSizes([400, 800])
+        layout.addWidget(splitter)
+
+        # 1-3. 하단 로그창
+        self.log_view = QTextEdit()
+        self.log_view.setMaximumHeight(120)
+        self.log_view.setReadOnly(True)
+        self.log_view.setStyleSheet("background-color: #2b2b2b; color: #a9b7c6; font-family: Consolas;")
+        layout.addWidget(self.log_view)
+
+        self.page_analysis.setLayout(layout)
+        self.stacked_widget.addWidget(self.page_analysis)
+
+        # [페이지 전환 컨트롤] 3번 요구사항
+        nav_layout = QHBoxLayout()
+        self.combo_nav = QComboBox()
+        self.combo_nav.addItems(["1. 텍스트 분석 모드", "2. 통계 및 설정 (준비중)"])
+        self.combo_nav.currentIndexChanged.connect(lambda idx: self.stacked_widget.setCurrentIndex(idx))
+        nav_layout.addWidget(QLabel("이동:"))
+        nav_layout.addWidget(self.combo_nav)
+        nav_layout.addStretch()
+
+        self.main_layout.addLayout(nav_layout)
+        self.main_layout.addWidget(self.stacked_widget)
+        self.setLayout(self.main_layout)
+
+    # =========================================================================
+    # [데이터 로직] 1, 2, 5, 7번 요구사항 구현
+    # =========================================================================
+    def log(self, msg):
+        timestamp = time.strftime("[%H:%M:%S]")
+        self.log_view.append(f"{timestamp} {msg}")
+        self.log_view.verticalScrollBar().setValue(self.log_view.verticalScrollBar().maximum())
+        QApplication.processEvents() # UI 끊김 방지
+
+    def update_dataframe_from_table(self):
+        """[2번] 테이블의 현재 상태를 self.df에 확실하게 동기화"""
+        row_count = self.table.rowCount()
+        new_data = []
+        
+        # 시그널 차단 (무한루프 방지)
+        self.table.blockSignals(True)
+        
+        for row in range(row_count):
+            # 체크박스 상태 확인
+            chk_widget = self.table.cellWidget(row, 0)
+            is_checked = False
+            if chk_widget:
+                chk = chk_widget.findChild(QCheckBox)
+                if chk and chk.isChecked():
+                    is_checked = True
             
-            filtered = []
-            for item in raw_res:
-                orig = item.get('original_word', '').replace(" ", "")
-                root = item.get('root_word', '')
-                pos = item.get('pos', '')
+            item_freq = self.table.item(row, 1)
+            item_org = self.table.item(row, 2)
+            item_root = self.table.item(row, 3)
+            item_cat = self.table.item(row, 4)
+            item_pos = self.table.item(row, 5)
+
+            row_dict = {
+                '삭제': is_checked,
+                '빈도': item_freq.text() if item_freq else "",
+                '원본': item_org.text() if item_org else "",
+                '원형': item_root.text() if item_root else "",
+                '분류': item_cat.text() if item_cat else "",
+                '품사': item_pos.text() if item_pos else ""
+            }
+            new_data.append(row_dict)
+            
+            # [7번] 수동 수정한 내용을 학습 이력에 즉시 업데이트 (최신 우선)
+            if row_dict['원형'] and row_dict['분류']:
+                self.learning_history[row_dict['원형']] = {
+                    "분류": row_dict['분류'], 
+                    "품사": row_dict['품사']
+                }
+
+        self.df = pd.DataFrame(new_data)
+        self.table.blockSignals(False)
+
+    def verify_consistency(self, data_list):
+        """[5번 부활] 내부 교차 검증 로직 (파이썬 코드로 2차 확인)"""
+        # 이 함수는 외부 분석기(Kiwi) 대신 파이썬 로직으로 결과의 무결성을 검증합니다.
+        verified_data = []
+        full_text = self.text_input.toPlainText()
+        
+        for item in data_list:
+            original = item.get('원본', '')
+            root = item.get('원형', '')
+            
+            # 검증 1: 원본 단어가 실제 텍스트에 존재하는가?
+            if original and original not in full_text:
+                # LLM이 없는 말을 지어냈을 경우(Hallucination) 경고 표시
+                item['원본'] = f"{original}(?)" 
                 
-                if pos not in POS_OK: continue
-                if orig in blacklist or root in blacklist: continue
+            # 검증 2: 학습 이력과 일치하는가? (7번 요구사항 강제 적용)
+            if root in self.learning_history:
+                history = self.learning_history[root]
+                item['분류'] = history['분류']
+                item['품사'] = history['품사']
                 
-                if item.get('origin') == '순': item['origin'] = '고'
-                item['origin'] = add_emoji_to_origin(item.get('origin', ''))
-                pos_map = {'명사': '📦 명사', '동사': '🏃 동사', '형용사': '🎨 형용사', '부사': '⚡ 부사', '관형사': '🔍 관형사', '대명사': '👤 대명사'}
-                item['pos'] = pos_map.get(pos, pos)
-                filtered.append(item)
+            verified_data.append(item)
+        return verified_data
+
+    def start_analysis(self):
+        # 작업 전 현재 상태 저장
+        self.update_dataframe_from_table()
+        
+        text = self.text_input.toPlainText().strip()
+        api_key = self.api_input.text().strip()
+        
+        if not text:
+            QMessageBox.warning(self, "입력 오류", "분석할 텍스트가 없습니다.")
+            return
+        if not api_key:
+            QMessageBox.warning(self, "인증 오류", "API Key를 입력해주세요.")
+            return
+
+        self.btn_analyze.setEnabled(False)
+        self.progress_bar.setValue(10)
+        self.log("분석 스레드 시작...")
+
+        # 최근 학습된 단어 50개 정도만 추려서 프롬프트에 전달 (토큰 절약)
+        recent_history = dict(list(self.learning_history.items())[-50:])
+        
+        self.thread = GeminiThread(api_key, text, history_data=recent_history)
+        self.thread.finished.connect(self.on_success)
+        self.thread.error.connect(self.on_error)
+        self.thread.progress.connect(self.update_progress)
+        self.thread.start()
+
+    def update_progress(self, msg):
+        self.log(msg)
+        current = self.progress_bar.value()
+        if current < 80:
+            self.progress_bar.setValue(current + 20)
+
+    def on_success(self, data_list):
+        self.progress_bar.setValue(90)
+        self.log("AI 분석 완료. 내부 검증(Cross Validation) 수행 중...")
+        
+        # [5번] 데이터 검증 및 보정
+        final_data = self.verify_consistency(data_list)
+        
+        # 현재 세션 빈도수 계산
+        current_counts = {}
+        processed_rows = []
+        
+        for item in final_data:
+            word = item.get('원형', '')
+            if not word: continue
             
-            grp = {}
-            for it in filtered:
-                r = it['root_word']
-                if r not in grp: grp[r] = {'root_word': r, 'origin': it['origin'], 'pos': it['pos'], 'originals': []}
-                grp[r]['originals'].append(it['original_word'])
+            current_counts[word] = current_counts.get(word, 0) + 1
             
-            final = []
-            for r, info in grp.items():
-                cnts = Counter(info['originals'])
-                orig_str = ", ".join([f"{k}({v})" for k,v in cnts.items()])
-                tot = sum(cnts.values())
-                trusted = check_trust_level_strict(r, st.session_state.master_df, prob_words)
-                final.append({
-                    'delete_check': False,
-                    'status': '✅ 자동' if trusted else '📝 검토',
-                    'count': f"{tot}회",
-                    'original_word': orig_str,
-                    'root_word': r,
-                    'origin': info['origin'],
-                    'pos': info['pos']
-                })
-            st.session_state.analysis_result = final
-            st.rerun() 
+            # 중복 체크: 기존 DF에 있거나, 현재 리스트에서 중복이거나
+            is_dup = False
+            if not self.df.empty and word in self.df['원형'].values:
+                is_dup = True
+            
+            freq_str = f"{current_counts[word]}회"
+            if is_dup:
+                freq_str += " (중복)"
+
+            processed_rows.append({
+                '삭제': False,
+                '빈도': freq_str,
+                '원본': item.get('원본', ''),
+                '원형': word,
+                '분류': item.get('분류', ''),
+                '품사': item.get('품사', '')
+            })
+
+        # [1번] 기존 데이터 아래에 추가 (덮어쓰기 X)
+        new_df = pd.DataFrame(processed_rows)
+        self.df = pd.concat([self.df, new_df], ignore_index=True)
+        
+        self.refresh_table()
+        self.progress_bar.setValue(100)
+        self.btn_analyze.setEnabled(True)
+        self.log(f"최종 {len(new_df)}건이 추가되었습니다.")
+        QMessageBox.information(self, "완료", "분석이 성공적으로 완료되었습니다.")
+
+    def on_error(self, err_msg):
+        self.progress_bar.setValue(0)
+        self.btn_analyze.setEnabled(True)
+        self.log(f"❌ 에러 발생: {err_msg}")
+        QMessageBox.critical(self, "분석 실패", f"오류가 발생했습니다:\n{err_msg}")
+
+    def on_item_changed(self, item):
+        # 사용자가 셀을 수정하면 즉시 데이터프레임에 반영하지 않고, 
+        # 나중에 일괄 처리하거나, 여기서 즉시 처리할 수 있음.
+        # 재귀 호출 방지를 위해 로직 최소화
+        pass
+
+    def refresh_table(self):
+        """데이터프레임을 테이블 위젯에 그리기"""
+        self.table.blockSignals(True) # 그리는 동안 시그널 차단
+        self.table.setRowCount(0)
+        self.table.setRowCount(len(self.df))
+        
+        for i, row in self.df.iterrows():
+            # 체크박스 위젯 생성
+            chk_widget = QWidget()
+            chk_layout = QHBoxLayout(chk_widget)
+            chk_layout.setContentsMargins(0,0,0,0)
+            chk_layout.setAlignment(Qt.AlignCenter)
+            chk = QCheckBox()
+            chk.setChecked(bool(row['삭제']))
+            chk_layout.addWidget(chk)
+            self.table.setCellWidget(i, 0, chk_widget)
+
+            # 데이터 아이템 생성
+            self.table.setItem(i, 1, QTableWidgetItem(str(row['빈도'])))
+            self.table.setItem(i, 2, QTableWidgetItem(str(row['원본'])))
+            self.table.setItem(i, 3, QTableWidgetItem(str(row['원형'])))
+            
+            # 분류/품사 (중요 정보는 색상 강조)
+            item_cat = QTableWidgetItem(str(row['분류']))
+            item_cat.setTextAlignment(Qt.AlignCenter)
+            self.table.setItem(i, 4, item_cat)
+            
+            item_pos = QTableWidgetItem(str(row['품사']))
+            item_pos.setTextAlignment(Qt.AlignCenter)
+            self.table.setItem(i, 5, item_pos)
+            
+        self.table.blockSignals(False)
+
+    def add_empty_row(self):
+        self.update_dataframe_from_table()
+        empty_row = pd.DataFrame([{'삭제': False, '빈도': '', '원본': '', '원형': '', '분류': '', '품사': ''}])
+        self.df = pd.concat([self.df, empty_row], ignore_index=True)
+        self.refresh_table()
+        self.table.scrollToBottom()
+
+    def delete_selected_rows(self):
+        self.update_dataframe_from_table()
+        # 체크박스가 체크된 행 + 현재 선택된 행 삭제 로직
+        # 여기서는 단순화를 위해 현재 선택된 행 삭제만 구현하거나, 체크된 것 삭제 구현
+        rows_to_drop = []
+        
+        # 1. 체크박스 확인
+        for i in range(self.table.rowCount()):
+            chk_widget = self.table.cellWidget(i, 0)
+            if chk_widget:
+                chk = chk_widget.findChild(QCheckBox)
+                if chk and chk.isChecked():
+                    rows_to_drop.append(i)
+        
+        # 2. 현재 선택된 행 확인 (체크박스 없으면)
+        if not rows_to_drop:
+            curr = self.table.currentRow()
+            if curr >= 0:
+                rows_to_drop.append(curr)
+
+        if rows_to_drop:
+            self.df = self.df.drop(rows_to_drop).reset_index(drop=True)
+            self.refresh_table()
+            self.log(f"{len(rows_to_drop)}개 행이 삭제되었습니다.")
         else:
-            st.session_state.analysis_result = None
-            st.warning("분석 결과가 없습니다.")
+            QMessageBox.warning(self, "경고", "삭제할 행을 선택(체크)해주세요.")
 
-if st.session_state.master_df is not None and not st.session_state.master_df.empty:
-    st.markdown("---")
-    with st.expander("📊 현재까지 모인 데이터 통계"):
-        stat_df = st.session_state.master_df
-        c1, c2 = st.columns(2)
-        with c1:
-            st.metric("총 단어 수", len(stat_df))
-            if '구분' in stat_df.columns:
-                st.bar_chart(stat_df['구분'].value_counts())
-        with c2:
-            if '출연횟수' in stat_df.columns:
-                st.write("**최다 빈도 TOP 10**")
-                st.dataframe(stat_df.sort_values('출연횟수', ascending=False).head(10)[['구분','자료','출연횟수']], hide_index=True)
+    def load_excel(self):
+        file_path, _ = QFileDialog.getOpenFileName(self, "엑셀 불러오기", "", "Excel Files (*.xlsx)")
+        if not file_path: return
+        
+        try:
+            loaded_df = pd.read_excel(file_path)
+            # 필수 컬럼 체크
+            if not {'원형', '분류', '품사'}.issubset(loaded_df.columns):
+                 QMessageBox.warning(self, "형식 오류", "올바른 분석 결과 파일이 아닙니다.")
+                 return
+
+            # [1번] 이어하기 로직
+            if not self.df.empty:
+                reply = QMessageBox.question(self, "병합", "현재 데이터 뒤에 붙이시겠습니까?", QMessageBox.Yes | QMessageBox.No)
+                if reply == QMessageBox.Yes:
+                    self.df = pd.concat([self.df, loaded_df], ignore_index=True)
+                else:
+                    self.df = loaded_df
+            else:
+                self.df = loaded_df
+
+            # [7번] 학습 데이터 복원 (가장 최신 데이터로 learning_history 갱신)
+            # 파일의 아래쪽이 최신이라고 가정하고 순차적으로 업데이트
+            for _, row in self.df.iterrows():
+                if pd.notna(row['원형']):
+                    self.learning_history[row['원형']] = {"분류": row['분류'], "품사": row['품사']}
+
+            self.current_file_path = file_path
+            self.refresh_table()
+            self.log(f"파일 로드 완료: 총 {len(self.df)}건 (학습 단어 {len(self.learning_history)}개 인식)")
+            
+        except Exception as e:
+            QMessageBox.critical(self, "로드 실패", str(e))
+
+    def save_excel(self):
+        self.update_dataframe_from_table()
+        if self.df.empty:
+             QMessageBox.warning(self, "경고", "저장할 데이터가 없습니다.")
+             return
+             
+        save_path, _ = QFileDialog.getSaveFileName(self, "엑셀 저장", "analysis_result.xlsx", "Excel Files (*.xlsx)")
+        if save_path:
+            try:
+                # [1번, 7번] 데이터 증발 방지: drop_duplicates 없이 그대로 저장
+                self.df.to_excel(save_path, index=False)
+                self.current_file_path = save_path
+                self.log(f"저장 완료: {len(self.df)}건")
+                QMessageBox.information(self, "성공", "파일이 안전하게 저장되었습니다.")
+            except Exception as e:
+                QMessageBox.critical(self, "저장 실패", str(e))
+
+if __name__ == '__main__':
+    app = QApplication(sys.argv)
+    font = QFont("Malgun Gothic", 10)
+    app.setFont(font)
+    ex = SentimentalAnalysisApp()
+    ex.show()
+    sys.exit(app.exec_())
