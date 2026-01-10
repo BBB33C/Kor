@@ -414,6 +414,7 @@ if 'analysis_result' not in st.session_state: st.session_state.analysis_result =
 if 'excel_buffer' not in st.session_state: st.session_state.excel_buffer = None
 if 'master_df' not in st.session_state: st.session_state.master_df = None
 if 'last_uploaded_file_name' not in st.session_state: st.session_state.last_uploaded_file_name = None
+if 'analysis_source' not in st.session_state: st.session_state.analysis_source = None # [NEW] 분석 소스(FILE or MANUAL)
 
 if 'uploaded_file' not in st.session_state: st.session_state.uploaded_file = None
 if 'total_pages' not in st.session_state: st.session_state.total_pages = 0
@@ -519,7 +520,7 @@ with st.sidebar:
             for h in history[-3:]:
                 st.caption(f"{h['timestamp'][:10]} [{h['action']}] {h['original_word']} -> {h['root_word']}")
 
-# [상단 UI] 탭 분리 적용 (4단계)
+# [상단 UI] 탭 분리 적용
 st.subheader("🧐 분석 대상 입력")
 tab_file, tab_manual = st.tabs(["📄 파일 분석 (PDF/이미지)", "✍️ 직접 텍스트 입력"])
 
@@ -541,6 +542,7 @@ with tab_file:
             st.session_state.current_page_idx = 0
             st.session_state.analysis_result = None
             st.session_state.start_page_offset = 1 
+            st.session_state.analysis_source = None 
             
             file_type = uploaded_file.type
             if "pdf" in file_type:
@@ -641,6 +643,7 @@ with tab_file:
             with col_b:
                 if st.button("🚀 파일 내용 분석 실행", use_container_width=True, type="primary", key="btn_analyze_file"):
                     run_analysis_flag = True
+                    st.session_state.analysis_source = 'FILE'
 
 # [Tab 2: 직접 텍스트 입력]
 with tab_manual:
@@ -658,16 +661,16 @@ with tab_manual:
             if manual_text_input.strip():
                 target_text_for_analysis = manual_text_input
                 run_analysis_flag = True
-                # 직접 입력 시 PDF 모드 해제 (저장 로직 위해)
-                is_pdf_mode = False 
-                current_save_page = st.session_state.manual_page_input
+                st.session_state.analysis_source = 'MANUAL'
             else:
-                st.warning("분석할 텍스트를 입력해주세요.")
+                st.warning("⚠️ 분석할 텍스트를 입력해주세요.")
 
 # 분석 실행 로직 (공통)
 if run_analysis_flag and target_text_for_analysis:
     with st.spinner(f"{mode_selection} 모드로 분석 중입니다..."):
         raw_results = get_analysis_hybrid(target_text_for_analysis, sheet_data, MODE_KEY)
+        
+        # [핵심 수정: 분석 결과가 없을 때의 피드백 추가]
         if raw_results:
             validation_text = target_text_for_analysis.replace(" ", "")
             POS_WHITELIST = ['명사', '동사', '형용사', '부사', '관형사', '대명사'] 
@@ -707,7 +710,15 @@ if run_analysis_flag and target_text_for_analysis:
                 status = '✅ 자동' if is_trusted else '📝 검토'
                 final_results.append({'delete_check': False, 'status': status, 'count': f"{total_cnt}회", 'original_word': formatted_original, 'root_word': root, 'origin': info['origin'], 'pos': info['pos']})
             
-            st.session_state.analysis_result = final_results
+            # 필터링 후 결과가 있으면 저장, 없으면 경고
+            if final_results:
+                st.session_state.analysis_result = final_results
+            else:
+                st.session_state.analysis_result = None
+                st.warning("⚠️ 분석 결과가 없습니다. (분석 대상 단어가 없거나 모두 제외되었습니다)")
+        else:
+            st.session_state.analysis_result = None
+            st.warning("⚠️ AI가 아무런 응답을 하지 않았습니다. 잠시 후 다시 시도해주세요.")
 
 # 결과 표시 및 저장 (공통)
 if st.session_state.analysis_result:
@@ -823,10 +834,12 @@ if st.session_state.analysis_result:
             
         return True
     
-    # 저장 시 페이지 문자열 결정 (직접 입력 모드면 수동 입력값 사용)
-    # 위에서 is_pdf_mode가 Tab 2 진입 시 False로 설정되었을 수 있으므로 재확인
-    final_is_pdf = st.session_state.uploaded_file and "pdf" in st.session_state.uploaded_file.type
-    if final_is_pdf and run_analysis_flag == False: # 분석 직후가 아니라면 세션 상태 따름
+    # [핵심 수정: 저장 로직의 충돌 해결]
+    # analysis_source를 기준으로 쪽수를 결정하여, 파일 업로드 상태에서도 수동 저장이 가능하게 함
+    is_source_file = (st.session_state.analysis_source == 'FILE')
+    final_is_pdf = is_source_file and st.session_state.uploaded_file and "pdf" in st.session_state.uploaded_file.type
+    
+    if final_is_pdf: 
          final_page_str = str(st.session_state.current_page_idx + st.session_state.start_page_offset)
     else:
          final_page_str = st.session_state.manual_page_input
