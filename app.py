@@ -4,8 +4,9 @@ import requests
 import json
 import re
 import io
+import os
+import gspread
 import base64
-import traceback
 from oauth2client.service_account import ServiceAccountCredentials
 from collections import Counter
 from datetime import datetime
@@ -25,22 +26,22 @@ except ImportError:
     FITZ_AVAILABLE = False
 
 # =========================================================
-# ⚙️ 설정 (모델은 기존 2.0 유지)
+# ⚙️ 설정
 # =========================================================
 try:
     if "GEMINI_API_KEY" in st.secrets:
         API_KEY = st.secrets["GEMINI_API_KEY"]
     else:
+        # 여기에 본인의 API KEY를 입력하세요
         API_KEY = "AIzaSyCC6oyL7POpbWq2FZrJ2zIJuiosupFQZYk" 
 except:
     API_KEY = "AIzaSyCC6oyL7POpbWq2FZrJ2zIJuiosupFQZYk"
 
-# [요청하신대로 기존 모델 유지]
 MODEL_NAME = "gemini-2.0-flash-exp"
 SHEET_NAME = "Korean_DB" 
 TRUST_THRESHOLD = 3 
 
-st.set_page_config(page_title="국어활동 AI 분석기 (Debug Mode)", page_icon="🐞", layout="wide")
+st.set_page_config(page_title="국어활동 AI 분석기", page_icon="📝", layout="wide")
 
 # =========================================================
 # 🔐 구글 시트 연결
@@ -96,7 +97,7 @@ def send_data_with_retry(sheet_obj, data, is_multiple=False):
                 return False
     return False
 
-# [백업 기능]
+# [백업 기능] 클라우드 백업
 def save_backup_to_cloud(mode_key, df):
     client = get_google_sheet_client()
     if not client or df is None or df.empty: return False
@@ -117,6 +118,7 @@ def save_backup_to_cloud(mode_key, df):
         print(f"자동 백업 실패: {e}") 
         return False
 
+# [백업 기능] 클라우드 복구
 def load_backup_from_cloud(mode_key):
     client = get_google_sheet_client()
     if not client: return None
@@ -131,7 +133,7 @@ def load_backup_from_cloud(mode_key):
     except: return None
 
 # =========================================================
-# 🧠 AI 및 전처리 로직 (디버깅 강화)
+# 🧠 AI 및 전처리 로직
 # =========================================================
 def generate_prompt_from_sheet(sheet_data):
     if not sheet_data: return ""
@@ -159,72 +161,23 @@ def generate_prompt_from_sheet(sheet_data):
 def api_call_direct(prompt):
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={API_KEY.strip()}"
     headers = {'Content-Type': 'application/json'}
-    
-    # [디버깅] 안전 필터 강제 해제 (모델이 응답 거부하는 것 방지)
-    safety_settings = [
-        {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-        {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-        {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-        {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
-    ]
-    
-    data = {
-        "contents": [{"parts": [{"text": prompt}]}], 
-        "safetySettings": safety_settings,
-        "generationConfig": {"temperature": 0.1}
-    }
-    
+    data = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.1}}
     try:
-        # [디버깅] 프롬프트 앞부분 확인
-        with st.expander("📡 [DEBUG] 전송 데이터 확인 (Prompt)", expanded=False):
-            st.text(prompt[:500] + "...")
-
         response = requests.post(url, headers=headers, json=data, timeout=300)
-        
-        # [디버깅] 응답 상태 확인
         if response.status_code != 200:
-            st.error(f"❌ API 호출 실패! 상태 코드: {response.status_code}")
-            st.text(response.text)
+            st.error(f"❌ AI 응답 실패 (코드 {response.status_code}): {response.text}")
             return None
-            
         result_json = response.json()
-        
-        # [디버깅] 원본 응답 확인 (여기가 핵심)
-        with st.expander("🔍 [DEBUG] 구글 AI 원본 응답 (JSON)", expanded=True):
-            st.json(result_json)
-        
-        if 'candidates' not in result_json:
-            st.error("❌ 응답에 'candidates'가 없습니다. (모델이 묵묵부답)")
-            return None
-            
-        candidate = result_json['candidates'][0]
-        
-        # [디버깅] 차단 이유 확인
-        finish_reason = candidate.get('finishReason')
-        if finish_reason != 'STOP':
-             st.warning(f"⚠️ 모델이 정상 종료되지 않았습니다. 이유: {finish_reason}")
-             
-        if 'content' not in candidate or 'parts' not in candidate['content']:
-             st.error("❌ 텍스트 내용(Parts)이 비어있습니다.")
-             return None
-
-        text_res = candidate['content']['parts'][0]['text']
-        
-        json_match = re.search(r'\[.*\]', text_res, re.DOTALL)
-        if json_match:
-            return json.loads(json_match.group())
-        else:
-            st.error("❌ AI가 JSON 형식을 반환하지 않았습니다.")
-            st.code(text_res) # 엉뚱한 대답을 했다면 여기서 보임
-            return None
-            
+        if 'candidates' in result_json:
+            text_res = result_json['candidates'][0]['content']['parts'][0]['text']
+            json_match = re.search(r'\[.*\]', text_res, re.DOTALL)
+            if json_match: return json.loads(json_match.group())
+        return None
     except Exception as e:
-        st.error(f"❌ 시스템 오류: {e}")
-        st.code(traceback.format_exc())
+        st.error(f"❌ 서버 통신 오류: {e}")
         return None
 
 def api_call_vision_ocr(image_bytes):
-    # OCR도 동일하게 안전장치 해제 적용
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={API_KEY.strip()}"
     headers = {'Content-Type': 'application/json'}
     base64_image = base64.b64encode(image_bytes).decode('utf-8')
@@ -240,19 +193,7 @@ def api_call_vision_ocr(image_bytes):
     5. **노이즈 제거:** 쪽수, 머리말은 제외하세요.
     """
     
-    safety_settings = [
-        {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-        {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-        {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-        {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
-    ]
-    
-    data = {
-        "contents": [{"parts": [{"text": prompt_text}, {"inline_data": {"mime_type": "image/png", "data": base64_image}}]}], 
-        "safetySettings": safety_settings,
-        "generationConfig": {"temperature": 0.1}
-    }
-    
+    data = {"contents": [{"parts": [{"text": prompt_text}, {"inline_data": {"mime_type": "image/png", "data": base64_image}}]}], "generationConfig": {"temperature": 0.1}}
     try:
         response = requests.post(url, headers=headers, json=data, timeout=300)
         if response.status_code != 200: return f"OCR 실패: {response.text}"
@@ -369,15 +310,10 @@ def get_analysis_hybrid(text, sheet_data, mode_key):
     chunks = split_text_smartly(text)
     all_results = []
     
-    st.info(f"ℹ️ 텍스트를 {len(chunks)}개 덩어리로 나누어 분석합니다.")
-    
     for i, chunk in enumerate(chunks):
         if not chunk.strip(): continue
         prompt = f"""{learning_prompt}\n{base_instruction}\n\n분석할 문장:\n"{chunk}" """
-        
-        with st.spinner(f"⏳ {i+1}번째 덩어리 분석 중... ({len(chunk)}자)"):
-            chunk_result = api_call_direct(prompt)
-        
+        chunk_result = api_call_direct(prompt)
         if chunk_result: all_results.extend(chunk_result)
         time.sleep(0.1)
     return all_results
@@ -447,10 +383,9 @@ def apply_editor_changes():
                     st.session_state.analysis_result[idx][col] = val
 
 # =========================================================
-# 🖥️ 메인 화면 로직 (디버그 모드)
+# 🖥️ 메인 화면 로직
 # =========================================================
-st.title("🐞 국어활동 AI 분석기 (Debug Mode)")
-st.caption("🚨 입력값 분리 로직 적용 + 안전 필터 해제 상태입니다.")
+st.title("📝 국어활동 AI 분석기")
 
 with st.sidebar:
     st.header("🏳️ 분석 모드 선택")
@@ -589,7 +524,7 @@ with st.sidebar:
 st.subheader("🧐 분석 대상 입력")
 tab_file, tab_manual = st.tabs(["📄 파일 분석 (PDF/이미지)", "✍️ 직접 텍스트 입력"])
 
-# [핵심] 변수 초기화
+# [핵심 수정: 변수 초기화]
 target_text_for_analysis = "" 
 run_analysis_flag = False
 
@@ -633,7 +568,7 @@ with tab_file:
                 st.session_state.start_page_offset = new_offset
                 st.rerun()
 
-    # [핵심] 파일 탭에서 보여줄 변수를 별도로 관리 (file_extracted_text)
+    # [핵심 수정] 파일 탭에서 보여줄 변수를 별도로 관리 (file_extracted_text)
     file_extracted_text = "" 
     
     if st.session_state.uploaded_file:
@@ -693,7 +628,7 @@ with tab_file:
                 extracted_text = extract_text_unified(st.session_state.uploaded_file, st.session_state.current_page_idx)
                 if "오류" in extracted_text: st.error(extracted_text)
             
-            # [핵심] 여기서 target_text_for_analysis에 바로 할당하지 않고, 파일 전용 변수(file_extracted_text)에 담습니다.
+            # [핵심 수정] 여기서 target_text_for_analysis에 바로 할당하지 않고, 파일 전용 변수(file_extracted_text)에 담습니다.
             file_extracted_text = st.text_area(
                 "분석 대상", 
                 value=extracted_text if extracted_text else "",
@@ -712,7 +647,7 @@ with tab_file:
                     st.info(f"💾 **{current_save_page}쪽**으로 저장")
             with col_b:
                 if st.button("🚀 파일 내용 분석 실행", use_container_width=True, type="primary", key="btn_analyze_file"):
-                    # [핵심] 버튼을 눌렀을 때만 파일 텍스트를 분석 대상으로 넘김
+                    # [핵심 수정] 버튼을 눌렀을 때만 파일 텍스트를 분석 대상으로 넘김
                     target_text_for_analysis = file_extracted_text 
                     run_analysis_flag = True
                     st.session_state.analysis_source = 'FILE'
@@ -731,7 +666,7 @@ with tab_manual:
     with col_m_b:
         if st.button("🚀 입력 텍스트 분석 실행", use_container_width=True, type="primary", key="btn_analyze_manual"):
             if manual_text_input.strip():
-                # [핵심] 버튼을 눌렀을 때만 입력 텍스트를 분석 대상으로 넘김
+                # [핵심 수정] 버튼을 눌렀을 때만 입력 텍스트를 분석 대상으로 넘김
                 target_text_for_analysis = manual_text_input 
                 run_analysis_flag = True
                 st.session_state.analysis_source = 'MANUAL'
@@ -741,15 +676,9 @@ with tab_manual:
 # 분석 실행 로직 (공통)
 if run_analysis_flag and target_text_for_analysis:
     with st.spinner(f"{mode_selection} 모드로 분석 중입니다..."):
-        
-        # [DEBUG] 입력 데이터 확인 로그
-        st.toast("📨 AI에게 데이터를 전송했습니다. 응답 대기 중...", icon="📡")
-        
         raw_results = get_analysis_hybrid(target_text_for_analysis, sheet_data, MODE_KEY)
         
         if raw_results:
-            st.toast("✅ AI 응답 수신 완료!", icon="📥")
-            
             validation_text = target_text_for_analysis.replace(" ", "")
             POS_WHITELIST = ['명사', '동사', '형용사', '부사', '관형사', '대명사'] 
             blacklist = get_blacklist_from_sheet(sheet_data)
@@ -761,8 +690,8 @@ if run_analysis_flag and target_text_for_analysis:
                 root = item.get('root_word', '')
                 pos = item.get('pos', '')
                 
-                # orig_check = original.split('(')[0]
-                # if orig_check not in validation_text: pass 
+                orig_check = original.split('(')[0]
+                if orig_check not in validation_text: pass 
                 if not pos or pos not in POS_WHITELIST: continue
                 if original in blacklist or root in blacklist: continue
                 
@@ -795,7 +724,7 @@ if run_analysis_flag and target_text_for_analysis:
                 st.warning("⚠️ 분석 결과가 없습니다. (분석 대상 단어가 없거나 모두 제외되었습니다)")
         else:
             st.session_state.analysis_result = None
-            st.error("⚠️ AI가 아무런 응답을 하지 않았습니다. (위쪽 DEBUG 패널 확인 필요)")
+            st.warning("⚠️ AI가 아무런 응답을 하지 않았습니다. 잠시 후 다시 시도해주세요.")
 
 # 결과 표시 및 저장 (공통)
 if st.session_state.analysis_result:
