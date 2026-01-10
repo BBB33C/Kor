@@ -312,9 +312,7 @@ def get_analysis_hybrid(text, sheet_data, mode_key):
     
     for i, chunk in enumerate(chunks):
         if not chunk.strip(): continue
-        # [핵심 수정] 힌트 없이 텍스트 그대로 전달
         prompt = f"""{learning_prompt}\n{base_instruction}\n\n분석할 문장:\n"{chunk}" """
-        
         chunk_result = api_call_direct(prompt)
         if chunk_result: all_results.extend(chunk_result)
         time.sleep(0.1)
@@ -376,7 +374,6 @@ def load_excel_safely(file):
         return None
     except: return None
 
-# [헬퍼 함수 추가] Data Editor 수정사항 동기화
 def apply_editor_changes():
     if "editor" in st.session_state and st.session_state.analysis_result:
         changes = st.session_state["editor"].get("edited_rows", {})
@@ -398,13 +395,10 @@ with st.sidebar:
     if 'last_mode' not in st.session_state: st.session_state.last_mode = MODE_KEY
     if st.session_state.last_mode != MODE_KEY:
         st.session_state.analysis_result = None
-        
-        # [안전장치 1] 모드 변경 전, 기존 작업물이 있다면 강제 백업
         if st.session_state.master_df is not None and not st.session_state.master_df.empty:
             prev_mode = st.session_state.last_mode
             if save_backup_to_cloud(prev_mode, st.session_state.master_df):
                 st.toast(f"🔄 모드 변경 전 '{prev_mode}' 데이터가 안전하게 백업되었습니다.", icon="🛡️")
-        
         st.session_state.master_df = None 
         st.session_state.last_uploaded_file_name = None 
         st.session_state.last_mode = MODE_KEY
@@ -432,29 +426,23 @@ with st.sidebar:
     st.header("📂 이어하기 & 백업")
     uploaded_excel = st.file_uploader("작업하던 엑셀 파일", type=['xlsx'])
     
-    # [핵심 수정 1단계: 데이터 덮어쓰기 방지 -> 병합 로직]
     if uploaded_excel:
         if uploaded_excel.name != st.session_state.last_uploaded_file_name:
             uploaded_df = load_excel_safely(uploaded_excel)
             if uploaded_df is not None:
                  if st.session_state.master_df is not None and not st.session_state.master_df.empty:
                      merged_df = pd.concat([st.session_state.master_df, uploaded_df], ignore_index=True)
-                     # 중복 제거 (기존 작업 우선)
                      st.session_state.master_df = merged_df.drop_duplicates(subset=['자료', '구분'], keep='first').reset_index(drop=True)
                      st.toast(f"➕ 기존 작업에 '{uploaded_excel.name}' 내용을 합쳤습니다!", icon="🔗")
                  else:
                      st.session_state.master_df = uploaded_df.copy()
                      st.toast(f"📂 '{uploaded_excel.name}' 파일이 로드되었습니다!", icon="✅")
-                 
                  st.session_state.last_uploaded_file_name = uploaded_excel.name
                  time.sleep(0.5)
                  st.rerun() 
             else:
                  st.error("ℹ️ 빈 파일 혹은 양식이 다릅니다.")
-    else:
-        pass
 
-    # [백업 버튼 모음]
     if st.session_state.master_df is not None and not st.session_state.master_df.empty:
         backup_buffer = io.BytesIO()
         with pd.ExcelWriter(backup_buffer, engine='openpyxl') as writer: st.session_state.master_df.to_excel(writer, index=False)
@@ -474,7 +462,6 @@ with st.sidebar:
                 else:
                     st.error("❌ 저장 실패 (인터넷 연결 확인)")
 
-    # [클라우드 복구 버튼]
     if (st.session_state.master_df is None or st.session_state.master_df.empty) and sheet:
         if st.button("📂 클라우드 백업 불러오기", use_container_width=True):
             with st.spinner("백업 찾는 중..."):
@@ -499,12 +486,8 @@ with st.sidebar:
             add_origin = st.selectbox("분류", ["고", "한", "외", "혼"])
             add_pos = st.selectbox("품사", ["명사", "동사", "형용사", "부사", "관형사", "대명사"]) 
             
-            # [핵심 수정 2단계: 표 수정 초기화 방지 로직]
             if st.form_submit_button("추가 및 학습"):
-                # 1. 기존 표의 수정사항 먼저 반영 (동기화)
                 apply_editor_changes()
-                
-                # 2. 새로운 단어 추가 로직 진행
                 if add_orig and add_root and sheet:
                     row = [datetime.now().isoformat(), add_orig, add_root, add_origin, add_pos, 'add', '수동추가']
                     if send_data_with_retry(sheet, row, is_multiple=False):
@@ -524,7 +507,6 @@ with st.sidebar:
                                 'pos': mapped_pos
                             }
                             st.session_state.analysis_result.append(new_item)
-                            
                         st.toast(f"✅ 추가 완료!", icon="🎓")
                         st.rerun()
 
@@ -577,7 +559,6 @@ with col_set:
             st.session_state.start_page_offset = new_offset
             st.rerun()
 
-# [메인 UI] 좌우 분할 뷰
 extracted_text = ""
 
 if st.session_state.uploaded_file:
@@ -586,27 +567,42 @@ if st.session_state.uploaded_file:
     else:
         current_save_page = st.session_state.manual_page_input
 
-    # 네비게이션
+    # [핵심 수정 3단계: 페이지 점프 기능 추가]
     if is_pdf_mode and st.session_state.total_pages > 1:
-        c_prev, c_info, c_next = st.columns([1, 2, 1])
+        c_prev, c_jump, c_next = st.columns([1, 1, 1])
+        
         with c_prev:
-            if st.button("◀ 이전 장"):
+            if st.button("◀ 이전 장", use_container_width=True):
                 if st.session_state.current_page_idx > 0:
                     st.session_state.current_page_idx -= 1
                     st.session_state.analysis_result = None
                     st.rerun()
+                    
         with c_next:
-            if st.button("다음 장 ▶"):
+            if st.button("다음 장 ▶", use_container_width=True):
                 if st.session_state.current_page_idx < st.session_state.total_pages - 1:
                     st.session_state.current_page_idx += 1
                     st.session_state.analysis_result = None
                     st.rerun()
-        with c_info:
-            st.markdown(f"<div style='text-align:center; padding-top:10px;'><b>PDF {st.session_state.current_page_idx + 1}/{st.session_state.total_pages}장 (현재 {current_save_page}쪽)</b></div>", unsafe_allow_html=True)
+                    
+        with c_jump:
+            # 직접 입력 가능한 숫자 창 (Enter 누르면 이동)
+            target_page = st.number_input(
+                "페이지 이동", 
+                min_value=1, 
+                max_value=st.session_state.total_pages, 
+                value=st.session_state.current_page_idx + 1,
+                label_visibility="collapsed"
+            )
+            if target_page != st.session_state.current_page_idx + 1:
+                st.session_state.current_page_idx = target_page - 1
+                st.session_state.analysis_result = None
+                st.rerun()
+                
+        st.markdown(f"<div style='text-align:center; color:grey; font-size:0.8em;'>총 {st.session_state.total_pages}장 중 {st.session_state.current_page_idx + 1}번째 장 (교과서 {current_save_page}쪽)</div>", unsafe_allow_html=True)
 
     view_col1, view_col2 = st.columns([1, 1])
     
-    # 스크롤 뷰어
     with view_col1:
         st.caption("📷 원본 미리보기 (휠로 스크롤 가능)")
         img_bytes = get_page_image_bytes(st.session_state.uploaded_file, st.session_state.current_page_idx)
@@ -651,13 +647,11 @@ else:
     analyze_btn = False
     input_text = ""
 
-# 분석 및 결과 처리
 if analyze_btn and input_text:
     with st.spinner(f"{mode_selection} 모드로 분석 중입니다..."):
         raw_results = get_analysis_hybrid(input_text, sheet_data, MODE_KEY)
         if raw_results:
             validation_text = input_text.replace(" ", "")
-            # 품사 필터링 (부사, 관형사, 대명사 포함 / 의존명사 제거)
             POS_WHITELIST = ['명사', '동사', '형용사', '부사', '관형사', '대명사'] 
             blacklist = get_blacklist_from_sheet(sheet_data)
             problematic_words = get_problematic_words(sheet_data)
@@ -668,20 +662,17 @@ if analyze_btn and input_text:
                 root = item.get('root_word', '')
                 pos = item.get('pos', '')
                 
-                # 최소 유효성 검사
                 orig_check = original.split('(')[0]
                 if orig_check not in validation_text: pass 
                 if not pos or pos not in POS_WHITELIST: continue
                 if original in blacklist or root in blacklist: continue
                 
-                # 이모지 매핑
                 if item.get('origin') == '순': item['origin'] = '고'
                 item['origin'] = add_emoji_to_origin(item.get('origin', ''))
                 pos_map = {'명사': '📦 명사', '동사': '🏃 동사', '형용사': '🎨 형용사', '부사': '⚡ 부사', '관형사': '🔍 관형사', '대명사': '👤 대명사'}
                 item['pos'] = pos_map.get(pos, pos)
                 pre_filtered_items.append(item)
             
-            # 결과 그룹화
             grouped_data = {} 
             for item in pre_filtered_items:
                 root = item['root_word']
@@ -759,7 +750,6 @@ if st.session_state.analysis_result:
             
         valid_rows['numeric_count'] = valid_rows['count'].apply(parse_count)
         
-        # [안전장치 2] 동음이의어 분리 저장
         aggregated_df = valid_rows.groupby(['root_word', 'origin', 'pos'], as_index=False).agg({
             'numeric_count': 'sum', 
             'original_word': lambda x: ', '.join(x.unique())
@@ -779,7 +769,6 @@ if st.session_state.analysis_result:
             
             val = f"{page_str}_{cnt}" if cnt > 1 else page_str
             
-            # 기존 데이터에 있는지 확인
             mask = (base_df['자료'] == root) & (base_df['구분'] == origin_val)
             
             if mask.any():
@@ -804,7 +793,6 @@ if st.session_state.analysis_result:
         output_excel.seek(0)
         st.session_state.excel_buffer = output_excel
         
-        # [안전장치 3] 백업 결과 통보
         if save_backup_to_cloud(MODE_KEY, base_df):
             pass
         else:
