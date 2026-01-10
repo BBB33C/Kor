@@ -376,6 +376,15 @@ def load_excel_safely(file):
         return None
     except: return None
 
+# [헬퍼 함수 추가] Data Editor 수정사항 동기화
+def apply_editor_changes():
+    if "editor" in st.session_state and st.session_state.analysis_result:
+        changes = st.session_state["editor"].get("edited_rows", {})
+        for idx, changes_dict in changes.items():
+            if idx < len(st.session_state.analysis_result):
+                for col, val in changes_dict.items():
+                    st.session_state.analysis_result[idx][col] = val
+
 # =========================================================
 # 🖥️ 메인 화면 로직
 # =========================================================
@@ -423,7 +432,7 @@ with st.sidebar:
     st.header("📂 이어하기 & 백업")
     uploaded_excel = st.file_uploader("작업하던 엑셀 파일", type=['xlsx'])
     
-    # [핵심 수정: 데이터 덮어쓰기 방지 -> 병합 로직]
+    # [핵심 수정 1단계: 데이터 덮어쓰기 방지 -> 병합 로직]
     if uploaded_excel:
         if uploaded_excel.name != st.session_state.last_uploaded_file_name:
             uploaded_df = load_excel_safely(uploaded_excel)
@@ -489,7 +498,13 @@ with st.sidebar:
             add_root = st.text_input("원형")
             add_origin = st.selectbox("분류", ["고", "한", "외", "혼"])
             add_pos = st.selectbox("품사", ["명사", "동사", "형용사", "부사", "관형사", "대명사"]) 
+            
+            # [핵심 수정 2단계: 표 수정 초기화 방지 로직]
             if st.form_submit_button("추가 및 학습"):
+                # 1. 기존 표의 수정사항 먼저 반영 (동기화)
+                apply_editor_changes()
+                
+                # 2. 새로운 단어 추가 로직 진행
                 if add_orig and add_root and sheet:
                     row = [datetime.now().isoformat(), add_orig, add_root, add_origin, add_pos, 'add', '수동추가']
                     if send_data_with_retry(sheet, row, is_multiple=False):
