@@ -26,13 +26,12 @@ except ImportError:
     FITZ_AVAILABLE = False
 
 # =========================================================
-# ⚙️ 설정
+# ⚙️ 설정 & 세션 초기화 (최상단 배치)
 # =========================================================
 try:
     if "GEMINI_API_KEY" in st.secrets:
         API_KEY = st.secrets["GEMINI_API_KEY"]
     else:
-        # 여기에 본인의 API KEY를 입력하세요
         API_KEY = "AIzaSyCC6oyL7POpbWq2FZrJ2zIJuiosupFQZYk" 
 except:
     API_KEY = "AIzaSyCC6oyL7POpbWq2FZrJ2zIJuiosupFQZYk"
@@ -42,6 +41,18 @@ SHEET_NAME = "Korean_DB"
 TRUST_THRESHOLD = 3 
 
 st.set_page_config(page_title="국어활동 AI 분석기", page_icon="📝", layout="wide")
+
+# [핵심 수정] 변수 초기화를 최상단에서 먼저 수행하여 AttributeError 방지
+if 'analysis_result' not in st.session_state: st.session_state.analysis_result = None
+if 'master_df' not in st.session_state: st.session_state.master_df = None
+if 'last_uploaded_file_name' not in st.session_state: st.session_state.last_uploaded_file_name = None
+if 'analysis_source' not in st.session_state: st.session_state.analysis_source = None 
+if 'uploaded_file' not in st.session_state: st.session_state.uploaded_file = None
+if 'total_pages' not in st.session_state: st.session_state.total_pages = 0
+if 'current_page_idx' not in st.session_state: st.session_state.current_page_idx = 0
+if 'start_page_offset' not in st.session_state: st.session_state.start_page_offset = 1 
+if 'manual_page_input' not in st.session_state: st.session_state.manual_page_input = "1"
+if 'last_mode' not in st.session_state: st.session_state.last_mode = "SOUTH" # 기본값
 
 # =========================================================
 # 🔐 구글 시트 연결
@@ -97,7 +108,7 @@ def send_data_with_retry(sheet_obj, data, is_multiple=False):
                 return False
     return False
 
-# [백업 기능] 클라우드 백업
+# [백업 기능]
 def save_backup_to_cloud(mode_key, df):
     client = get_google_sheet_client()
     if not client or df is None or df.empty: return False
@@ -118,7 +129,6 @@ def save_backup_to_cloud(mode_key, df):
         print(f"자동 백업 실패: {e}") 
         return False
 
-# [백업 기능] 클라우드 복구
 def load_backup_from_cloud(mode_key):
     client = get_google_sheet_client()
     if not client: return None
@@ -162,7 +172,6 @@ def api_call_direct(prompt):
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={API_KEY.strip()}"
     headers = {'Content-Type': 'application/json'}
     
-    # [안전장치 해제] 분석 거부를 막기 위함
     safety_settings = [
         {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
         {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
@@ -207,7 +216,6 @@ def api_call_vision_ocr(image_bytes):
     5. **노이즈 제거:** 쪽수, 머리말은 제외하세요.
     """
 
-    # OCR도 안전장치 해제
     safety_settings = [
         {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
         {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
@@ -401,7 +409,6 @@ def load_excel_safely(file):
         return None
     except: return None
 
-# [기능 유지] 기존 키 충돌을 방지하면서 편집된 데이터를 동기화하는 로직
 def apply_editor_changes_safe(source_key):
     editor_key = f"editor_{source_key}"
     if editor_key in st.session_state and st.session_state.analysis_result:
@@ -412,11 +419,11 @@ def apply_editor_changes_safe(source_key):
                     st.session_state.analysis_result[idx][col] = val
 
 # =========================================================
-# 🔄 결과 표시 및 UI 처리 함수 (핵심 로직 통합)
+# 🔄 결과 표시 및 UI 처리 함수 (위치 이동 및 통합)
 # =========================================================
 def render_analysis_ui(page_str, source_key):
     """
-    이 함수가 기존에 중복되어 있던 150줄 가량의 코드를 하나로 통합한 것입니다.
+    이 함수가 기존에 중복되어 있던 코드를 하나로 통합한 것입니다.
     파일 분석 탭과 직접 입력 탭 양쪽에서 이 함수를 호출하여 화면을 그립니다.
     """
     if st.session_state.analysis_result:
@@ -520,7 +527,6 @@ with st.sidebar:
     mode_selection = st.radio("언어 환경", ("🇰🇷 대한민국 표준어", "🇰🇵 북한 문화어"))
     MODE_KEY = "SOUTH" if "대한민국" in mode_selection else "NORTH"
     
-    if 'last_mode' not in st.session_state: st.session_state.last_mode = MODE_KEY
     if st.session_state.last_mode != MODE_KEY:
         st.session_state.analysis_result = None
         if st.session_state.master_df is not None and not st.session_state.master_df.empty:
@@ -582,17 +588,6 @@ with st.sidebar:
                             st.session_state.analysis_result.append(new_item)
                         st.toast(f"✅ '{add_orig}' 추가 완료!", icon="🎓")
                         st.rerun()
-
-# [세션 상태 초기화]
-if 'analysis_result' not in st.session_state: st.session_state.analysis_result = None
-if 'master_df' not in st.session_state: st.session_state.master_df = None
-if 'last_uploaded_file_name' not in st.session_state: st.session_state.last_uploaded_file_name = None
-if 'analysis_source' not in st.session_state: st.session_state.analysis_source = None 
-if 'uploaded_file' not in st.session_state: st.session_state.uploaded_file = None
-if 'total_pages' not in st.session_state: st.session_state.total_pages = 0
-if 'current_page_idx' not in st.session_state: st.session_state.current_page_idx = 0
-if 'start_page_offset' not in st.session_state: st.session_state.start_page_offset = 1 
-if 'manual_page_input' not in st.session_state: st.session_state.manual_page_input = "1" 
 
 # [탭 구성]
 tab_file, tab_manual = st.tabs(["📄 파일 분석", "✍️ 직접 입력"])
