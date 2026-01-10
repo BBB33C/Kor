@@ -32,6 +32,7 @@ try:
     if "GEMINI_API_KEY" in st.secrets:
         API_KEY = st.secrets["GEMINI_API_KEY"]
     else:
+        # 여기에 본인의 API KEY를 입력하세요
         API_KEY = "AIzaSyCC6oyL7POpbWq2FZrJ2zIJuiosupFQZYk" 
 except:
     API_KEY = "AIzaSyCC6oyL7POpbWq2FZrJ2zIJuiosupFQZYk"
@@ -96,10 +97,9 @@ def send_data_with_retry(sheet_obj, data, is_multiple=False):
                 return False
     return False
 
-# [백업 기능] 클라우드 백업 (모드별 분리 + 안전장치)
+# [백업 기능] 클라우드 백업
 def save_backup_to_cloud(mode_key, df):
     client = get_google_sheet_client()
-    # 빈 데이터는 백업하지 않음 (덮어쓰기 방지)
     if not client or df is None or df.empty: return False
     
     backup_sheet_name = f"Backup_{'South' if mode_key == 'SOUTH' else 'North'}"
@@ -118,7 +118,7 @@ def save_backup_to_cloud(mode_key, df):
         print(f"자동 백업 실패: {e}") 
         return False
 
-# [백업 기능] 클라우드 복구 (모드별 분리)
+# [백업 기능] 클라우드 복구
 def load_backup_from_cloud(mode_key):
     client = get_google_sheet_client()
     if not client: return None
@@ -189,7 +189,7 @@ def api_call_vision_ocr(image_bytes):
     1. **공간 분리 준수:** 말풍선, 단락, 표 등으로 시각적으로 분리된 텍스트 덩어리는 반드시 **줄바꿈(Enter)**으로 명확히 구분하세요.
     2. **세로쓰기 대응:** 글자가 세로로(위에서 아래로) 쓰여 있다면, 자연스러운 독해 순서(우측 상단 -> 좌측 하단)를 따르세요.
     3. **북한 표기 유지:** 두음법칙을 적용하지 않은 표기(예: 로동, 녀자)는 수정하지 말고 그대로 적으세요.
-    4. **중복 포함(필수):** 같은 단어나 문장이 여러 번 나오면 합치지 말고 **나온 횟수만큼 반복해서** 적으세요. (빈도수 분석용)
+    4. **중복 포함(필수):** 같은 단어나 문장이 여러 번 나오면 합치지 말고 **나온 횟수만큼 반복해서** 적으세요.
     5. **노이즈 제거:** 쪽수, 머리말은 제외하세요.
     """
     
@@ -201,20 +201,6 @@ def api_call_vision_ocr(image_bytes):
         if 'candidates' in result_json: return result_json['candidates'][0]['content']['parts'][0]['text']
         return "텍스트를 찾을 수 없습니다."
     except Exception as e: return f"OCR 통신 오류: {e}"
-
-try:
-    from konlpy.tag import Okt
-    MORPHOLOGY_AVAILABLE = True
-except:
-    MORPHOLOGY_AVAILABLE = False
-
-def preprocess_with_morphology(text):
-    if not MORPHOLOGY_AVAILABLE: return None
-    try:
-        okt = Okt()
-        pos = okt.pos(text, stem=True)
-        return [w for w, p in pos if p in ['Noun', 'Verb', 'Adjective', 'Adverb', 'Determiner'] and len(w) > 1]
-    except: return None
 
 def split_text_smartly(text, chunk_size=1000):
     sentences = re.split(r'(?<=[.?!])\s+|\\n', text)
@@ -286,7 +272,6 @@ def get_analysis_hybrid(text, sheet_data, mode_key):
         [🇰🇵 북한 문화어 분석 모드]
         - 당신은 '북한 문화어(Munhwa-o)' 전문가입니다.
         - **두음법칙을 적용하지 마세요.** (예: '노동'이 아니라 '로동')
-        - 북한 특유의 어휘나 표기법이 있다면 이를 존중하여 원형을 추출하세요.
         """
     else:
         mode_instruction = """
@@ -300,34 +285,36 @@ def get_analysis_hybrid(text, sheet_data, mode_key):
     {mode_instruction}
     
     [핵심 작성 규칙]
-    - original_word: 문장에서 **실제로 쓰인 형태 그대로(활용형 포함)** 적으세요.
-    - root_word: 사전에 등재된 **기본형(원형)**으로 적으세요.
+    1. **Original Word:** 문장에서 실제로 쓰인 형태 그대로 적으세요.
+    2. **Root Word (원형):** 사전에 등재된 기본형으로 적으세요.
+    3. **[중요] '명사+하다' 처리:** '공부하다', '사랑하다'와 같이 **'명사+하다' 형태의 용언은 동사가 아니라, 핵심이 되는 명사('공부', '사랑')만 추출하고 품사도 '명사'로 분류하세요.**
+    4. **포함 대상:** **명사, 동사, 형용사, 부사, 관형사, 대명사**는 반드시 분석에 포함하세요.
+    5. **제외 대상:** 조사(은/는/이/가/을/를 등), 어미(-다/-요), 문장부호, 감탄사, **의존명사(것, 수, 따위 등)**는 절대 분석 결과에 포함하지 마세요.
     
-    [어원 분류 기준 (매우 중요)]
-    - **고(고유어):** 순우리말 (예: 하늘, 아버지, 바람)
-    - **한(한자어):** 한자에 뿌리를 둔 말 (예: 학교, 학생, 귤, 점심)
-    - **외(외래어):** 외국에서 들어와 우리말처럼 쓰이는 말 (예: 버스, 컴퓨터, 가방, 빵, 담배, 냄비)
-    - **혼(혼종어):** 서로 다른 어종이 결합된 말 (예: 비빔밥, 가지각색)
+    [어원 분류 기준]
+    - **고(고유어):** 순우리말
+    - **한(한자어):** 한자에 뿌리를 둔 말
+    - **외(외래어):** 외국에서 들어온 말
+    - **혼(혼종어):** 서로 다른 어종 결합
 
-    [동음이의어 구분 규칙]
-    - **사람 이름(인명)**: 원형 뒤에 **(이름)** 붙이기 (예: 철수(이름))
-    - **지명(장소)**: 원형 뒤에 **(지명)** 붙이기 (예: 평양(지명))
-    - 그 외 동음이의어는 괄호로 뜻 구분
+    [동음이의어 구분]
+    - 인명: 원형 뒤 (이름)
+    - 지명: 원형 뒤 (지명)
+    - 기타: 괄호로 뜻 구분
     
-    [기본 규칙]
-    - 조사, 어미, 접사, 문장부호, 감탄사 제외
-    - 품사: '명사', '동사', '형용사', '부사', '관형사'
-    - **[중요] 같은 단어가 여러 번 나오면 합치지 말고 나온 횟수만큼 JSON 객체를 반복해서 만드세요.**
-    
+    [출력 형식]
+    - 같은 단어가 여러 번 나오면 합치지 말고 **나온 횟수만큼 JSON 객체를 반복**하세요.
     형식: [{{"original_word": "...", "root_word": "...", "origin": "고", "pos": "명사"}}]
     """
+    
     chunks = split_text_smartly(text)
     all_results = []
+    
     for i, chunk in enumerate(chunks):
         if not chunk.strip(): continue
-        keywords = preprocess_with_morphology(chunk)
-        if keywords: prompt = f"""{learning_prompt}\n{base_instruction}\n문장: "{chunk}"\n힌트: {', '.join(keywords)}"""
-        else: prompt = f"""{learning_prompt}\n{base_instruction}\n문장: "{chunk}" """
+        # [핵심 수정] 힌트 없이 텍스트 그대로 전달
+        prompt = f"""{learning_prompt}\n{base_instruction}\n\n분석할 문장:\n"{chunk}" """
+        
         chunk_result = api_call_direct(prompt)
         if chunk_result: all_results.extend(chunk_result)
         time.sleep(0.1)
@@ -350,7 +337,7 @@ def add_emoji_to_origin(val):
 
 def clean_value_for_save(val):
     if isinstance(val, str):
-        return val.replace('🔵 ', '').replace('🟢 ', '').replace('🔴 ', '').replace('🟣 ', '').replace('📦 ', '').replace('🏃 ', '').replace('🎨 ', '').replace('⚡ ', '').replace('🔍 ', '').replace('❗ ', '').replace('✅ ', '').replace('📝 ', '')
+        return val.replace('🔵 ', '').replace('🟢 ', '').replace('🔴 ', '').replace('🟣 ', '').replace('📦 ', '').replace('🏃 ', '').replace('🎨 ', '').replace('⚡ ', '').replace('🔍 ', '').replace('❗ ', '').replace('✅ ', '').replace('📝 ', '').replace('👤 ', '')
     return val
 
 def get_problematic_words(sheet_data):
@@ -403,14 +390,12 @@ with st.sidebar:
     if st.session_state.last_mode != MODE_KEY:
         st.session_state.analysis_result = None
         
-        # [안전장치 1] 모드 변경 전, 기존 작업물이 있다면 강제 백업 (실수 방지)
+        # [안전장치 1] 모드 변경 전, 기존 작업물이 있다면 강제 백업
         if st.session_state.master_df is not None and not st.session_state.master_df.empty:
-            # 주의: 여기서는 '이전 모드(last_mode)'로 저장해야 함
             prev_mode = st.session_state.last_mode
             if save_backup_to_cloud(prev_mode, st.session_state.master_df):
                 st.toast(f"🔄 모드 변경 전 '{prev_mode}' 데이터가 안전하게 백업되었습니다.", icon="🛡️")
         
-        # 데이터 격리 및 파일 기록 초기화
         st.session_state.master_df = None 
         st.session_state.last_uploaded_file_name = None 
         st.session_state.last_mode = MODE_KEY
@@ -438,23 +423,17 @@ with st.sidebar:
     st.header("📂 이어하기 & 백업")
     uploaded_excel = st.file_uploader("작업하던 엑셀 파일", type=['xlsx'])
     
-    # [핵심 수정: 1번 문제 해결 - 데이터 병합 로직 적용]
+    # [핵심 수정: 데이터 덮어쓰기 방지 -> 병합 로직]
     if uploaded_excel:
         if uploaded_excel.name != st.session_state.last_uploaded_file_name:
             uploaded_df = load_excel_safely(uploaded_excel)
             if uploaded_df is not None:
-                 # 기존 데이터가 있다면 합치기 (Concatenate)
                  if st.session_state.master_df is not None and not st.session_state.master_df.empty:
-                     # 1. 두 데이터를 합침 (현재 작업분 + 불러온 파일)
                      merged_df = pd.concat([st.session_state.master_df, uploaded_df], ignore_index=True)
-                     
-                     # 2. 중복 제거 (자료와 구분이 완벽히 같은 경우 하나만 남김)
-                     # keep='first': 현재 작업중이던 내용이 있다면 그것을 우선함 (또는 취향에 따라 'last'로 변경 가능)
+                     # 중복 제거 (기존 작업 우선)
                      st.session_state.master_df = merged_df.drop_duplicates(subset=['자료', '구분'], keep='first').reset_index(drop=True)
-                     
                      st.toast(f"➕ 기존 작업에 '{uploaded_excel.name}' 내용을 합쳤습니다!", icon="🔗")
                  else:
-                     # 기존 데이터가 없으면 그냥 로드
                      st.session_state.master_df = uploaded_df.copy()
                      st.toast(f"📂 '{uploaded_excel.name}' 파일이 로드되었습니다!", icon="✅")
                  
@@ -464,10 +443,8 @@ with st.sidebar:
             else:
                  st.error("ℹ️ 빈 파일 혹은 양식이 다릅니다.")
     else:
-        st.session_state.last_uploaded_file_name = None
-        if st.session_state.master_df is None:
-            st.session_state.master_df = pd.DataFrame(columns=['구분', '자료', '출연횟수'])
-            
+        pass
+
     # [백업 버튼 모음]
     if st.session_state.master_df is not None and not st.session_state.master_df.empty:
         backup_buffer = io.BytesIO()
@@ -511,14 +488,14 @@ with st.sidebar:
             add_orig = st.text_input("원본 단어")
             add_root = st.text_input("원형")
             add_origin = st.selectbox("분류", ["고", "한", "외", "혼"])
-            add_pos = st.selectbox("품사", ["명사", "동사", "형용사", "부사", "관형사"]) 
+            add_pos = st.selectbox("품사", ["명사", "동사", "형용사", "부사", "관형사", "대명사"]) 
             if st.form_submit_button("추가 및 학습"):
                 if add_orig and add_root and sheet:
                     row = [datetime.now().isoformat(), add_orig, add_root, add_origin, add_pos, 'add', '수동추가']
                     if send_data_with_retry(sheet, row, is_multiple=False):
                         if st.session_state.analysis_result is not None:
                             origin_map = {'고': '🔵 고', '한': '🟢 한', '외': '🔴 외', '혼': '🟣 혼'}
-                            pos_map = {'명사': '📦 명사', '동사': '🏃 동사', '형용사': '🎨 형용사', '부사': '⚡ 부사', '관형사': '🔍 관형사'}
+                            pos_map = {'명사': '📦 명사', '동사': '🏃 동사', '형용사': '🎨 형용사', '부사': '⚡ 부사', '관형사': '🔍 관형사', '대명사': '👤 대명사'}
                             mapped_origin = origin_map.get(add_origin, add_origin)
                             mapped_pos = pos_map.get(add_pos, add_pos)
                             
@@ -665,7 +642,8 @@ if analyze_btn and input_text:
         raw_results = get_analysis_hybrid(input_text, sheet_data, MODE_KEY)
         if raw_results:
             validation_text = input_text.replace(" ", "")
-            POS_WHITELIST = ['명사', '동사', '형용사', '부사', '관형사'] 
+            # 품사 필터링 (부사, 관형사, 대명사 포함 / 의존명사 제거)
+            POS_WHITELIST = ['명사', '동사', '형용사', '부사', '관형사', '대명사'] 
             blacklist = get_blacklist_from_sheet(sheet_data)
             problematic_words = get_problematic_words(sheet_data)
             
@@ -674,17 +652,21 @@ if analyze_btn and input_text:
                 original = item.get('original_word', '').replace(" ", "")
                 root = item.get('root_word', '')
                 pos = item.get('pos', '')
+                
+                # 최소 유효성 검사
                 orig_check = original.split('(')[0]
                 if orig_check not in validation_text: pass 
                 if not pos or pos not in POS_WHITELIST: continue
                 if original in blacklist or root in blacklist: continue
+                
+                # 이모지 매핑
                 if item.get('origin') == '순': item['origin'] = '고'
                 item['origin'] = add_emoji_to_origin(item.get('origin', ''))
-                pos_map = {'명사': '📦 명사', '동사': '🏃 동사', '형용사': '🎨 형용사', '부사': '⚡ 부사', '관형사': '🔍 관형사'}
+                pos_map = {'명사': '📦 명사', '동사': '🏃 동사', '형용사': '🎨 형용사', '부사': '⚡ 부사', '관형사': '🔍 관형사', '대명사': '👤 대명사'}
                 item['pos'] = pos_map.get(pos, pos)
                 pre_filtered_items.append(item)
             
-            # 정확도 향상을 위한 그룹화 로직
+            # 결과 그룹화
             grouped_data = {} 
             for item in pre_filtered_items:
                 root = item['root_word']
@@ -709,14 +691,13 @@ if st.session_state.analysis_result:
     
     df_display = pd.DataFrame(st.session_state.analysis_result)
     
-    # UI 개선 (원본 단어 너비 자동 조절)
     column_config = {
         "delete_check": st.column_config.CheckboxColumn("삭제", width="small"),
         "count": st.column_config.TextColumn("빈도", disabled=False), 
         "original_word": st.column_config.TextColumn("원본 단어", disabled=True), 
         "root_word": "원형",
         "origin": st.column_config.SelectboxColumn("분류", options=["🔵 고", "🟢 한", "🔴 외", "🟣 혼"]),
-        "pos": st.column_config.SelectboxColumn("품사", options=["📦 명사", "🏃 동사", "🎨 형용사", "⚡ 부사", "🔍 관형사"])
+        "pos": st.column_config.SelectboxColumn("품사", options=["📦 명사", "🏃 동사", "🎨 형용사", "⚡ 부사", "🔍 관형사", "👤 대명사"])
     }
     cols = ["delete_check", "count", "original_word", "root_word", "origin", "pos"]
     
@@ -763,7 +744,7 @@ if st.session_state.analysis_result:
             
         valid_rows['numeric_count'] = valid_rows['count'].apply(parse_count)
         
-        # [안전장치 2] 동음이의어 분리 저장 (그룹화 기준 강화)
+        # [안전장치 2] 동음이의어 분리 저장
         aggregated_df = valid_rows.groupby(['root_word', 'origin', 'pos'], as_index=False).agg({
             'numeric_count': 'sum', 
             'original_word': lambda x: ', '.join(x.unique())
@@ -783,8 +764,7 @@ if st.session_state.analysis_result:
             
             val = f"{page_str}_{cnt}" if cnt > 1 else page_str
             
-            # 기존 데이터에 있는지 확인 (동음이의어까지 구분해서)
-            # 조건: 자료(root)가 같고, 구분(origin)도 같아야 같은 단어로 인정
+            # 기존 데이터에 있는지 확인
             mask = (base_df['자료'] == root) & (base_df['구분'] == origin_val)
             
             if mask.any():
@@ -811,10 +791,8 @@ if st.session_state.analysis_result:
         
         # [안전장치 3] 백업 결과 통보
         if save_backup_to_cloud(MODE_KEY, base_df):
-            # 백업 성공 시 조용히 넘어감 (UX)
             pass
         else:
-            # 백업 실패 시 경고
             st.toast("⚠️ 엑셀은 저장됐지만, 클라우드 백업은 실패했습니다!", icon="☁️")
 
         if sheet and learning_logs:
