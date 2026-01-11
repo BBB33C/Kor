@@ -24,7 +24,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# 세션 상태 초기화 (PDF 제어, 비교 학습, 탭 상태 등 모든 환경 변수 보존)
+# 세션 상태 초기화 (PDF 제어, 비교 학습, 탭 상태 등 모든 변수 보존)
 if 'step' not in st.session_state: st.session_state.step = 0
 if 'mode_key' not in st.session_state: st.session_state.mode_key = None
 if 'master_df' not in st.session_state: st.session_state.master_df = None
@@ -42,7 +42,7 @@ if 'current_tab_idx' not in st.session_state: st.session_state.current_tab_idx =
 if 'is_finished' not in st.session_state: st.session_state.is_finished = False
 
 # =========================================================
-# [1] 디자인: CSS 매직 (메인 대형 버튼 및 상세 스타일 완벽 보존)
+# [1] 디자인: CSS 매직 (레이아웃 개선 버전)
 # =========================================================
 if st.session_state.step == 0:
     st.markdown("""
@@ -74,7 +74,10 @@ else:
             .stTextArea textarea { font-family: 'Malgun Gothic', sans-serif !important; font-size: 16px !important; line-height: 1.6 !important; }
             .stButton button { border-radius: 8px; font-weight: bold; height: auto; }
             div.stRadio > div[role="radiogroup"] { display: flex; flex-direction: row; gap: 10px; }
-            .page-jump-box { background-color: #1e2129; padding: 15px; border-radius: 12px; border: 1px solid #3d4251; margin-bottom: 20px; }
+            /* 유저 친화적 컨트롤러 스타일 */
+            .control-card { background-color: #1e2129; padding: 20px; border-radius: 15px; border: 1px solid #3d4251; margin-bottom: 20px; }
+            .status-badge { background-color: #2979ff; padding: 4px 12px; border-radius: 20px; font-size: 0.9rem; font-weight: 600; }
+            .info-card { background-color: rgba(41, 121, 255, 0.1); border-left: 5px solid #2979ff; padding: 15px; border-radius: 5px; margin-top: 15px; }
         </style>
     """, unsafe_allow_html=True)
 
@@ -85,7 +88,7 @@ try:
 except ImportError:
     PLUMBER_AVAILABLE = False
 try:
-    import fitz # PyMuPDF
+    import fitz 
     FITZ_AVAILABLE = True
 except ImportError:
     FITZ_AVAILABLE = False
@@ -150,7 +153,7 @@ def save_backup_to_cloud(mode_key, df):
     except: return False
 
 # =========================================================
-# [3] 데이터 가공 및 비교 학습 엔진 (로직 무삭제 보존)
+# [3] 데이터 가공 및 비교 학습 엔진 (오류 수정을 위해 정의를 최상단으로 이동)
 # =========================================================
 def clean_val_for_save(v):
     if isinstance(v, str): 
@@ -372,14 +375,13 @@ if st.session_state.step == 0:
         if st.button("🏔️\n\n북한 문화어\n\n(문화어 규범 기준)\n\n[ 시작하기 ]", key="btn_north", use_container_width=True):
             st.session_state.mode_key = "NORTH"; st.session_state.step = 1; st.rerun()
 
-# STEP 1: 데이터 소스 선택 (Excel 전용으로 복구)
+# STEP 1: 데이터 소스 선택
 elif st.session_state.step == 1:
     st.header("📂 데이터 소스 선택")
     col1, col2 = st.columns(2)
     with col1:
         with st.container(border=True):
             st.subheader("📂 이어하기")
-            # [사용자 지시 반영] 엑셀 파일(.xlsx)만 업로드 가능하도록 되돌림
             up_excel = st.file_uploader("기존 분석 엑셀 파일 업로드", type=['xlsx'])
             if up_excel:
                 try:
@@ -394,7 +396,7 @@ elif st.session_state.step == 1:
     st.markdown("---")
     if st.button("⬅️ 모드 다시 선택"): st.session_state.step = 0; st.rerun()
 
-# STEP 2: 자료 입력 (페이지 즉시 이동 및 저장 위치 안내 보존)
+# STEP 2: 자료 입력 (PDF 이전/다음 및 시작 쪽수 기능 보존)
 elif st.session_state.step == 2:
     st.session_state.is_finished = False
     c_t, c_h = st.columns([8, 2])
@@ -450,43 +452,49 @@ elif st.session_state.step == 2:
                 if img: st.image(img, use_container_width=True)
                 
                 if st.session_state.file_type == "application/pdf":
-                    st.write(f"📄 **PDF 분석 상태:** {st.session_state.page_idx + 1} / {st.session_state.total_pages} 페이지")
+                    # [유저 친화적 통합 컨트롤러 카드]
+                    st.markdown('<div class="control-card">', unsafe_allow_html=True)
+                    st.markdown(f"<span class='status-badge'>📄 PDF 상태: {st.session_state.page_idx + 1} / {st.session_state.total_pages} 페이지</span>", unsafe_allow_html=True)
                     
-                    # [페이지 제어 센터]
-                    st.markdown('<div class="page-jump-box">', unsafe_allow_html=True)
-                    j_col1, j_col2, j_col3 = st.columns([1, 1.5, 1])
+                    st.write("") # 간격
+                    j_col1, j_col2, j_col3 = st.columns([1, 1, 1])
                     with j_col1:
-                        if st.button("◀ 이전", use_container_width=True, disabled=(st.session_state.page_idx <= 0)):
+                        if st.button("◀ 이전 페이지", use_container_width=True, disabled=(st.session_state.page_idx <= 0)):
                             st.session_state.page_idx -= 1
                             st.session_state.extracted_text = extract_text_unified(st.session_state.file_bytes, st.session_state.file_type, st.session_state.page_idx); st.rerun()
                     with j_col2:
-                        # 숫자 직접 입력하여 페이지 점프 기능 보존
-                        target_p = st.number_input("페이지 이동", min_value=1, max_value=st.session_state.total_pages, value=st.session_state.page_idx + 1, label_visibility="collapsed")
+                        target_p = st.number_input("이동", min_value=1, max_value=st.session_state.total_pages, value=st.session_state.page_idx + 1, label_visibility="collapsed")
                         if target_p != st.session_state.page_idx + 1:
                             st.session_state.page_idx = target_p - 1
                             st.session_state.extracted_text = extract_text_unified(st.session_state.file_bytes, st.session_state.file_type, st.session_state.page_idx); st.rerun()
                     with j_col3:
-                        if st.button("다음 ▶", use_container_width=True, disabled=(st.session_state.page_idx >= st.session_state.total_pages - 1)):
+                        if st.button("다음 페이지 ▶", use_container_width=True, disabled=(st.session_state.page_idx >= st.session_state.total_pages - 1)):
                             st.session_state.page_idx += 1
                             st.session_state.extracted_text = extract_text_unified(st.session_state.file_bytes, st.session_state.file_type, st.session_state.page_idx); st.rerun()
-                    st.markdown('</div>', unsafe_allow_html=True)
                     
-                    # 저장 위치 안내 문구 ("~쪽으로 기록됩니다") 보존
-                    st.session_state.start_offset = st.number_input("시작 쪽수 설정 (PDF 1쪽의 도서 쪽수)", value=st.session_state.start_offset)
+                    st.markdown("---")
+                    st.session_state.start_offset = st.number_input("시작 쪽수 설정 (도서 1쪽의 숫자)", value=st.session_state.start_offset)
+                    
+                    # [강조 정보 카드]
                     actual_save_page = st.session_state.page_idx + st.session_state.start_offset
-                    st.info(f"💾 **저장 위치 미리보기:** 현재 페이지 분석 시 엑셀의 **'{actual_save_page}쪽'**으로 기록됩니다.")
+                    st.markdown(f"""
+                        <div class="info-card">
+                            💾 <b>저장 위치 미리보기</b><br>
+                            현재 페이지 분석 시 엑셀의 <b>'{actual_save_page}쪽'</b>으로 기록됩니다.
+                        </div>
+                    """, unsafe_allow_html=True)
+                    st.markdown('</div>', unsafe_allow_html=True)
             
             with c2:
-                txt_in = st.text_area("에디터 (텍스트 정제 완료)", value=st.session_state.extracted_text, height=520)
+                txt_in = st.text_area("에디터 (추출 텍스트)", value=st.session_state.extracted_text, height=520)
                 st.session_state.extracted_text = txt_in
-                if st.button("🚀 분석 실행 (AI 호출)", type="primary", use_container_width=True): run_analysis_action(txt_in, st.session_state.file_bytes)
+                if st.button("🚀 분석 실행", type="primary", use_container_width=True): run_analysis_action(txt_in, st.session_state.file_bytes)
     else:
         st.session_state.current_tab_idx = 1
         direct_t = st.text_area("텍스트 입력 창", value=st.session_state.extracted_text, height=450)
         st.session_state.extracted_text = direct_t
-        if st.button("🚀 분석 실행 (AI 호출)", type="primary", use_container_width=True): run_analysis_action(direct_t)
+        if st.button("🚀 분석 실행", type="primary", use_container_width=True): run_analysis_action(direct_t)
 
-# STEP 3: 결과 확인 (비교 학습 저장 로직 무삭제 보존)
 elif st.session_state.step == 3:
     ch, cb = st.columns([8, 2])
     with ch: st.header("📊 분석 결과 확인")
@@ -494,12 +502,12 @@ elif st.session_state.step == 3:
         if st.button("⬅️ 입력 수정하기", use_container_width=True): st.session_state.step = 2; st.rerun()
     
     if st.session_state.debug_mode:
-        with st.expander("🔴 [DEBUG] AI 응답 원본"): st.code(st.session_state.last_raw_response)
+        with st.expander("🔴 [DEBUG] AI Raw Data"): st.code(st.session_state.last_raw_response)
     with st.expander("📝 분석 대상 원문 확인"):
         st.text_area("원문", value=st.session_state.extracted_text, height=200, disabled=True)
 
-    dlg_func = st.dialog if hasattr(st, "dialog") else st.experimental_dialog
-    @dlg_func("➕ 단어 직접 추가")
+    dlg = st.dialog if hasattr(st, "dialog") else st.experimental_dialog
+    @dlg("➕ 단어 직접 추가")
     def add_manual():
         with st.form("manual_add_form"):
             o, r = st.text_input("원본 단어"), st.text_input("원형(기본형)")
