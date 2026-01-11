@@ -35,7 +35,7 @@ if 'page_idx' not in st.session_state: st.session_state.page_idx = 0
 if 'start_offset' not in st.session_state: st.session_state.start_offset = 1
 if 'extracted_text' not in st.session_state: st.session_state.extracted_text = ""
 if 'debug_mode' not in st.session_state: st.session_state.debug_mode = False
-if 'last_raw_response' not in st.session_state: st.session_state.last_raw_response = "" 
+if 'last_raw_response' not in st.session_state: st.session_state.last_raw_response = ""
 
 # =========================================================
 # [1] 디자인: CSS 매직
@@ -148,7 +148,6 @@ def generate_prompt_from_sheet(sheet_data):
     if not sheet_data: return ""
     rules = []
     for row in sheet_data[-100:]:
-        # 시트 데이터도 한글 키로 관리된다고 가정하거나, 기존 영문 키를 매핑
         orig = row.get('original_word', '')
         root = row.get('root_word', '')
         origin = row.get('origin', '')
@@ -259,29 +258,30 @@ def merge_master_data(old_df, new_df):
     result_df = result_df.sort_values(['sk', '자료']).drop('sk', axis=1)
     return result_df
 
-# [핵심 수정] 1. AI에게 한글 키로 요청
+# [핵심 수정] 프롬프트 강화: 특수문자 제거, 조사/어미 제외 명시
 def get_analysis_hybrid(text, image_bytes, sheet_data, mode_key):
     prompt = f"""
     당신은 '{"대한민국 표준어" if mode_key=="SOUTH" else "북한 문화어"}' 형태소 분석 전문가입니다.
     {generate_prompt_from_sheet(sheet_data)}
     
-    [분석 규칙]
-    1. 조사/어미 제거, '하다' 용언은 명사로 분류.
-    2. 품사: 명사, 동사, 형용사, 부사, 관형사, 대명사, 고유명사.
-    3. 동음이의어: 원형 뒤에 괄호로 뜻 구분 (예: 배(과일), 배(선박))
-    4. 인명/지명: 원형 뒤에 (이름)/(지명) 표기 (예: 지혜(이름), 서울(지명))
+    [분석 및 제외 규칙 (매우 중요)]
+    1. **특수문자 및 문장부호 제거**: 마침표(.), 쉼표(,), 물음표(?), 느낌표(!), 괄호, 따옴표 등 모든 문장부호와 특수문자는 결과에 절대 포함하지 마세요.
+    2. **조사 및 어미 제외**: '은/는/이/가/을/를' 등의 조사와 '-다/요/까' 등의 어미는 독립된 항목으로 출력하지 마세요. (어근에 붙어있으면 제거하고 원형만 추출)
+    3. **의존 명사 포함**: '것', '수', '만큼', '따위' 등의 의존 명사는 '명사'로 분류하여 결과에 포함하세요.
+    4. **'하다' 동사 처리**: '명사+하다'(예: 사랑하다, 공부하다)는 '명사'(예: 사랑, 공부)로 분류하고 원형도 명사로 추출하세요.
     
-    [필수 JSON 키(Key) 및 출력 형식]
-    반드시 아래 **한글 키(Key)**를 사용하세요. 영어 키를 쓰지 마세요.
-    - 원본: 문장에서 쓰인 원래 단어 (예: "갔습니다")
-    - 원형: 기본형 (예: "가다")
+    [출력 포맷]
+    반드시 아래 **한글 키(Key)**를 가진 JSON 리스트로 출력하세요.
+    - 원본: 문장에서 쓰인 단어 (조사/어미 제외한 형태 권장)
+    - 원형: 기본형 (사전 등재형)
     - 분류: 어종 (고/한/외/혼)
-    - 품사: 품사 (명사/동사 등)
+    - 품사: 품사 (명사/동사/형용사/부사/관형사/대명사/감탄사)
     
     [출력 예시]
     [
-      {{"원본": "학교에", "원형": "학교", "분류": "한", "품사": "명사"}},
-      {{"원본": "갔다", "원형": "가다", "분류": "고", "품사": "동사"}}
+      {{"원본": "학교", "원형": "학교", "분류": "한", "품사": "명사"}},
+      {{"원본": "가다", "원형": "가다", "분류": "고", "품사": "동사"}},
+      {{"원본": "수", "원형": "수", "분류": "고", "품사": "명사"}}
     ]
     """
     
@@ -397,7 +397,7 @@ elif st.session_state.step == 2:
 
     tab1, tab2 = st.tabs(["📄 파일 분석", "✍️ 직접 입력"])
     
-    # [수정] 2. 로직 함수: 한글 키 파싱 및 필터링
+    # [핵심 수정] 2. 파이썬 로직: 특수문자 및 조사/어미 이중 필터링
     def run_analysis_logic(txt, img=None):
         if not txt or not txt.strip():
             st.warning("⚠️ 분석할 텍스트가 없습니다. 내용을 확인해주세요.")
@@ -411,20 +411,25 @@ elif st.session_state.step == 2:
             
             proc = []
             temp_dict = {}
-            # 한글 키 사용
             om = {'고':'🔵 고', '한':'🟢 한', '외':'🔴 외', '혼':'🟣 혼'}
-            pm = {'명사':'📦 명사', '동사':'🏃 동사', '형용사':'🎨 형용사', '부사':'⚡ 부사', '관형사':'🔍 관형사', '대명사':'👤 대명사'}
+            pm = {'명사':'📦 명사', '동사':'🏃 동사', '형용사':'🎨 형용사', '부사':'⚡ 부사', '관형사':'🔍 관형사', '대명사':'👤 대명사', '감탄사':'❗ 감탄사'}
             
             for r in res:
-                # 한글 키 우선, 없으면 영문 키 fallback
                 o_word = str(r.get('원본') or r.get('original_word') or '').strip()
                 r_word = str(r.get('원형') or r.get('root_word') or '').strip()
                 origin_val = str(r.get('분류') or r.get('origin') or '혼').strip()
                 pos_val = str(r.get('품사') or r.get('pos') or '명사').strip()
                 
-                # 빈 데이터 필터링
+                # 1. 빈 데이터 필터링
                 if not o_word or o_word.lower() == 'none': continue
                 if not r_word or r_word.lower() == 'none': continue
+                
+                # 2. 특수문자만 있는 경우 필터링 (한글/영어/숫자가 하나라도 없으면 제외)
+                if not re.search(r'[가-힣a-zA-Z0-9]', o_word): continue
+                if not re.search(r'[가-힣a-zA-Z0-9]', r_word): continue
+
+                # 3. 조사/어미/문장부호 필터링 (AI가 실수로 보낸 경우)
+                if pos_val in ['조사', '어미', '문장부호', '특수문자', 'Punctuation', 'Josa', 'Eomi']: continue
 
                 key = (r_word, origin_val, pos_val)
                 if key not in temp_dict: temp_dict[key] = []
@@ -437,7 +442,6 @@ elif st.session_state.step == 2:
                 
                 fmt_orig = ", ".join(valid_items)
                 
-                # [중요] 한글 키로 저장
                 proc.append({
                     "삭제": False,
                     "횟수": f"{sum(cnts.values())}회",
@@ -485,7 +489,7 @@ elif st.session_state.step == 2:
             run_analysis_logic(direct_txt)
 
 # ---------------------------------------------------------
-# STEP 3: 결과 확인 (한글 키 적용)
+# STEP 3: 결과 확인
 # ---------------------------------------------------------
 elif st.session_state.step == 3:
     st.header("📊 분석 결과 확인")
@@ -507,11 +511,11 @@ elif st.session_state.step == 3:
             o = st.text_input("원본")
             r = st.text_input("원형")
             org = st.selectbox("분류", ["고","한","외","혼"])
-            p = st.selectbox("품사", ["명사","동사","형용사","부사","관형사","대명사","고유명사"])
+            p = st.selectbox("품사", ["명사","동사","형용사","부사","관형사","대명사","고유명사","감탄사"])
             cnt = st.number_input("횟수", 1, 100, 1)
             if st.form_submit_button("추가"):
                 om = {'고':'🔵 고', '한':'🟢 한', '외':'🔴 외', '혼':'🟣 혼'}
-                pm = {'명사':'📦 명사', '동사':'🏃 동사', '형용사':'🎨 형용사', '부사':'⚡ 부사', '관형사':'🔍 관형사', '대명사':'👤 대명사'}
+                pm = {'명사':'📦 명사', '동사':'🏃 동사', '형용사':'🎨 형용사', '부사':'⚡ 부사', '관형사':'🔍 관형사', '대명사':'👤 대명사', '감탄사':'❗ 감탄사'}
                 new_row = {
                     "삭제": False,
                     "횟수": f"{cnt}회",
@@ -521,15 +525,11 @@ elif st.session_state.step == 3:
                     "품사": pm.get(p, p)
                 }
                 st.session_state.analysis_result.append(new_row)
-                
-                # 구글 시트에 로그 남기기 (키 이름만 맞추면 됨)
                 sheet = get_sheet_data_fresh(st.session_state.mode_key)[0]
                 send_data_with_retry(sheet, [datetime.now().isoformat(), o, r, org, p, 'add', '수동'])
                 st.rerun()
 
     df_res = pd.DataFrame(st.session_state.analysis_result)
-    
-    # [수정] 한글 키 매핑 적용
     edited = st.data_editor(
         df_res,
         column_config={
@@ -538,7 +538,7 @@ elif st.session_state.step == 3:
             "원형": st.column_config.TextColumn("원형"),
             "횟수": st.column_config.TextColumn("횟수"),
             "분류": st.column_config.SelectboxColumn("분류", options=["🔵 고", "🟢 한", "🔴 외", "🟣 혼"]),
-            "품사": st.column_config.SelectboxColumn("품사", options=["📦 명사", "🏃 동사", "🎨 형용사", "⚡ 부사", "🔍 관형사", "👤 대명사", "고유명사"])
+            "품사": st.column_config.SelectboxColumn("품사", options=["📦 명사", "🏃 동사", "🎨 형용사", "⚡ 부사", "🔍 관형사", "👤 대명사", "고유명사", "❗ 감탄사"])
         },
         use_container_width=True,
         num_rows="dynamic",
@@ -561,30 +561,6 @@ elif st.session_state.step == 3:
                 st.session_state.analysis_result = edited[edited['삭제']==False].to_dict('records')
                 st.rerun()
             else: st.toast("선택된 항목이 없습니다.")
-
-    def save_logic_common():
-        sheet = get_sheet_data_fresh(st.session_state.mode_key)[0]
-        logs = []
-        for _, row in edited.iterrows():
-            if not row['삭제']:
-                logs.append([datetime.now().isoformat(), row['원본'], row['원형'], clean_val_for_save(row['분류']), clean_val_for_save(row['품사']), 'modify', 'result'])
-        send_data_with_retry(sheet, logs, True)
-        
-        valid = edited[edited['삭제']==False].copy()
-        # '1회' -> 1 로 숫자 변환
-        valid['n_cnt'] = valid['횟수'].apply(lambda x: int(re.sub(r'[^0-9]', '', str(x))) if re.search(r'\d', str(x)) else 1)
-        
-        # [수정] 한글 키로 그룹화
-        agg = valid.groupby(['원형', '분류', '품사'], as_index=False).agg({'n_cnt': 'sum'})
-        
-        p_num = str(st.session_state.page_idx + st.session_state.start_offset)
-        temp_rows = []
-        for _, item in agg.iterrows():
-            val = f"{p_num}_{item['n_cnt']}" if item['n_cnt'] > 1 else p_num
-            temp_rows.append({'구분': clean_val_for_save(item['분류']), '자료': item['원형'], '쪽수1': val})
-            
-        st.session_state.master_df = merge_master_data(st.session_state.master_df, pd.DataFrame(temp_rows))
-        save_backup_to_cloud(st.session_state.mode_key, st.session_state.master_df)
 
     with ac3:
         if st.button("💾 저장하기 (완료)", type="primary", use_container_width=True):
