@@ -35,7 +35,7 @@ except ImportError:
 
 # 페이지 기본 설정
 st.set_page_config(
-    page_title="국어활동 AI 분석기 (UI Fixed)", 
+    page_title="국어활동 AI 분석기 (Complete)", 
     page_icon="📚", 
     layout="wide",
     initial_sidebar_state="expanded"
@@ -218,52 +218,84 @@ def get_analysis_hybrid(text, image_bytes, sheet_data, mode_key):
         return full_res
 
 # =========================================================
-# [4] 파일 처리
+# [4] 파일 처리 및 노이즈 제거 (기능 추가됨)
 # =========================================================
+def clean_noise_text(text):
+    """
+    [신규 기능] 파일 정보, 날짜, 쪽수 등 불필요한 꼬리말 제거
+    """
+    if not text: return ""
+    lines = text.split('\n')
+    cleaned_lines = []
+    
+    # 제거할 패턴 정의 (indd 파일명, 날짜 형식)
+    patterns = [
+        r'\.indd',           # 인디자인 파일 확장자
+        r'\d{4}-\d{2}-\d{2}', # 날짜 (2024-06-26)
+        r'오후\s*\d+:\d+',    # 시간 (오후 3:07)
+        r'오전\s*\d+:\d+'     # 시간
+    ]
+    
+    for line in lines:
+        is_noise = False
+        # 패턴 매칭 확인
+        for p in patterns:
+            if re.search(p, line):
+                is_noise = True
+                break
+        
+        # 꼬리말(단독 숫자) 제거 - 필요시 해제 가능
+        # if line.strip().isdigit() and int(line.strip()) > 0: is_noise = True 
+        
+        if not is_noise:
+            cleaned_lines.append(line)
+            
+    return "\n".join(cleaned_lines).strip()
+
 def extract_text_unified(file_bytes, file_type, page_idx):
     debug = st.session_state.get('debug_mode', False)
     if debug: log_debug(f"추출 시작: Page {page_idx}", "info")
 
+    raw_text = ""
+    
     if "image" in file_type:
-        return api_call_vision_ocr(file_bytes)
+        raw_text = api_call_vision_ocr(file_bytes)
         
     elif "pdf" in file_type:
-        text = ""
         # (1) PDFPlumber
         if PLUMBER_AVAILABLE:
             try:
                 with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
                     if page_idx < len(pdf.pages):
-                        text = pdf.pages[page_idx].extract_text()
-                        if text and len(text.strip()) > 30:
-                            if debug: log_debug(f"Plumber 성공 ({len(text)}자)", "success")
-                            return text
+                        raw_text = pdf.pages[page_idx].extract_text()
+                        if raw_text and len(raw_text.strip()) > 30:
+                            if debug: log_debug(f"Plumber 성공 ({len(raw_text)}자)", "success")
             except: pass
 
         # (2) Fitz
-        if FITZ_AVAILABLE:
+        if (not raw_text or len(raw_text.strip()) < 5) and FITZ_AVAILABLE:
             try:
                 doc = fitz.open(stream=file_bytes, filetype="pdf")
                 if page_idx < len(doc):
-                    text = doc[page_idx].get_text()
-                    if text and len(text.strip()) > 30:
-                        if debug: log_debug(f"Fitz 성공 ({len(text)}자)", "success")
-                        return text
+                    raw_text = doc[page_idx].get_text()
+                    if raw_text and len(raw_text.strip()) > 30:
+                        if debug: log_debug(f"Fitz 성공 ({len(raw_text)}자)", "success")
             except: pass
         
         # (3) Vision OCR
-        if FITZ_AVAILABLE:
+        if (not raw_text or len(raw_text.strip()) < 30) and FITZ_AVAILABLE:
             try:
                 if debug: log_debug("이미지 변환 후 OCR 시도", "warn")
                 doc = fitz.open(stream=file_bytes, filetype="pdf")
                 if page_idx < len(doc):
                     pix = doc[page_idx].get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
-                    return api_call_vision_ocr(pix.tobytes("png"))
+                    raw_text = api_call_vision_ocr(pix.tobytes("png"))
             except Exception as e:
                 if debug: log_debug(f"변환 오류: {e}", "err")
-                
-        return ""
-    return ""
+    
+    # [최종 단계] 노이즈 제거 후 반환
+    final_text = clean_noise_text(raw_text) if raw_text else ""
+    return final_text
 
 def get_page_image_bytes(file_bytes, file_type, page_idx):
     if "image" in file_type: return file_bytes
@@ -345,8 +377,8 @@ if 'page_idx' not in st.session_state: st.session_state.page_idx = 0
 if 'file_hash' not in st.session_state: st.session_state.file_hash = None
 if 'file_bytes_cache' not in st.session_state: st.session_state.file_bytes_cache = None
 if 'start_page_offset' not in st.session_state: st.session_state.start_page_offset = 1
-# [핵심] 텍스트 에디터 상태 관리를 위한 키
-if 'editor_key' not in st.session_state: st.session_state.editor_key = 0
+# [핵심] 텍스트 에디터 키 (동적 관리)
+if 'main_editor_area' not in st.session_state: st.session_state.main_editor_area = ""
 
 st.title("📝 국어활동 AI 분석기")
 
@@ -408,11 +440,10 @@ if main_file:
         st.session_state.analysis_result = []
         st.session_state.debug_logs = []
         
-        # [핵심 해결책] 텍스트를 추출해서 세션 키에 '직접' 할당
-        extracted_text = extract_text_unified(current_bytes, main_file.type, 0)
-        st.session_state["main_editor_area"] = extracted_text # 키에 직접 값을 꽂음
-        
-        log_debug(f"파일 로드 및 텍스트 추출 완료 ({len(extracted_text)}자)", "success")
+        # [데이터 주입] 추출된 텍스트를 세션 키에 할당
+        extracted = extract_text_unified(current_bytes, main_file.type, 0)
+        st.session_state.main_editor_area = extracted
+        log_debug(f"파일 로드 및 텍스트 추출 완료 ({len(extracted)}자)", "success")
         st.rerun()
     
     file_bytes = st.session_state.file_bytes_cache
@@ -442,19 +473,18 @@ with col_v:
             with c1:
                 if st.button("◀"):
                     st.session_state.page_idx = max(0, st.session_state.page_idx - 1)
-                    # 페이지 이동 시에도 세션 키에 직접 할당
-                    st.session_state["main_editor_area"] = extract_text_unified(file_bytes, file_type, st.session_state.page_idx)
+                    st.session_state.main_editor_area = extract_text_unified(file_bytes, file_type, st.session_state.page_idx)
                     st.rerun()
             with c3:
                 if st.button("▶"):
                     st.session_state.page_idx = min(total_pages - 1, st.session_state.page_idx + 1)
-                    st.session_state["main_editor_area"] = extract_text_unified(file_bytes, file_type, st.session_state.page_idx)
+                    st.session_state.main_editor_area = extract_text_unified(file_bytes, file_type, st.session_state.page_idx)
                     st.rerun()
             with c2:
                 target = st.number_input("이동", 1, total_pages, st.session_state.page_idx+1)
                 if target-1 != st.session_state.page_idx:
                     st.session_state.page_idx = target-1
-                    st.session_state["main_editor_area"] = extract_text_unified(file_bytes, file_type, st.session_state.page_idx)
+                    st.session_state.main_editor_area = extract_text_unified(file_bytes, file_type, st.session_state.page_idx)
                     st.rerun()
             
             st.session_state.start_page_offset = st.number_input("시작 쪽수", value=st.session_state.start_page_offset)
@@ -467,7 +497,7 @@ with col_v:
 
 with col_i:
     st.info("📝 분석 내용 (수정 가능)")
-    # [핵심] value= 파라미터 제거하고 key로 상태 관리 일원화
+    # [핵심] value 파라미터 대신 key로 상태 동기화
     txt_val = st.text_area("텍스트", height=500, key="main_editor_area")
 
     if st.button("🚀 분석 실행", type="primary", use_container_width=True):
@@ -531,7 +561,7 @@ if st.session_state.analysis_result:
                 if file_bytes and "pdf" in main_file.type and st.session_state.page_idx < total_pages-1:
                     st.session_state.page_idx += 1
                     # 이동 시에도 키 직접 할당
-                    st.session_state["main_editor_area"] = extract_text_unified(file_bytes, main_file.type, st.session_state.page_idx)
+                    st.session_state.main_editor_area = extract_text_unified(file_bytes, main_file.type, st.session_state.page_idx)
                     st.session_state.analysis_result = []
                     time.sleep(0.5); st.rerun()
     with c3:
