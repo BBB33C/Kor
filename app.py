@@ -12,7 +12,7 @@ from datetime import datetime
 from collections import Counter
 
 # =========================================================
-# [0] 라이브러리 임포트 및 상태 체크 (안전장치)
+# [0] 라이브러리 임포트 및 상태 체크 (GP9 원본)
 # =========================================================
 try:
     import pdfplumber
@@ -35,7 +35,7 @@ except ImportError:
 
 # 페이지 기본 설정
 st.set_page_config(
-    page_title="국어활동 AI 분석기 (Fixed)", 
+    page_title="국어활동 AI 분석기 (Visual Debug)", 
     page_icon="📚", 
     layout="wide",
     initial_sidebar_state="expanded"
@@ -56,7 +56,7 @@ MODEL_NAME = "gemini-2.0-flash-exp"
 SHEET_NAME = "Korean_DB"
 TRUST_THRESHOLD = 3 
 
-# [CSS] 다크 모드 스타일
+# [CSS] 다크 모드 및 디버그 로그 스타일
 st.markdown("""
     <style>
         .stTextArea textarea { 
@@ -77,22 +77,36 @@ st.markdown("""
             font-size: 1.05rem;
             font-weight: 600;
         }
-        div.stButton > button {
-            font-weight: bold;
+        div.stButton > button { font-weight: bold; }
+        
+        /* 상세 디버그 로그 스타일 */
+        .log-entry {
+            font-family: 'Courier New', monospace;
+            font-size: 0.85rem;
+            padding: 4px 8px;
+            border-bottom: 1px solid #444;
+            color: #e0e0e0;
         }
-        .debug-box {
-            color: #ffa500;
-            font-size: 0.8rem;
-            font-family: monospace;
-            border-left: 2px solid #ffa500;
-            padding-left: 10px;
-            margin-bottom: 5px;
-        }
+        .log-success { color: #4caf50; }
+        .log-warn { color: #ff9800; }
+        .log-error { color: #f44336; }
+        .log-info { color: #2196f3; }
     </style>
 """, unsafe_allow_html=True)
 
+# [디버깅] 로그 저장용 세션 초기화
+if 'debug_logs' not in st.session_state: st.session_state.debug_logs = []
+
+def log_debug(msg, level="info"):
+    """화면에 과정을 출력하는 로깅 함수"""
+    if st.session_state.get('debug_mode'):
+        color_class = f"log-{level}"
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        entry = f"<div class='log-entry {color_class}'>[{timestamp}] {msg}</div>"
+        st.session_state.debug_logs.append(entry)
+
 # =========================================================
-# [2] 구글 시트 & 백업 시스템 (문법 오류 수정됨)
+# [2] 구글 시트 & 백업 시스템 (GP9 원본)
 # =========================================================
 @st.cache_resource
 def get_google_sheet_client():
@@ -111,239 +125,194 @@ def get_google_sheet_client():
 def get_sheet_data_fresh(mode_key):
     client = get_google_sheet_client()
     if not client: return None, []
-    target_sheet_name = "South_Korea" if mode_key == "SOUTH" else "North_Korea"
+    target = "South_Korea" if mode_key == "SOUTH" else "North_Korea"
     try:
-        spreadsheet = client.open(SHEET_NAME)
-        try:
-            sheet = spreadsheet.worksheet(target_sheet_name)
-        except gspread.WorksheetNotFound:
-            st.warning(f"⚠️ '{target_sheet_name}' 시트가 없어 새로 생성합니다.")
-            sheet = spreadsheet.add_worksheet(title=target_sheet_name, rows=1000, cols=20)
-            sheet.append_row(["timestamp", "original_word", "root_word", "origin", "pos", "action", "context"])
-        data = sheet.get_all_records()
-        return sheet, data
+        sh = client.open(SHEET_NAME)
+        try: ws = sh.worksheet(target)
+        except: 
+            ws = sh.add_worksheet(title=target, rows=1000, cols=20)
+            ws.append_row(["timestamp", "original_word", "root_word", "origin", "pos", "action", "context"])
+        return ws, ws.get_all_records()
     except: return None, []
 
 def send_data_with_retry(sheet_obj, data, is_multiple=False):
     if not sheet_obj: return False
-    max_retries = 3
-    for attempt in range(max_retries):
+    for _ in range(3):
         try:
-            if is_multiple:
-                clean_data = [[str(item) for item in row] for row in data]
-                sheet_obj.append_rows(clean_data)
-            else:
-                clean_data = [str(item) for item in data]
-                sheet_obj.append_row(clean_data)
+            if is_multiple: sheet_obj.append_rows([[str(i) for i in r] for r in data])
+            else: sheet_obj.append_row([str(i) for i in data])
             return True
-        except:
-            if attempt < max_retries - 1:
-                time.sleep(1)
-                continue
-            return False
+        except: time.sleep(1)
     return False
 
 def save_backup_to_cloud(mode_key, df):
     client = get_google_sheet_client()
     if not client or df is None or df.empty: return False
-    backup_sheet_name = f"Backup_{'South' if mode_key == 'SOUTH' else 'North'}"
+    tab = f"Backup_{'South' if mode_key == 'SOUTH' else 'North'}"
     try:
-        spreadsheet = client.open(SHEET_NAME)
-        try:
-            worksheet = spreadsheet.worksheet(backup_sheet_name)
-            worksheet.clear()
-        except gspread.WorksheetNotFound:
-            worksheet = spreadsheet.add_worksheet(title=backup_sheet_name, rows=1000, cols=20)
-        
-        df_str = df.fillna("").astype(str)
-        data_to_upload = [df_str.columns.values.tolist()] + df_str.values.tolist()
-        worksheet.update(data_to_upload)
+        sh = client.open(SHEET_NAME)
+        try: ws = sh.worksheet(tab); ws.clear()
+        except: ws = sh.add_worksheet(title=tab, rows=1000, cols=20)
+        ws.update([df.fillna("").astype(str).columns.tolist()] + df.fillna("").astype(str).values.tolist())
         return True
     except: return False
 
 def load_backup_from_cloud(mode_key):
     client = get_google_sheet_client()
     if not client: return None
-    backup_sheet_name = f"Backup_{'South' if mode_key == 'SOUTH' else 'North'}"
     try:
-        spreadsheet = client.open(SHEET_NAME)
-        worksheet = spreadsheet.worksheet(backup_sheet_name)
-        data = worksheet.get_all_records()
+        sh = client.open(SHEET_NAME)
+        ws = sh.worksheet(f"Backup_{'South' if mode_key == 'SOUTH' else 'North'}")
+        data = ws.get_all_records()
         return pd.DataFrame(data) if data else None
     except: return None
 
 # =========================================================
-# [3] AI 엔진 (1~7단계 + 디버깅 로그)
+# [3] AI 엔진 (1~7단계 + 디버그)
 # =========================================================
 def generate_prompt_from_sheet(sheet_data):
     if not sheet_data: return ""
     rules = []
     for row in sheet_data[-50:]:
         if row.get('action') == 'delete':
-            rules.append(f"- [삭제 규칙]: '{row.get('original_word')}' 제외")
+            rules.append(f"- [삭제]: '{row.get('original_word')}' 제외")
         elif row.get('action') in ['add', 'modify']:
-            rules.append(f"- [고정 규칙]: '{row.get('original_word')}' -> 원형:'{row.get('root_word')}', 분류:'{row.get('origin')}', 품사:'{row.get('pos')}'")
-    if rules:
-        return "\n[🚨 사용자 학습 규칙]:\n" + "\n".join(rules) + "\n"
-    return ""
+            rules.append(f"- [고정]: '{row.get('original_word')}' -> 원형:'{row.get('root_word')}', 분류:'{row.get('origin')}', 품사:'{row.get('pos')}'")
+    return "\n[사용자 규칙]:\n" + "\n".join(rules) + "\n" if rules else ""
 
 def api_call_direct(prompt, image_bytes=None):
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={API_KEY.strip()}"
     headers = {'Content-Type': 'application/json'}
     parts = [{"text": prompt}]
     if image_bytes:
-        b64_image = base64.b64encode(image_bytes).decode('utf-8')
-        parts.append({"inline_data": {"mime_type": "image/png", "data": b64_image}})
-    
-    data = {
-        "contents": [{"parts": parts}],
-        "generationConfig": {
-            "temperature": 0.1, "maxOutputTokens": 8192
-        }
-    }
+        parts.append({"inline_data": {"mime_type": "image/png", "data": base64.b64encode(image_bytes).decode('utf-8')}})
     
     try:
-        response = requests.post(url, headers=headers, json=data, timeout=300)
-        if response.status_code != 200: return None
-        result_json = response.json()
-        if 'candidates' in result_json:
-            return result_json['candidates'][0]['content']['parts'][0]['text']
+        log_debug("AI API 요청 전송...", "info")
+        res = requests.post(url, headers=headers, json={"contents": [{"parts": parts}]}, timeout=300)
+        if res.status_code == 200:
+            log_debug("AI 응답 수신 성공", "success")
+            return res.json()['candidates'][0]['content']['parts'][0]['text']
+        else:
+            log_debug(f"AI API Error: {res.text}", "error")
+            return None
+    except Exception as e:
+        log_debug(f"AI Connection Fail: {e}", "error")
         return None
-    except: return None
 
 def api_call_vision_ocr(image_bytes):
+    log_debug("Vision OCR API 호출 시작", "info")
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={API_KEY.strip()}"
     headers = {'Content-Type': 'application/json'}
-    base64_image = base64.b64encode(image_bytes).decode('utf-8')
-    prompt_text = "이 이미지에 있는 텍스트를 보이는 그대로 추출해주세요. 말풍선, 단락은 줄바꿈으로 구분."
-    data = {"contents": [{"parts": [{"text": prompt_text}, {"inline_data": {"mime_type": "image/png", "data": base64_image}}]}], "generationConfig": {"temperature": 0.1}}
+    b64 = base64.b64encode(image_bytes).decode('utf-8')
+    data = {"contents": [{"parts": [{"text": "텍스트만 추출해. 줄바꿈 유지.", "inline_data": {"mime_type": "image/png", "data": b64}}]}]}
     try:
-        response = requests.post(url, headers=headers, json=data, timeout=300)
-        if response.status_code == 200:
-            return response.json()['candidates'][0]['content']['parts'][0]['text']
+        res = requests.post(url, headers=headers, json=data, timeout=300)
+        if res.status_code == 200:
+            txt = res.json()['candidates'][0]['content']['parts'][0]['text']
+            log_debug(f"OCR 성공: {len(txt)}자 추출", "success")
+            return txt
+        log_debug(f"OCR 실패 (Status {res.status_code})", "error")
         return ""
-    except: return ""
-
-def split_text_smartly(text, chunk_size=1000):
-    sentences = re.split(r'(?<=[.?!])\s+|\\n', text)
-    chunks = []
-    current_chunk = ""
-    for sentence in sentences:
-        if len(current_chunk) + len(sentence) < chunk_size:
-            current_chunk += sentence + " "
-        else:
-            if current_chunk: chunks.append(current_chunk.strip())
-            current_chunk = sentence + " "
-    if current_chunk: chunks.append(current_chunk.strip())
-    return chunks
+    except Exception as e:
+        log_debug(f"OCR 예외 발생: {e}", "error")
+        return ""
 
 def get_analysis_hybrid(text, image_bytes, sheet_data, mode_key):
-    learning_prompt = generate_prompt_from_sheet(sheet_data)
-    mode_desc = "대한민국 표준어" if mode_key == "SOUTH" else "북한 문화어(두음법칙 미적용)"
-    
     prompt = f"""
-    당신은 '{mode_desc}' 형태소 분석 전문가입니다.
-    {learning_prompt}
-    
-    [분석 단계 (Chain of Thought)]
-    1. **문맥 파악**: '{mode_desc}' 규칙 적용.
-    2. **형태소 분리**: 조사, 어미 제거.
-    3. **'하다' 용언 처리 (중요)**: '명사+하다'는 문맥에 따라 동사/명사로 판단.
-    4. **품사 필터링**: 명사, 동사, 형용사, 부사, 관형사, 대명사만 남김.
-    5. **출력**: JSON 포맷.
-
+    당신은 '{"대한민국 표준어" if mode_key=="SOUTH" else "북한 문화어"}' 형태소 분석 전문가입니다.
+    {generate_prompt_from_sheet(sheet_data)}
+    [Chain of Thought]
+    1. 문맥 파악. 2. 조사/어미 제거. 3. '하다' 용언 처리(동사/명사 구분). 4. 품사 필터링(명사/동사/형용사/부사/관형사/대명사).
+    5. 출력: JSON 포맷 엄수.
     [JSON 예시]
-    [
-        {{"original_word": "배를", "root_word": "배", "origin": "고", "pos": "명사"}},
-        {{"original_word": "공부했다", "root_word": "공부", "origin": "한", "pos": "명사"}}
-    ]
+    [{{"original_word": "배를", "root_word": "배", "origin": "고", "pos": "명사"}}]
     """
     
     if image_bytes:
-        full_prompt = f"{prompt}\n\n(이미지 OCR 결과 참고)"
-        res_text = api_call_direct(full_prompt, image_bytes)
-        if res_text:
-            try:
-                match = re.search(r'\[.*\]', res_text, re.DOTALL)
-                if match: return json.loads(match.group())
-                s = res_text.find('[')
-                e = res_text.rfind(']') + 1
-                if s != -1 and e != -1: return json.loads(res_text[s:e])
-            except: return []
-        return []
+        log_debug("이미지 모드로 AI 분석 요청", "info")
+        res = api_call_direct(prompt + "\n(이미지 OCR 참고)", image_bytes)
     else:
-        chunks = split_text_smartly(text)
-        all_results = []
+        log_debug("텍스트 모드로 AI 분석 요청 (Chunking)", "info")
+        chunks = [text[i:i+1000] for i in range(0, len(text), 1000)]
+        res_list = []
         for chunk in chunks:
-            full_prompt = f"{prompt}\n\n[분석할 텍스트]:\n{chunk}"
-            res_text = api_call_direct(full_prompt)
-            if res_text:
-                try:
-                    match = re.search(r'\[.*\]', res_text, re.DOTALL)
-                    if match: all_results.extend(json.loads(match.group()))
-                    else:
-                        s = res_text.find('[')
-                        e = res_text.rfind(']') + 1
-                        if s != -1 and e != -1: all_results.extend(json.loads(res_text[s:e]))
-                except: pass
-            time.sleep(0.1) 
-        return all_results
+            r = api_call_direct(prompt + f"\n[텍스트]:\n{chunk}")
+            if r: res_list.append(r)
+        res = json.dumps([item for sublist in [json.loads(x) for x in res_list if x] for item in sublist]) if res_list else "[]"
+
+    if res:
+        try:
+            match = re.search(r'\[.*\]', res, re.DOTALL)
+            return json.loads(match.group()) if match else []
+        except: 
+            log_debug("JSON 파싱 실패", "error")
+            return []
+    return []
 
 # =========================================================
-# [4] 파일 처리 및 텍스트 추출 (핵심: BytesIO 격리 + 디버그)
+# [4] 파일 처리 및 텍스트 추출 (Visual Debugging + Bytes)
 # =========================================================
 def extract_text_unified(file_bytes, file_type, page_idx):
     """
-    [핵심 수정] 파일 바이트 데이터를 직접 받아 처리.
-    디버깅 모드일 경우 로그를 출력합니다.
+    [디버그 강화] 파일 추출 프로세스를 단계별로 기록하고 화면에 표시
     """
-    debug = st.session_state.get('debug_mode', False)
-    if debug: st.markdown(f"<div class='debug-box'>🔍 [Debug] 추출 시작 | Type: {file_type} | Page: {page_idx} | Bytes: {len(file_bytes)}</div>", unsafe_allow_html=True)
-
+    log_debug(f"--- 텍스트 추출 시작 (타입: {file_type}, 페이지: {page_idx}, 크기: {len(file_bytes)}bytes) ---", "info")
+    
     if "image" in file_type:
-        if debug: st.markdown("<div class='debug-box'>👉 이미지 파일 -> Vision OCR 호출</div>", unsafe_allow_html=True)
+        log_debug("이미지 파일 감지 -> Vision OCR로 직행", "info")
         return api_call_vision_ocr(file_bytes)
         
     elif "pdf" in file_type:
         text = ""
-        # 1. pdfplumber (BytesIO 래핑)
+        # 1. pdfplumber 시도
         if PLUMBER_AVAILABLE:
             try:
-                if debug: st.markdown("<div class='debug-box'>👉 1차 시도: PDFPlumber</div>", unsafe_allow_html=True)
+                log_debug("1단계: PDFPlumber 시도", "info")
                 with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
                     if page_idx < len(pdf.pages):
                         page = pdf.pages[page_idx]
                         try:
-                            # GP9 크롭 로직
+                            # GP9 크롭
                             crop_box = (0, page.height * 0.05, page.width, page.height * 0.9)
                             text = page.crop(crop_box).extract_text()
-                        except: text = page.extract_text()
-                if debug: st.markdown(f"<div class='debug-box'>   -> Plumber 결과: {len(text) if text else 0}자</div>", unsafe_allow_html=True)
+                            log_debug(f"Plumber 크롭 추출 성공: {len(text) if text else 0}자", "success")
+                        except: 
+                            text = page.extract_text()
+                            log_debug(f"Plumber 일반 추출 성공: {len(text) if text else 0}자", "success")
+                    else:
+                        log_debug(f"페이지 인덱스 초과 (Max: {len(pdf.pages)})", "error")
             except Exception as e:
-                if debug: st.markdown(f"<div class='debug-box'>❌ Plumber Error: {e}</div>", unsafe_allow_html=True)
+                log_debug(f"Plumber 오류: {e}", "error")
 
-        # 2. Fitz (BytesIO 래핑)
+        # 2. Fitz 시도
         if (not text or len(text.strip()) < 5) and FITZ_AVAILABLE:
             try:
-                if debug: st.markdown("<div class='debug-box'>👉 2차 시도: PyMuPDF (Fitz)</div>", unsafe_allow_html=True)
+                log_debug("2단계: Fitz(PyMuPDF) 시도 (Plumber 실패 또는 내용 부족)", "warn")
                 doc = fitz.open(stream=file_bytes, filetype="pdf")
-                if page_idx < len(doc): text = doc[page_idx].get_text()
-                if debug: st.markdown(f"<div class='debug-box'>   -> Fitz 결과: {len(text) if text else 0}자</div>", unsafe_allow_html=True)
+                if page_idx < len(doc): 
+                    text = doc[page_idx].get_text()
+                    log_debug(f"Fitz 추출 결과: {len(text)}자", "success")
             except Exception as e:
-                if debug: st.markdown(f"<div class='debug-box'>❌ Fitz Error: {e}</div>", unsafe_allow_html=True)
+                log_debug(f"Fitz 오류: {e}", "error")
         
-        # 3. Vision OCR (최후의 수단)
+        # 3. Vision OCR 시도
         if (not text or len(text.strip()) < 30) and FITZ_AVAILABLE:
             try:
-                if debug: st.markdown("<div class='debug-box'>👉 3차 시도: Vision OCR (이미지 변환)</div>", unsafe_allow_html=True)
+                log_debug("3단계: Vision OCR 시도 (텍스트 레이어 없음 의심)", "warn")
                 doc = fitz.open(stream=file_bytes, filetype="pdf")
                 if page_idx < len(doc):
                     pix = doc[page_idx].get_pixmap(matrix=fitz.Matrix(2, 2))
+                    log_debug("PDF -> 이미지 변환 완료, OCR 요청...", "info")
                     text = api_call_vision_ocr(pix.tobytes("png"))
-                if debug: st.markdown(f"<div class='debug-box'>   -> Vision 결과: {len(text) if text else 0}자</div>", unsafe_allow_html=True)
             except Exception as e:
-                if debug: st.markdown(f"<div class='debug-box'>❌ Vision Error: {e}</div>", unsafe_allow_html=True)
-                
+                log_debug(f"Vision 변환 오류: {e}", "error")
+        
+        if not text:
+            log_debug("❌ 모든 추출 방식 실패. 빈 텍스트 반환.", "error")
+        else:
+            log_debug(f"✅ 최종 추출 완료: {len(text)}자", "success")
+            
         return text if text else ""
     return ""
 
@@ -438,8 +407,11 @@ with st.sidebar:
     MODE_KEY = "SOUTH" if "표준어" in mode else "NORTH"
     
     st.markdown("---")
-    # [디버깅 모드] 체크박스 추가
-    st.session_state.debug_mode = st.checkbox("🛠️ 디버깅 모드 (오류 확인용)")
+    # [디버깅 모드] 체크박스
+    debug_checked = st.checkbox("🛠️ 디버깅 모드 (상세 로그 보기)")
+    if debug_checked != st.session_state.debug_mode:
+        st.session_state.debug_mode = debug_checked
+        st.rerun()
     
     if 'last_mode' not in st.session_state: st.session_state.last_mode = MODE_KEY
     if st.session_state.last_mode != MODE_KEY:
@@ -482,7 +454,7 @@ st.subheader("1. 분석 자료 입력")
 main_file = st.file_uploader("PDF/이미지 파일", type=['pdf', 'png', 'jpg'])
 
 if main_file:
-    # [핵심] 파일 전체를 바이트로 읽어 캐싱 (File Pointer 문제 원천 차단)
+    # [핵심] 파일 전체 바이트 읽기
     current_bytes = main_file.getvalue()
     file_hash = hashlib.md5(current_bytes).hexdigest()
     
@@ -491,6 +463,9 @@ if main_file:
         st.session_state.file_bytes_cache = current_bytes
         st.session_state.page_idx = 0
         st.session_state.analysis_result = []
+        st.session_state.debug_logs = [] # 로그 초기화
+        log_debug(f"새 파일 업로드 감지: {main_file.name}", "info")
+        # 추출 시 bytes 전달
         st.session_state.editor_text_content = extract_text_unified(current_bytes, main_file.type, 0)
         st.rerun()
     
@@ -498,6 +473,12 @@ if main_file:
     file_type = main_file.type
 else:
     file_bytes = None
+
+# [디버그 로그 표시 창]
+if st.session_state.debug_mode and st.session_state.debug_logs:
+    with st.expander("🔍 상세 처리 로그 (실시간)", expanded=True):
+        for log in st.session_state.debug_logs:
+            st.markdown(log, unsafe_allow_html=True)
 
 total_pages = 1
 if file_bytes and "pdf" in main_file.type and FITZ_AVAILABLE:
@@ -603,10 +584,9 @@ if st.session_state.analysis_result:
         if st.button("💾 저장+이동 (▶)"):
             if save_logic(edited, page_str, sheet, txt_val):
                 st.toast("저장됨")
-                if file_bytes and "pdf" in file_type and st.session_state.page_idx < total_pages-1:
+                if file_bytes and "pdf" in main_file.type and st.session_state.page_idx < total_pages-1:
                     st.session_state.page_idx += 1
-                    # 페이지 이동 시에도 bytes 전달
-                    st.session_state.editor_text_content = extract_text_unified(file_bytes, file_type, st.session_state.page_idx)
+                    st.session_state.editor_text_content = extract_text_unified(file_bytes, main_file.type, st.session_state.page_idx)
                     st.session_state.analysis_result = []
                     time.sleep(0.5); st.rerun()
     with c3:
