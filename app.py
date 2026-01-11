@@ -35,7 +35,7 @@ except ImportError:
 
 # 페이지 기본 설정
 st.set_page_config(
-    page_title="국어활동 AI 분석기 (Final Perfect)", 
+    page_title="국어활동 AI 분석기 (Real Complete)", 
     page_icon="📚", 
     layout="wide",
     initial_sidebar_state="expanded"
@@ -152,7 +152,7 @@ def load_backup_from_cloud(mode_key):
     except: return None
 
 # =========================================================
-# [3] AI 엔진 (기능 보존: 문맥 분석 + 스마트 분할 + 괄호 구분)
+# [3] AI 엔진 (기능 보존: 문맥 분석 + 스마트 분할 + 동음이의어/인명/지명 구분)
 # =========================================================
 def generate_prompt_from_sheet(sheet_data):
     if not sheet_data: return ""
@@ -202,6 +202,7 @@ def split_text_smartly(text, chunk_size=1000):
     return chunks
 
 def get_analysis_hybrid(text, image_bytes, sheet_data, mode_key):
+    # [핵심] 동음이의어(괄호) 및 인명/지명(고유명사) 구분 프롬프트 추가
     prompt = f"""
     당신은 '{"대한민국 표준어" if mode_key=="SOUTH" else "북한 문화어"}' 형태소 분석 전문가입니다.
     {generate_prompt_from_sheet(sheet_data)}
@@ -212,10 +213,12 @@ def get_analysis_hybrid(text, image_bytes, sheet_data, mode_key):
     3. **'하다' 용언 처리**: 문맥에 따라 동사/명사 판단.
     4. **품사 필터링**: 명사, 동사, 형용사, 부사, 관형사, 대명사만 남김.
     5. **동음이의어 처리**: 뜻이 다르면 원형 뒤에 (의미)를 붙여 구분 (예: 배(과일), 배(선박)).
-    6. **출력**: JSON 포맷 엄수.
+    6. **인명/지명 구분**: 사람 이름이나 지역 이름은 품사를 '고유명사'로 표기하거나 원형 뒤에 (인명)/(지명)을 붙여 구분.
+    7. **출력**: JSON 포맷 엄수.
 
     [JSON 예시]
-    [{{"original_word": "배를", "root_word": "배(과일)", "origin": "고", "pos": "명사"}}]
+    [{{"original_word": "배를", "root_word": "배(과일)", "origin": "고", "pos": "명사"}}, 
+     {{"original_word": "서울에", "root_word": "서울", "origin": "한", "pos": "고유명사"}}]
     """
     
     if image_bytes:
@@ -320,7 +323,6 @@ def merge_master_data(old_df, new_df):
     if old_df is None or old_df.empty: return new_df
     
     key_cols = ['자료', '구분']
-    # Outer join으로 합침
     merged = pd.merge(old_df, new_df, on=key_cols, how='outer', suffixes=('_old', '_new'))
     
     page_cols_old = [c for c in old_df.columns if c.startswith('쪽수')]
@@ -331,17 +333,14 @@ def merge_master_data(old_df, new_df):
         new_row = {k: row[k] for k in key_cols}
         pages = []
         
-        # 기존 데이터 쪽수 보존
         for c in page_cols_old:
             val = row.get(f"{c}_old", row.get(c))
             if pd.notna(val) and str(val) != 'nan': pages.append(str(val))
             
-        # 새 데이터 쪽수 추가
         for c in page_cols_new:
             val = row.get(f"{c}_new", row.get(c))
             if pd.notna(val) and str(val) != 'nan': pages.append(str(val))
             
-        # 쪽수 컬럼 재할당
         for i, p in enumerate(pages):
             new_row[f"쪽수{i+1}"] = p
             
@@ -350,7 +349,6 @@ def merge_master_data(old_df, new_df):
     result_df = pd.DataFrame(final_rows)
     result_df['출연횟수'] = result_df.apply(calc_freq, axis=1) # 횟수 재계산
     
-    # 정렬 (고, 순, 한, 외, 혼)
     sort_map = {'고':1, '순':1, '한':2, '외':3, '혼':4}
     result_df['sk'] = result_df['구분'].map(sort_map).fillna(5)
     result_df = result_df.sort_values(['sk', '자료']).drop('sk', axis=1)
@@ -366,15 +364,14 @@ def save_logic(edited_df, page_str, sheet_obj, context_text):
         if logs: send_data_with_retry(sheet_obj, logs, True)
 
     valid = edited_df[edited_df['delete_check'] == False].copy()
-    # [수정] 횟수 텍스트 파싱 강화 ("1회", "5" 모두 처리)
     valid['n_cnt'] = valid['count'].apply(lambda x: int(re.sub(r'[^0-9]', '', str(x))) if re.search(r'\d', str(x)) else 1)
     
+    # 동음이의어/인명지명 구분 위해 groupby 키에 pos 추가
     agg = valid.groupby(['root_word', 'origin', 'pos'], as_index=False).agg({'n_cnt': 'sum'})
     
     temp_rows = []
     for _, item in agg.iterrows():
         root, origin, cnt = item['root_word'], clean_val(item['origin']), item['n_cnt']
-        # 쪽수 표시 형식: "139_2" (2회 이상) 또는 "139" (1회)
         val = f"{page_str}_{cnt}" if cnt > 1 else page_str
         temp_rows.append({'구분': origin, '자료': root, '쪽수1': val})
     
@@ -419,7 +416,6 @@ with st.sidebar:
         if st.button("병합하기"):
             try:
                 loaded = pd.read_excel(up_excel)
-                # [해결] 스마트 병합 로직 적용 (덮어쓰기 방지)
                 if st.session_state.master_df is not None:
                     st.session_state.master_df = merge_master_data(st.session_state.master_df, loaded)
                 else:
@@ -427,7 +423,6 @@ with st.sidebar:
                 st.success("안전하게 병합되었습니다."); time.sleep(1); st.rerun()
             except Exception as e: st.error(f"오류: {e}")
 
-    # [요청 반영] 불필요한 버튼 삭제, 복구만 남김
     if st.button("🔄 클라우드 복구"):
         r = load_backup_from_cloud(MODE_KEY)
         if r is not None: st.session_state.master_df = r; st.rerun()
@@ -435,9 +430,8 @@ with st.sidebar:
     with st.expander("➕ 수동 추가"):
         with st.form("manual"):
             o = st.text_input("원본"); r = st.text_input("원형")
-            org = st.selectbox("분류", ["고","한","외","혼"]); p = st.selectbox("품사", ["명사","동사","형용사","부사","관형사","대명사"])
+            org = st.selectbox("분류", ["고","한","외","혼"]); p = st.selectbox("품사", ["명사","동사","형용사","부사","관형사","대명사","고유명사"]) # 고유명사 추가
             if st.form_submit_button("추가"): 
-                # [해결] 수동 추가 시 화면 테이블에 즉시 반영
                 new_entry = {
                     "delete_check": False, "count": "1회", "original_word": o,
                     "root_word": r, "origin": f"🔵 {org}" if org=='고' else org, 
@@ -507,7 +501,6 @@ with col_v:
                     st.session_state.main_editor_area = extract_text_unified(file_bytes, main_file.type, st.session_state.page_idx)
                     st.rerun()
             
-            # [복구] 쪽수 오프셋 및 표시
             st.session_state.start_page_offset = st.number_input("시작 쪽수(오프셋)", value=st.session_state.start_page_offset)
             page_str = str(st.session_state.page_idx + st.session_state.start_page_offset)
             st.caption(f"(현재 {st.session_state.page_idx+1}쪽 / 총 {total_pages}쪽) ➡️ 저장: {page_str}쪽")
@@ -532,7 +525,6 @@ with col_i:
                 om = {'고':'🔵 고', '한':'🟢 한', '외':'🔴 외', '혼':'🟣 혼'}
                 pm = {'명사':'📦 명사', '동사':'🏃 동사', '형용사':'🎨 형용사', '부사':'⚡ 부사', '관형사':'🔍 관형사', '대명사':'👤 대명사'}
                 
-                # [해결] 횟수 계산 시 (원형, 분류, 품사) 튜플을 키로 사용 -> 동음이의어(괄호) 구분
                 cnts = Counter([(r.get('root_word', ''), r.get('origin', '혼'), r.get('pos', '명사')) for r in res])
                 seen = set()
                 
@@ -546,7 +538,7 @@ with col_i:
                     if key not in seen:
                         proc.append({
                             "delete_check": False,
-                            "count": f"{cnts[key]}회", # 정확한 횟수 매핑
+                            "count": f"{cnts[key]}회", 
                             "original_word": row,
                             "root_word": root,
                             "origin": om.get(ro, ro),
@@ -558,20 +550,18 @@ with col_i:
 if st.session_state.analysis_result:
     st.divider()
     st.subheader("2. 결과 확인")
-    # [해결] key 바인딩으로 수정 상태 유지
     edited = st.data_editor(
         pd.DataFrame(st.session_state.analysis_result),
         column_config={
             "delete_check": st.column_config.CheckboxColumn("삭제"),
             "origin": st.column_config.SelectboxColumn("분류", options=["🔵 고", "🟢 한", "🔴 외", "🟣 혼"]),
-            "pos": st.column_config.SelectboxColumn("품사", options=["📦 명사", "🏃 동사", "🎨 형용사", "⚡ 부사", "🔍 관형사", "👤 대명사"])
+            "pos": st.column_config.SelectboxColumn("품사", options=["📦 명사", "🏃 동사", "🎨 형용사", "⚡ 부사", "🔍 관형사", "👤 대명사", "고유명사"]) # 고유명사 옵션 추가
         },
         num_rows="dynamic",
         use_container_width=True,
         key="editor_key"
     )
     
-    # 수정된 데이터 즉시 세션 동기화
     if not edited.equals(pd.DataFrame(st.session_state.analysis_result)):
         st.session_state.analysis_result = edited.to_dict('records')
     
