@@ -467,8 +467,11 @@ elif st.session_state.step == 2:
                 txt_input = st.text_area("에디터", value=st.session_state.extracted_text, height=500, label_visibility="collapsed")
                 st.session_state.extracted_text = txt_input
                 
-                # 버튼 키 추가 (중복 방지)
                 if st.button("🚀 분석 실행", type="primary", use_container_width=True, key="btn_run_file"):
+                    if not txt_input.strip():
+                        st.warning("⚠️ 분석할 텍스트가 비어있습니다. 파일을 확인해주세요.")
+                        st.stop()
+
                     with st.spinner("AI 분석 중..."):
                         s_data = get_sheet_data_fresh(st.session_state.mode_key)[1]
                         send_img = st.session_state.file_bytes if len(txt_input) < 50 else None
@@ -480,9 +483,12 @@ elif st.session_state.step == 2:
                         pm = {'명사':'📦 명사', '동사':'🏃 동사', '형용사':'🎨 형용사', '부사':'⚡ 부사', '관형사':'🔍 관형사', '대명사':'👤 대명사'}
                         
                         for r in res:
+                            o_word = r.get('original_word', '').strip()
+                            if not o_word: continue # 빈 단어 건너뛰기
+
                             key = (r.get('root_word',''), r.get('origin','혼'), r.get('pos','명사'))
                             if key not in temp_dict: temp_dict[key] = []
-                            temp_dict[key].append(r.get('original_word',''))
+                            temp_dict[key].append(o_word)
                             
                         for (root, origin, pos), origs in temp_dict.items():
                             cnts = Counter(origs)
@@ -502,9 +508,13 @@ elif st.session_state.step == 2:
 
     with tab2:
         direct_txt = st.text_area("텍스트 입력", height=400)
-        # (Direct) 삭제 및 버튼 키 추가
+        # [수정] (Direct) 삭제
         if st.button("🚀 분석 실행", type="primary", key="btn_run_direct"):
             st.session_state.extracted_text = direct_txt
+            if not direct_txt.strip():
+                st.warning("⚠️ 분석할 텍스트를 입력해주세요.")
+                st.stop()
+
             with st.spinner("AI 분석 중..."):
                 s_data = get_sheet_data_fresh(st.session_state.mode_key)[1]
                 res = get_analysis_hybrid(direct_txt, None, s_data, st.session_state.mode_key)
@@ -514,9 +524,13 @@ elif st.session_state.step == 2:
                 om = {'고':'🔵 고', '한':'🟢 한', '외':'🔴 외', '혼':'🟣 혼'}
                 pm = {'명사':'📦 명사', '동사':'🏃 동사', '형용사':'🎨 형용사', '부사':'⚡ 부사', '관형사':'🔍 관형사', '대명사':'👤 대명사'}
                 for r in res:
+                    o_word = r.get('original_word', '').strip()
+                    if not o_word: continue # 빈 단어 건너뛰기
+
                     key = (r.get('root_word',''), r.get('origin','혼'), r.get('pos','명사'))
                     if key not in temp_dict: temp_dict[key] = []
-                    temp_dict[key].append(r.get('original_word',''))
+                    temp_dict[key].append(o_word)
+
                 for (root, origin, pos), origs in temp_dict.items():
                     cnts = Counter(origs)
                     fmt_orig = ", ".join([f"{w}({c})" for w, c in cnts.items()])
@@ -538,7 +552,6 @@ elif st.session_state.step == 2:
 elif st.session_state.step == 3:
     st.header("📊 분석 결과 확인")
     
-    # [수정된 부분] st.dialog 사용 (정식 함수)
     @st.dialog("➕ 단어 추가")
     def add_manual_item():
         with st.form("add_form"):
