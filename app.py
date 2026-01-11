@@ -262,7 +262,7 @@ def save_logic_with_learning():
     save_backup_to_cloud(st.session_state.mode_key, st.session_state.master_df)
 
 # =========================================================
-# [4] AI 분석 및 이미지 최적화 처리 (오류 해결 핵심 로직)
+# [4] AI 분석 및 이미지 최적화 처리
 # =========================================================
 def clean_raw_text(text):
     text = re.sub(r'.*\.indd.*', '', text)
@@ -276,15 +276,12 @@ def process_image_for_api(image_bytes):
     """[해결책 적용] 이미지를 명시적으로 PIL PNG로 변환하여 에러 방지"""
     if not image_bytes: return None
     try:
-        # 바이트 데이터를 바이너리 스트림으로 감싸서 열기
         img_io = io.BytesIO(image_bytes)
         img = Image.open(img_io)
         
-        # RGB 모드로 강제 변환 (RGBA 등 멀티채널 오류 방지)
         if img.mode != "RGB":
             img = img.convert("RGB")
         
-        # 해상도 최적화 (Gemini API 입력 규격 준수)
         if max(img.size) > 2000:
             img.thumbnail((2000, 2000), Image.Resampling.LANCZOS)
             
@@ -292,7 +289,6 @@ def process_image_for_api(image_bytes):
         img.save(output, format="PNG")
         return output.getvalue()
     except Exception as e:
-        # 이미지 식별 오류 발생 시 로그만 남기고 텍스트만 전송할 수 있게 함
         if "debug_log" in st.session_state:
             st.session_state.debug_log += f"이미지 전처리 경고 (무시됨): {str(e)}\n"
         return None
@@ -380,14 +376,13 @@ def run_analysis_action(txt, img_bytes=None):
         5. **개체명 인식 (인명/지명)**: 성함은 원형 뒤에 '(이름)', 지역 명칭은 '(지명)'을 표기하십시오. (예: 지혜(이름), 서울(지명))
         
         [어종 판별]
-        한자 기반 단어는 '한'으로, 순우리말은 '고', 서구 유래어는 '외'로 분류하십시오.
+        한자 기반 단어(학교, 분석 등)는 '한'으로, 순우리말은 '고', 서구 유래어는 '외'로 분류하십시오.
         
         [출력 양식: 반드시 한글 키 JSON 리스트]
         원본, 원형, 분류(고/한/외/혼), 품사(명사/동사/형용사/부사/관형사/대명사/감탄사)
         """
         
         raw, status = api_call_direct(prompt + f"\n[분석 대상]:\n{txt[:5000]}", img_bytes)
-        # [해결책] 세션 상태에 AI 응답 강제 저장 및 유효성 검사
         st.session_state.last_raw_response = raw if raw else f"No response (Status: {status})"
         st.session_state.debug_log += f"API 상태: {status}\nAI 응답 길이: {len(raw) if raw else 0}\n"
         
@@ -495,7 +490,7 @@ elif st.session_state.step == 2:
     with st.expander("⚙️ 분석 환경 설정 (페이지 쪽수 설정)", expanded=True):
         st.session_state.start_offset = st.number_input("도서 1쪽의 실제 숫자 (시작 쪽수 설정)", value=st.session_state.start_offset)
         actual_p = st.session_state.page_idx + st.session_state.start_offset
-        st.markdown(f"<div class='info-card'>💾 <b>저장 위치 미리보기:</b> 현재 작업 중인 페이지는 엑셀의 <b>'{actual_p}쪽'</b>으로 기록됩니다.</div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='info-card'>💾 <b>저장 위치 미리보기:</b> 현재 페이지 분석 시 엑셀의 <b>'{actual_p}쪽'</b>으로 기록됩니다.</div>", unsafe_allow_html=True)
 
     input_method = st.radio("방식", ["📄 파일 분석", "✍️ 직접 입력"], horizontal=True, index=st.session_state.current_tab_idx, label_visibility="collapsed")
 
@@ -560,15 +555,16 @@ elif st.session_state.step == 3:
     if st.session_state.debug_mode:
         with st.expander("🛠️ [정밀 디버깅] 분석 프로세스 로그", expanded=True):
             st.markdown(f"<div class='debug-box'>{st.session_state.get('debug_log', 'No log available')}</div>", unsafe_allow_html=True)
-            # TypeError 방지를 위한 last_raw_response 유효성 검사
+            # TypeError 방지를 위한 세션 데이터 보호 처리
             raw_data = st.session_state.get('last_raw_response', '')
-            if raw_data:
+            if raw_data and isinstance(raw_data, str):
                 st.code(raw_data, language="json", label="AI 응답 원본")
             else:
-                st.info("AI 응답 데이터가 비어있습니다.")
+                st.info("AI 응답 데이터가 문자열 형식이 아니거나 비어있습니다.")
 
-    with st.expander("📝 분석 대상 원문 확인"):
-        st.text_area("원문", value=st.session_state.extracted_text, height=200, disabled=True)
+    # [수정 반영] 분석 대상 원문 확인 영역 높이 대폭 확장 (가시성 개선)
+    with st.expander("📝 분석 대상 원문 확인", expanded=True):
+        st.text_area("원문 (비교 확인용)", value=st.session_state.extracted_text, height=500, disabled=True)
 
     dlg_func = st.dialog if hasattr(st, "dialog") else st.experimental_dialog
     @dlg_func("➕ 단어 직접 추가")
@@ -613,6 +609,9 @@ elif st.session_state.step == 3:
                 save_logic_with_learning(); st.session_state.is_finished = True; st.balloons(); st.rerun()
     else:
         st.success("✅ 모든 분석 데이터가 성공적으로 통합되었습니다!")
+        actual_p = st.session_state.page_idx + st.session_state.start_offset
+        st.info(f"📍 현재 페이지 데이터는 마스터 엑셀의 **'{actual_p}쪽'**으로 성공적으로 합쳐졌습니다.")
+        
         fname = f"국어활동_결과_{st.session_state.mode_key}_{datetime.now().strftime('%m%d_%H%M')}.xlsx"
         buf = io.BytesIO()
         with pd.ExcelWriter(buf, engine='openpyxl') as w: 
