@@ -36,7 +36,7 @@ if 'extracted_text' not in st.session_state: st.session_state.extracted_text = "
 if 'debug_mode' not in st.session_state: st.session_state.debug_mode = False
 
 # =========================================================
-# [1] 디자인: CSS 매직
+# [1] 디자인: CSS 매직 (다크모드 고정, 네온 효과)
 # =========================================================
 if st.session_state.step == 0:
     st.markdown("""
@@ -203,7 +203,7 @@ def get_analysis_hybrid(text, image_bytes, sheet_data, mode_key):
     2. 품사: 명사, 동사, 형용사, 부사, 관형사, 대명사, 고유명사.
     3. **동음이의어: 원형 뒤에 괄호로 뜻 구분 (필수).** (예: 배(과일), 배(선박))
     4. **인명/지명: 원형 뒤에 (이름)/(지명) 표기 (필수).** (예: 지혜(이름), 서울(지명))
-    5. 출력: JSON 포맷.
+    5. 출력: JSON 포맷. (반드시 빈 리스트 []가 아닌 유효한 데이터를 포함할 것)
     """
     if image_bytes:
         try: return json.loads(re.search(r'\[.*\]', api_call_direct(prompt + "\n(OCR 참고)", image_bytes), re.DOTALL).group())
@@ -483,16 +483,20 @@ elif st.session_state.step == 2:
                         pm = {'명사':'📦 명사', '동사':'🏃 동사', '형용사':'🎨 형용사', '부사':'⚡ 부사', '관형사':'🔍 관형사', '대명사':'👤 대명사'}
                         
                         for r in res:
+                            # [버그 수정] 빈 데이터(Empty String) 필터링 강화
                             o_word = r.get('original_word', '').strip()
-                            if not o_word: continue # 빈 단어 건너뛰기
+                            r_word = r.get('root_word', '').strip()
+                            
+                            # 원본이나 원형이 비어있으면 건너뜀 (유령 데이터 방지)
+                            if not o_word or not r_word: continue
 
-                            key = (r.get('root_word',''), r.get('origin','혼'), r.get('pos','명사'))
+                            key = (r_word, r.get('origin','혼'), r.get('pos','명사'))
                             if key not in temp_dict: temp_dict[key] = []
                             temp_dict[key].append(o_word)
                             
                         for (root, origin, pos), origs in temp_dict.items():
                             cnts = Counter(origs)
-                            fmt_orig = ", ".join([f"{w}({c})" for w, c in cnts.items()])
+                            fmt_orig = ", ".join([f"{w}({c})" for w, c in cnts.items() if w]) # 빈 문자열 포맷 방지
                             proc.append({
                                 "delete_check": False,
                                 "count": f"{sum(cnts.values())}회",
@@ -525,15 +529,16 @@ elif st.session_state.step == 2:
                 pm = {'명사':'📦 명사', '동사':'🏃 동사', '형용사':'🎨 형용사', '부사':'⚡ 부사', '관형사':'🔍 관형사', '대명사':'👤 대명사'}
                 for r in res:
                     o_word = r.get('original_word', '').strip()
-                    if not o_word: continue # 빈 단어 건너뛰기
+                    r_word = r.get('root_word', '').strip()
+                    if not o_word or not r_word: continue # 빈 데이터 차단
 
-                    key = (r.get('root_word',''), r.get('origin','혼'), r.get('pos','명사'))
+                    key = (r_word, r.get('origin','혼'), r.get('pos','명사'))
                     if key not in temp_dict: temp_dict[key] = []
                     temp_dict[key].append(o_word)
 
                 for (root, origin, pos), origs in temp_dict.items():
                     cnts = Counter(origs)
-                    fmt_orig = ", ".join([f"{w}({c})" for w, c in cnts.items()])
+                    fmt_orig = ", ".join([f"{w}({c})" for w, c in cnts.items() if w])
                     proc.append({
                         "delete_check": False,
                         "count": f"{sum(cnts.values())}회",
@@ -552,7 +557,17 @@ elif st.session_state.step == 2:
 elif st.session_state.step == 3:
     st.header("📊 분석 결과 확인")
     
-    @st.dialog("➕ 단어 추가")
+    # [기능 추가] 분석된 원문 텍스트 확인하기
+    with st.expander("📝 분석된 텍스트 원문 확인하기 (클릭)", expanded=False):
+        st.text_area("분석 대상 텍스트", value=st.session_state.extracted_text, height=200, disabled=True)
+
+    # [오류 해결] 버전 호환성 체크 (dialog 없으면 experimental_dialog 사용)
+    if hasattr(st, "dialog"):
+        dlg = st.dialog
+    else:
+        dlg = st.experimental_dialog
+
+    @dlg("➕ 단어 추가")
     def add_manual_item():
         with st.form("add_form"):
             o = st.text_input("원본")
