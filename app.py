@@ -25,7 +25,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# 세션 상태 초기화 (모든 작업 상태 보존)
+# 세션 상태 초기화 (모든 작업 상태 및 환경 변수 보존)
 if 'step' not in st.session_state: st.session_state.step = 0
 if 'mode_key' not in st.session_state: st.session_state.mode_key = None
 if 'master_df' not in st.session_state: st.session_state.master_df = None
@@ -44,12 +44,13 @@ if 'current_tab_idx' not in st.session_state: st.session_state.current_tab_idx =
 if 'is_finished' not in st.session_state: st.session_state.is_finished = False
 
 # =========================================================
-# [1] 디자인: CSS 매직
+# [1] 디자인: CSS 매직 (상징색 및 레이아웃 최적화)
 # =========================================================
 if st.session_state.step == 0:
     st.markdown("""
         <style>
             .stApp { background-color: #0e1117 !important; color: #ffffff !important; }
+            .stTextArea textarea { font-family: 'Malgun Gothic', sans-serif !important; }
             div.block-container div[data-testid="column"] div.stButton > button {
                 width: 100%; height: 320px;
                 background-color: #262730 !important;
@@ -276,7 +277,7 @@ def clean_raw_text(text):
     return '\n'.join(lines)
 
 def process_image_for_api(image_bytes):
-    """[해결책] 이미지를 명시적으로 PIL PNG로 변환하여 identify 오류 해결"""
+    """이미지를 명시적으로 PIL PNG로 변환하여identify 오류 해결"""
     if not image_bytes: return None
     try:
         # 바이트 데이터를 바이너리 스트림으로 감싸서 열기
@@ -367,7 +368,6 @@ def run_analysis_action(txt, img_bytes=None):
     
     st.session_state.debug_log = f"[{datetime.now().strftime('%H:%M:%S')}] 분석 시작... 텍스트 길이: {len(txt)}\n"
     
-    # [개선] 작업 진행 상태를 명시적으로 표시하여 연속 작업 충돌 방지
     with st.spinner("AI 분석 엔진 가동 중..."):
         s_data = get_sheet_data_fresh(st.session_state.mode_key)[1]
         
@@ -377,13 +377,13 @@ def run_analysis_action(txt, img_bytes=None):
         
         [분석 핵심 규칙]
         1. **특수문자/조사/어미 제거**: 기호나 문장부호, 조사는 절대 결과에 포함하지 마십시오.
-        2. **숫자 및 영어 제외**: 아라비아 숫자(0-9)나 영문자(A-Z, a-z)가 포함된 단어는 무조건 제외하십시오.
+        2. **숫자 및 영어 제외**: 아라비아 숫자(0-9)나 영문자(A-Z, a-z)가 포함된 단어는 무조건 제외하십시오. (한글 숫자만 가능)
         3. **의존 명사**: '것', '수', '만큼' 등은 '명사' 품사로 분류하십시오.
         4. **동음이의어**: 문맥상 뜻이 갈리는 단어는 원형 뒤에 괄호로 뜻을 구분하십시오.
         5. **개체명 인식 (인명/지명)**: 성함은 원형 뒤에 '(이름)', 지역 명칭은 '(지명)'을 표기하십시오.
         
         [어종 판별]
-        한자 기반 단어는 '한'으로, 순우리말은 '고', 서구 유래어는 '외'로 분류하십시오.
+        한자 기반 단어(학교, 분석 등)는 '한'으로, 순우리말은 '고', 서구 유래어는 '외'로 분류하십시오.
         
         [출력 양식: 반드시 한글 키 JSON 리스트]
         원본, 원형, 분류(고/한/외/혼), 품사(명사/동사/형용사/부사/관형사/대명사/감탄사)
@@ -496,7 +496,7 @@ elif st.session_state.step == 2:
     with c_h:
         if st.button("🏠 처음으로"): st.session_state.clear(); st.rerun()
 
-    # [수정] 시작 쪽수 설정을 최상단으로 이동하여 편의성 증대
+    # [수정] 시작 쪽수 설정을 최상단으로 이동
     with st.expander("⚙️ 분석 환경 설정 (페이지 쪽수 설정)", expanded=True):
         st.session_state.start_offset = st.number_input("도서 1쪽의 실제 숫자 (시작 쪽수 설정)", value=st.session_state.start_offset)
         actual_p = st.session_state.page_idx + st.session_state.start_offset
@@ -520,7 +520,6 @@ elif st.session_state.step == 2:
             
             c1, c2 = st.columns(2)
             with c1:
-                # PDF/이미지 미리보기 (강화된 로직 적용)
                 img = get_page_image(st.session_state.file_bytes, st.session_state.file_type, st.session_state.page_idx)
                 if img: st.image(img, use_container_width=True)
                 
@@ -570,14 +569,11 @@ elif st.session_state.step == 3:
     if st.session_state.debug_mode:
         with st.expander("🛠️ [정밀 디버깅] 분석 프로세스 로그", expanded=True):
             st.markdown(f"<div class='debug-box'>{st.session_state.get('debug_log', 'No log available')}</div>", unsafe_allow_html=True)
-            # TypeError 방지를 위한 데이터 보호 처리
             raw_data = st.session_state.get('last_raw_response', '')
-            if raw_data and isinstance(raw_data, str):
-                st.code(raw_data, language="json", label="AI 응답 원본")
-            else:
-                st.info("AI 응답 데이터가 준비되지 않았습니다.")
+            if raw_data and isinstance(raw_data, str): st.code(raw_data, language="json", label="AI 응답 원본")
+            else: st.info("AI 응답 데이터가 준비되지 않았습니다.")
 
-    # [수정 반영] 분석 대상 원문 확인 영역 높이 대폭 확장 (가시성 개선)
+    # [수정] 분석 대상 원문 확인 영역 높이 대폭 확장
     with st.expander("📝 분석 대상 원문 확인 (비교 대조용)", expanded=True):
         st.text_area("원문 원본", value=st.session_state.extracted_text, height=500, disabled=True)
 
@@ -598,8 +594,8 @@ elif st.session_state.step == 3:
     # 데이터 에디터 출력 안정성 확보
     df_res = pd.DataFrame(st.session_state.analysis_result)
     if not df_res.empty:
-        # 데이터 편집 시 로딩 느낌을 주기 위한 가이드
-        st.info("💡 표의 내용을 직접 수정할 수 있습니다. 수정 후 '저장하기'를 눌러주세요.")
+        st.info("💡 표의 내용을 직접 수정할 수 있습니다. 수정 시 데이터 무결성을 위해 짧은 로딩이 발생합니다.")
+        # [해결책] 데이터 에디터 수정 시 강제 로딩 텀 부여
         edited = st.data_editor(
             df_res,
             column_config={
@@ -610,7 +606,13 @@ elif st.session_state.step == 3:
             },
             use_container_width=True, num_rows="dynamic", key="editor_grid"
         )
-        if not edited.equals(df_res): st.session_state.analysis_result = edited.to_dict('records')
+        
+        # 수정이 감지되면 강제 로딩 처리
+        if not edited.equals(df_res):
+            with st.spinner("🔄 데이터 동기화 및 검증 중... (잠시만 기다려주세요)"):
+                time.sleep(2.5) # [핵심] 수정 작업 시 강제 2.5초 지연으로 안정성 확보
+                st.session_state.analysis_result = edited.to_dict('records')
+                st.rerun()
     else:
         st.warning("분석된 결과 단어가 없습니다. 숫자를 제외한 순수 한글 텍스트가 있는지 확인하세요.")
 
@@ -622,6 +624,7 @@ elif st.session_state.step == 3:
             if st.button("⛔ 선택 삭제", use_container_width=True):
                 with st.spinner("삭제 반영 중..."):
                     st.session_state.analysis_result = [r for r in st.session_state.analysis_result if not r.get('삭제', False)]
+                    time.sleep(1.5)
                     st.rerun()
         with b3:
             if st.button("💾 저장하기 (완료)", type="primary", use_container_width=True):
@@ -631,15 +634,11 @@ elif st.session_state.step == 3:
         st.success("✅ 모든 분석 데이터가 성공적으로 통합되었습니다!")
         actual_p = st.session_state.page_idx + st.session_state.start_offset
         st.info(f"📍 현재 페이지 데이터는 마스터 엑셀의 **'{actual_p}쪽'**으로 성공적으로 합쳐졌습니다.")
-        
         fname = f"국어활동_결과_{st.session_state.mode_key}_{datetime.now().strftime('%m%d_%H%M')}.xlsx"
         buf = io.BytesIO()
-        with pd.ExcelWriter(buf, engine='openpyxl') as w: 
-            st.session_state.master_df.to_excel(w, index=False)
-            
+        with pd.ExcelWriter(buf, engine='openpyxl') as w: st.session_state.master_df.to_excel(w, index=False)
         c1, c2 = st.columns(2)
-        with c1:
-            st.download_button(label=f"📥 {fname} 다운로드", data=buf.getvalue(), file_name=fname, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True, type="primary")
+        with c1: st.download_button(label=f"📥 {fname} 다운로드", data=buf.getvalue(), file_name=fname, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True, type="primary")
         with c2:
             if st.button("🔄 다음 페이지 작업 (입력창 이동)", use_container_width=True):
                 with st.spinner("세션 초기화 및 이동 중..."):
