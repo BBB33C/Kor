@@ -20,7 +20,7 @@ st.set_page_config(
     page_title="국어활동 AI 분석기", 
     page_icon="📚", 
     layout="wide",
-    initial_sidebar_state="collapsed"
+    initial_sidebar_state="collapsed" # 사이드바 숨김(구석에 존재)
 )
 
 # 세션 상태 초기화
@@ -36,7 +36,7 @@ if 'extracted_text' not in st.session_state: st.session_state.extracted_text = "
 if 'debug_mode' not in st.session_state: st.session_state.debug_mode = False
 
 # =========================================================
-# [1] 디자인: 윤곽선 발광 (Neon Glow) CSS 매직
+# [1] 디자인: 2컬럼 전용 네온 발광 CSS (Step 0)
 # =========================================================
 if st.session_state.step == 0:
     st.markdown("""
@@ -44,51 +44,45 @@ if st.session_state.step == 0:
             /* 기본 폰트 */
             .stTextArea textarea { font-family: 'Malgun Gothic', sans-serif !important; }
             
-            /* 1. 버튼 공통 스타일 (평소 상태: 어두운 박스) */
-            div.stButton > button {
+            /* 1. 메인 버튼 스타일 (화면 중앙 2개 버튼에만 적용됨) */
+            /* Streamlit의 메인 영역 버튼만 타겟팅 */
+            div.block-container div[data-testid="column"] div.stButton > button {
                 width: 100%;
-                height: 240px; /* 버튼 크기 */
-                background-color: #262730 !important; /* 짙은 회색 배경 */
-                border: 2px solid rgba(255,255,255,0.1) !important; /* 희미한 테두리 */
-                border-radius: 15px !important;
+                height: 280px; /* 버튼 크기 */
+                background-color: #262730 !important;
+                border: 2px solid rgba(255,255,255,0.1) !important;
+                border-radius: 20px !important;
                 color: #eeeeee !important;
-                transition: all 0.3s ease !important; /* 부드러운 애니메이션 */
+                transition: all 0.3s ease !important;
                 box-shadow: 0 4px 6px rgba(0,0,0,0.3) !important;
                 
-                /* 텍스트 배치 */
-                font-size: 1.2rem !important;
-                font-weight: 600 !important;
-                white-space: pre-wrap; /* 줄바꿈 허용 */
+                /* 텍스트 스타일 */
+                font-size: 1.3rem !important;
+                font-weight: 700 !important;
+                white-space: pre-wrap;
                 line-height: 1.6 !important;
             }
             
-            /* 2. 호버 시 공통 효과 (위로 떠오름) */
-            div.stButton > button:hover {
-                transform: translateY(-5px);
-                background-color: #2b2c36 !important; /* 아주 살짝 밝아짐 */
+            /* 2. 호버 효과 (떠오름) */
+            div.block-container div[data-testid="column"] div.stButton > button:hover {
+                transform: translateY(-8px);
+                background-color: #2b2c36 !important;
             }
 
-            /* 3. 컬럼별 색상 지정 (핵심 기술) */
+            /* 3. 컬럼별 색상 (왼쪽: 대한민국 / 오른쪽: 북한) */
             
-            /* [왼쪽: 대한민국] -> Cyan Blue 발광 */
+            /* [왼쪽 컬럼] -> Cyan Blue Glow */
             div[data-testid="column"]:nth-of-type(1) div.stButton > button:hover {
                 border-color: #00ccff !important;
-                box-shadow: 0 0 20px rgba(0, 204, 255, 0.4) !important;
-                color: #00ccff !important; /* 글자색도 파랗게 */
+                box-shadow: 0 0 25px rgba(0, 204, 255, 0.5) !important;
+                color: #00ccff !important;
             }
 
-            /* [중앙: 북한] -> Neon Red 발광 */
+            /* [오른쪽 컬럼] -> Neon Red Glow */
             div[data-testid="column"]:nth-of-type(2) div.stButton > button:hover {
                 border-color: #ff3366 !important;
-                box-shadow: 0 0 20px rgba(255, 51, 102, 0.4) !important;
-                color: #ff3366 !important; /* 글자색도 붉게 */
-            }
-
-            /* [오른쪽: 관리자] -> White Glow 발광 */
-            div[data-testid="column"]:nth-of-type(3) div.stButton > button:hover {
-                border-color: #cccccc !important;
-                box-shadow: 0 0 15px rgba(200, 200, 200, 0.3) !important;
-                color: #ffffff !important;
+                box-shadow: 0 0 25px rgba(255, 51, 102, 0.5) !important;
+                color: #ff3366 !important;
             }
         </style>
     """, unsafe_allow_html=True)
@@ -99,7 +93,6 @@ else:
             .stTextArea textarea { font-family: 'Malgun Gothic', sans-serif !important; font-size: 16px !important; line-height: 1.6 !important; }
             .stButton button { border-radius: 8px; font-weight: bold; height: auto; }
             
-            /* 진행바 스타일 */
             .progress-box { display: flex; justify-content: space-between; margin: 20px 0 40px 0; border-bottom: 1px solid #444; padding-bottom: 10px; }
             .step-item { color: #666; font-size: 0.9rem; font-weight: 500; }
             .step-active { color: #4CAF50; font-weight: 700; border-bottom: 3px solid #4CAF50; padding-bottom: 7px; }
@@ -228,7 +221,6 @@ def get_analysis_hybrid(text, image_bytes, sheet_data, mode_key):
     4. **인명/지명: 원형 뒤에 (이름)/(지명) 표기 (필수).** (예: 지혜(이름), 서울(지명))
     5. 출력: JSON 포맷.
     """
-    
     if image_bytes:
         try: return json.loads(re.search(r'\[.*\]', api_call_direct(prompt + "\n(OCR 참고)", image_bytes), re.DOTALL).group())
         except: return []
@@ -243,7 +235,6 @@ def get_analysis_hybrid(text, image_bytes, sheet_data, mode_key):
             except: pass
         return res
 
-# [데이터 유틸리티]
 def clean_val_for_save(v):
     if isinstance(v, str): 
         v = v.replace('🔵 ', '').replace('🟢 ', '').replace('🔴 ', '').replace('🟣 ', '').replace('📦 ', '').replace('🏃 ', '').replace('🎨 ', '').replace('⚡ ', '').replace('🔍 ', '').replace('👤 ', '')
@@ -262,7 +253,6 @@ def calc_freq(row):
     return total
 
 def merge_master_data(old_df, new_df):
-    """[스마트 병합] 덮어쓰기 없음, 쪽수 중복 제거, 횟수 보존"""
     if old_df is None or old_df.empty: return new_df
     key_cols = ['자료', '구분']
     merged = pd.merge(old_df, new_df, on=key_cols, how='outer', suffixes=('_old', '_new'))
@@ -328,8 +318,26 @@ def get_page_image(file_bytes, file_type, page_idx):
     return None
 
 # =========================================================
-# [4] UI: 메인 루프
+# [4] UI: 메인 루프 (10단계 Wizard)
 # =========================================================
+
+# ---------------------------------------------------------
+# [SIDEBAR]: 관리자 모드 제어 (구석에 숨김)
+# ---------------------------------------------------------
+with st.sidebar:
+    st.markdown("### ⚙️ 설정")
+    if st.session_state.debug_mode:
+        st.success("🐞 디버깅 모드 ON")
+        if st.button("디버깅 모드 끄기"):
+            st.session_state.debug_mode = False
+            st.rerun()
+    else:
+        st.markdown("<br><br><br><br><br>", unsafe_allow_html=True) # 아래쪽으로 밀기
+        if st.button("🛠️ 관리자 모드 켜기"):
+            st.session_state.debug_mode = True
+            st.rerun()
+
+# 진행바
 if st.session_state.step > 0:
     steps = ["1. 모드 선택", "2. 데이터 소스", "3. 자료 입력", "4. 결과 확인"]
     st.markdown('<div class="progress-box">', unsafe_allow_html=True)
@@ -341,17 +349,21 @@ if st.session_state.step > 0:
     st.markdown('</div>', unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# STEP 0: 시작 화면 (윤곽선 발광 버튼)
+# STEP 0: 시작 화면 (메인 2개 버튼 + 관리자 알림)
 # ---------------------------------------------------------
 if st.session_state.step == 0:
     st.markdown("<h1 style='text-align: center; margin-bottom: 20px;'>📚 국어활동 AI 분석기</h1>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align: center; color: #888; margin-bottom: 50px;'>원하는 언어 규범을 선택하여 분석을 시작하세요.</p>", unsafe_allow_html=True)
     
-    c1, c2, c3 = st.columns(3)
+    # 관리자 모드 활성화 시 알림 배너 표시
+    if st.session_state.debug_mode:
+        st.warning("🚧 [관리자 모드]가 활성화되었습니다. 이제 모드를 선택하면 로그 패널과 함께 작업이 시작됩니다.")
+    else:
+        st.markdown("<p style='text-align: center; color: #888; margin-bottom: 50px;'>원하는 언어 규범을 선택하여 분석을 시작하세요.</p>", unsafe_allow_html=True)
     
-    # [1] 대한민국
+    # 2개의 컬럼만 사용 (집중도 UP)
+    c1, c2 = st.columns(2)
+    
     with c1:
-        # 버튼 텍스트 (줄바꿈 활용)
         label_south = "🏛️\n\n대한민국 표준어\n\n(표준국어대사전 기준)"
         if st.button(label_south, key="btn_south", use_container_width=True):
             st.session_state.mode_key = "SOUTH"
@@ -359,7 +371,6 @@ if st.session_state.step == 0:
             st.toast("✅ 대한민국 학습 서버에 연결되었습니다.")
             time.sleep(0.5); st.rerun()
 
-    # [2] 북한
     with c2:
         label_north = "🏔️\n\n북한 문화어\n\n(문화어 규범 기준)"
         if st.button(label_north, key="btn_north", use_container_width=True):
@@ -368,38 +379,37 @@ if st.session_state.step == 0:
             st.toast("✅ 북한 학습 서버에 연결되었습니다.")
             time.sleep(0.5); st.rerun()
 
-    # [3] 관리자
-    with c3:
-        label_debug = "🛠️\n\n관리자 모드\n\n(시스템 로그 확인)"
-        if st.button(label_debug, key="btn_debug", use_container_width=True):
-            st.session_state.debug_mode = True
-            st.info("로그 패널이 활성화되었습니다.")
-
 # ---------------------------------------------------------
-# STEP 1: 데이터 소스
+# STEP 1: 데이터 소스 선택
 # ---------------------------------------------------------
 elif st.session_state.step == 1:
     st.header("📂 데이터 소스 선택")
+    
+    if st.session_state.debug_mode:
+        st.info(f"🔧 현재 모드: {st.session_state.mode_key} | 디버깅 활성 상태")
+
     col1, col2 = st.columns(2)
     
     with col1:
         with st.container(border=True):
             st.subheader("📂 이어하기")
-            st.caption("기존에 작업하던 엑셀 파일이 있다면 업로드하세요. (자동 병합)")
-            up_excel = st.file_uploader("엑셀 파일 (.xlsx)", type=['xlsx'])
+            st.caption("기존 엑셀 파일 (.xlsx)")
+            up_excel = st.file_uploader("엑셀 파일 업로드", type=['xlsx'])
             if up_excel:
                 try:
                     loaded = pd.read_excel(up_excel)
                     st.session_state.master_df = loaded
                     st.session_state.step = 2
-                    st.toast("데이터 로드 완료! 저장 시 자동으로 합쳐집니다.")
+                    st.toast("데이터 로드 완료")
                     time.sleep(0.5); st.rerun()
-                except: st.error("올바른 엑셀 파일 형식이 아닙니다.")
+                except Exception as e: 
+                    st.error("파일 오류")
+                    if st.session_state.debug_mode: st.error(f"Error Log: {e}")
 
     with col2:
         with st.container(border=True):
             st.subheader("🆕 새로 시작하기")
-            st.caption("기존 데이터 없이 빈 상태로 분석을 시작합니다.")
+            st.caption("빈 데이터로 시작")
             st.write("") 
             if st.button("새 프로젝트 생성", use_container_width=True):
                 st.session_state.master_df = None
@@ -413,13 +423,11 @@ elif st.session_state.step == 1:
 # STEP 2: 자료 입력
 # ---------------------------------------------------------
 elif st.session_state.step == 2:
-    if st.sidebar.button("🏠 처음으로 (초기화)"):
-        st.session_state.clear()
-        st.rerun()
+    if st.sidebar.button("🏠 처음으로"): st.session_state.clear(); st.rerun()
 
     st.header("📝 분석 자료 입력")
     
-    tab1, tab2 = st.tabs(["📄 파일 분석 (PDF/이미지)", "✍️ 텍스트 직접 입력"])
+    tab1, tab2 = st.tabs(["📄 파일 분석", "✍️ 직접 입력"])
     
     with tab1:
         file = st.file_uploader("파일 업로드", type=['pdf', 'png', 'jpg'])
@@ -433,7 +441,7 @@ elif st.session_state.step == 2:
             
             c_view, c_text = st.columns(2)
             with c_view:
-                st.info("📷 원본 미리보기")
+                st.caption("미리보기")
                 img = get_page_image(st.session_state.file_bytes, st.session_state.file_type, st.session_state.page_idx)
                 if img: st.image(img, use_container_width=True)
                 
@@ -447,14 +455,14 @@ elif st.session_state.step == 2:
                         st.session_state.page_idx += 1
                         st.session_state.extracted_text = extract_text_unified(st.session_state.file_bytes, st.session_state.file_type, st.session_state.page_idx)
                         st.rerun()
-                    st.session_state.start_offset = st.number_input("시작 쪽수 설정", value=st.session_state.start_offset)
+                    st.session_state.start_offset = st.number_input("시작 쪽수", value=st.session_state.start_offset)
             
             with c_text:
-                st.info("✍️ 추출 텍스트 검수 (수정 가능)")
+                st.caption("텍스트 검수")
                 txt_input = st.text_area("에디터", value=st.session_state.extracted_text, height=500, label_visibility="collapsed")
                 st.session_state.extracted_text = txt_input
                 
-                if st.button("🚀 분석 실행 (파일)", type="primary", use_container_width=True):
+                if st.button("🚀 분석 실행", type="primary", use_container_width=True):
                     with st.spinner("AI 분석 중..."):
                         s_data = get_sheet_data_fresh(st.session_state.mode_key)[1]
                         send_img = st.session_state.file_bytes if len(txt_input) < 50 else None
@@ -487,7 +495,7 @@ elif st.session_state.step == 2:
                         st.rerun()
 
     with tab2:
-        direct_txt = st.text_area("분석할 텍스트를 입력하세요", height=400)
+        direct_txt = st.text_area("텍스트 입력", height=400)
         if st.button("🚀 분석 실행 (Direct)", type="primary"):
             st.session_state.extracted_text = direct_txt
             with st.spinner("AI 분석 중..."):
@@ -523,10 +531,10 @@ elif st.session_state.step == 2:
 elif st.session_state.step == 3:
     st.header("📊 분석 결과 확인")
     
-    @st.experimental_dialog("➕ 단어 수동 추가")
+    @st.experimental_dialog("➕ 단어 추가")
     def add_manual_item():
         with st.form("add_form"):
-            o = st.text_input("원본 단어")
+            o = st.text_input("원본")
             r = st.text_input("원형")
             org = st.selectbox("분류", ["고","한","외","혼"])
             p = st.selectbox("품사", ["명사","동사","형용사","부사","관형사","대명사","고유명사"])
@@ -552,7 +560,7 @@ elif st.session_state.step == 3:
         df_res,
         column_config={
             "delete_check": st.column_config.CheckboxColumn("삭제"),
-            "original_word": st.column_config.TextColumn("원본 (수정불가)", disabled=True),
+            "original_word": st.column_config.TextColumn("원본", disabled=True),
             "root_word": st.column_config.TextColumn("원형"),
             "count": st.column_config.TextColumn("횟수"),
             "origin": st.column_config.SelectboxColumn("분류", options=["🔵 고", "🟢 한", "🔴 외", "🟣 혼"]),
@@ -578,7 +586,7 @@ elif st.session_state.step == 3:
                 send_data_with_retry(sheet, logs, True)
                 st.session_state.analysis_result = edited[edited['delete_check']==False].to_dict('records')
                 st.rerun()
-            else: st.toast("삭제할 항목을 선택해주세요.")
+            else: st.toast("선택된 항목이 없습니다.")
 
     def save_logic_common():
         sheet = get_sheet_data_fresh(st.session_state.mode_key)[0]
@@ -615,7 +623,7 @@ elif st.session_state.step == 3:
                 st.session_state.extracted_text = extract_text_unified(st.session_state.file_bytes, st.session_state.file_type, st.session_state.page_idx)
                 st.session_state.analysis_result = []
                 st.session_state.step = 2
-                st.toast(f"저장되었습니다! {st.session_state.page_idx+1}쪽으로 이동합니다.")
+                st.toast(f"저장 완료! {st.session_state.page_idx+1}페이지로 이동합니다.")
                 st.rerun()
         else:
             if st.button("💾 저장하기 (완료)", type="primary", use_container_width=True):
@@ -628,7 +636,7 @@ elif st.session_state.step == 3:
 # ---------------------------------------------------------
 elif st.session_state.step == 4:
     st.balloons()
-    st.header("✅ 모든 작업이 완료되었습니다!")
+    st.header("✅ 완료되었습니다!")
     
     if st.session_state.master_df is not None:
         fname = "KR 국어 정리.xlsx" if st.session_state.mode_key == "SOUTH" else "KP 국어 정리.xlsx"
@@ -648,6 +656,6 @@ elif st.session_state.step == 4:
                 type="primary"
             )
         with c2:
-            if st.button("🔄 처음으로 돌아가기 (새 작업)", use_container_width=True):
+            if st.button("🔄 처음으로 돌아가기", use_container_width=True):
                 st.session_state.clear()
                 st.rerun()
