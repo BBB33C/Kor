@@ -35,7 +35,7 @@ except ImportError:
 
 # 페이지 기본 설정
 st.set_page_config(
-    page_title="국어활동 AI 분석기 (PageNum Fixed)", 
+    page_title="국어활동 AI 분석기 (Pure GP9 + Fix)", 
     page_icon="📚", 
     layout="wide",
     initial_sidebar_state="expanded"
@@ -54,7 +54,6 @@ except:
 
 MODEL_NAME = "gemini-2.0-flash-exp"
 SHEET_NAME = "Korean_DB"
-TRUST_THRESHOLD = 3 
 
 # [CSS] 다크 모드 스타일
 st.markdown("""
@@ -98,7 +97,7 @@ def log_debug(msg, type="info"):
         st.session_state.debug_logs.append(f"<div class='debug-box {color_class}'>[{datetime.now().strftime('%H:%M:%S')}] {msg}</div>")
 
 # =========================================================
-# [2] 구글 시트 & 백업 시스템
+# [2] 구글 시트 & 백업 시스템 (GP9 원본)
 # =========================================================
 @st.cache_resource
 def get_google_sheet_client():
@@ -155,20 +154,19 @@ def load_backup_from_cloud(mode_key):
     except: return None
 
 # =========================================================
-# [3] AI 엔진
+# [3] AI 엔진 (순수 GP9 로직)
 # =========================================================
 def generate_prompt_from_sheet(sheet_data):
     if not sheet_data: return ""
     rules = []
+    # GP9: 최근 50개 이력 반영 -> AI에게 문맥적으로 전달
     for row in sheet_data[-50:]:
-        if row.get('action') == 'delete': rules.append(f"- [삭제]: '{row.get('original_word')}' 제외")
-        elif row.get('action') in ['add', 'modify']: rules.append(f"- [고정]: '{row.get('original_word')}' -> 원형:'{row.get('root_word')}'")
-    return "\n[사용자 규칙]:\n" + "\n".join(rules) + "\n" if rules else ""
+        if row.get('action') == 'delete': rules.append(f"- [삭제 규칙]: '{row.get('original_word')}'는 분석 결과에서 제외하세요.")
+        elif row.get('action') in ['add', 'modify']: rules.append(f"- [고정 규칙]: '{row.get('original_word')}' -> 원형:'{row.get('root_word')}', 분류:'{row.get('origin')}', 품사:'{row.get('pos')}'")
+    return "\n[사용자 학습 규칙 (최우선 적용)]:\n" + "\n".join(rules) + "\n" if rules else ""
 
 def api_call_direct(prompt, image_bytes=None):
-    if not API_KEY: 
-        log_debug("API Key 누락", "err")
-        return None
+    if not API_KEY: return None
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={API_KEY.strip()}"
     headers = {'Content-Type': 'application/json'}
     parts = [{"text": prompt}]
@@ -176,7 +174,7 @@ def api_call_direct(prompt, image_bytes=None):
         parts.append({"inline_data": {"mime_type": "image/png", "data": base64.b64encode(image_bytes).decode('utf-8')}})
     
     try:
-        res = requests.post(url, headers=headers, json={"contents": [{"parts": parts}]}, timeout=60)
+        res = requests.post(url, headers=headers, json={"contents": [{"parts": parts}]}, timeout=300)
         if res.status_code == 200: return res.json()['candidates'][0]['content']['parts'][0]['text']
         else: log_debug(f"API Error: {res.text}", "err"); return None
     except Exception as e: log_debug(f"Conn Error: {e}", "err"); return None
@@ -191,41 +189,43 @@ def api_call_vision_ocr(image_bytes):
     return ""
 
 def get_analysis_hybrid(text, image_bytes, sheet_data, mode_key):
+    # GP9 프롬프트 구조 유지
     prompt = f"""
     당신은 '{"대한민국 표준어" if mode_key=="SOUTH" else "북한 문화어"}' 형태소 분석 전문가입니다.
     {generate_prompt_from_sheet(sheet_data)}
-    [Chain of Thought]
-    1. 문맥 파악. 2. 조사/어미 제거. 3. '하다' 용언 처리. 4. 품사 필터링.
-    5. 출력: JSON 포맷 엄수.
+    
+    [분석 단계 (Chain of Thought)]
+    1. **문맥 파악**: '{mode_key}' 규칙 적용.
+    2. **형태소 분리**: 조사(은/는/이/가 등)와 어미 제거.
+    3. **'하다' 용언 처리**: 문맥에 따라 동사/명사 판단.
+    4. **품사 필터링**: 명사, 동사, 형용사, 부사, 관형사, 대명사만 남김.
+    5. **출력**: JSON 포맷 엄수.
+
     [JSON 예시]
     [{{"original_word": "배를", "root_word": "배", "origin": "고", "pos": "명사"}}]
     """
     
+    # 텍스트 분할 없이(Gemini 2.0은 긴 텍스트 처리 가능) 혹은 이미지만 전송
     if image_bytes:
-        try: return json.loads(re.search(r'\[.*\]', api_call_direct(prompt, image_bytes), re.DOTALL).group())
-        except: return []
+        full_res = api_call_direct(prompt + "\n(이미지 OCR 결과 참고)", image_bytes)
     else:
-        chunks = [text[i:i+1000] for i in range(0, len(text), 1000)]
-        res_list = []
-        for chunk in chunks:
-            r = api_call_direct(prompt + f"\n[텍스트]:\n{chunk}")
-            if r: res_list.append(r)
-        
-        full_res = []
-        for r in res_list:
-            try: full_res.extend(json.loads(re.search(r'\[.*\]', r, re.DOTALL).group()))
-            except: pass
-        return full_res
+        full_res = api_call_direct(prompt + f"\n[분석할 텍스트]:\n{text}")
+
+    if full_res:
+        try: return json.loads(re.search(r'\[.*\]', full_res, re.DOTALL).group())
+        except: return []
+    return []
 
 # =========================================================
-# [4] 파일 처리 및 노이즈 제거 (꼬리말 삭제 포함)
+# [4] 파일 처리 & 노이즈 제거 (안정화 + 요청사항 반영)
 # =========================================================
 def clean_noise_text(text):
+    """[요청사항] 파일 정보, 시간, 고립된 숫자 등 꼬리말 제거"""
     if not text: return ""
     lines = text.split('\n')
     cleaned_lines = []
     
-    # 제거할 패턴 (indd 파일명, 날짜 형식)
+    # 제거할 패턴 (indd 파일명, 날짜 2024-xx-xx, 시간 오후/오전)
     patterns = [
         r'\.indd',           
         r'\d{4}-\d{2}-\d{2}', 
@@ -236,9 +236,12 @@ def clean_noise_text(text):
     for line in lines:
         is_noise = False
         for p in patterns:
-            if re.search(p, line):
-                is_noise = True
-                break
+            if re.search(p, line): is_noise = True; break
+        
+        # 파일 끝부분의 단순 쪽수 번호(숫자만 있는 줄)도 노이즈로 볼 수 있음
+        # 사용자가 "맨 뒤에 파일 정보와 시간"을 지워달라 했으므로, 파일 정보 라인과 함께 있는 숫자들은 위 패턴으로 걸러짐.
+        # 단독으로 있는 쪽수 번호는 남길 수도 있으나, 일반적으로 본문 흐름에 방해되므로 맨 위/아래 숫자는 제거하는 것이 좋음.
+        # 여기서는 명시된 패턴 위주로 제거.
         
         if not is_noise:
             cleaned_lines.append(line)
@@ -246,6 +249,7 @@ def clean_noise_text(text):
     return "\n".join(cleaned_lines).strip()
 
 def extract_text_unified(file_bytes, file_type, page_idx):
+    """BytesIO 복제 방식을 사용하여 파일 닫힘 오류 방지"""
     debug = st.session_state.get('debug_mode', False)
     if debug: log_debug(f"추출 시작: Page {page_idx}", "info")
 
@@ -255,15 +259,22 @@ def extract_text_unified(file_bytes, file_type, page_idx):
         raw_text = api_call_vision_ocr(file_bytes)
         
     elif "pdf" in file_type:
+        # (1) PDFPlumber (영역 크롭 포함 - GP9)
         if PLUMBER_AVAILABLE:
             try:
                 with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
                     if page_idx < len(pdf.pages):
-                        raw_text = pdf.pages[page_idx].extract_text()
+                        page = pdf.pages[page_idx]
+                        # 상하단 5~10% 잘라내기 (헤더/푸터/쪽수 제거용)
+                        crop_box = (0, page.height * 0.05, page.width, page.height * 0.9)
+                        try: raw_text = page.crop(crop_box).extract_text()
+                        except: raw_text = page.extract_text()
+                        
                         if raw_text and len(raw_text.strip()) > 30:
                             if debug: log_debug(f"Plumber 성공 ({len(raw_text)}자)", "success")
             except: pass
 
+        # (2) Fitz (텍스트 레이어 백업)
         if (not raw_text or len(raw_text.strip()) < 5) and FITZ_AVAILABLE:
             try:
                 doc = fitz.open(stream=file_bytes, filetype="pdf")
@@ -273,18 +284,18 @@ def extract_text_unified(file_bytes, file_type, page_idx):
                         if debug: log_debug(f"Fitz 성공 ({len(raw_text)}자)", "success")
             except: pass
         
+        # (3) Vision OCR (이미지형 PDF 백업)
         if (not raw_text or len(raw_text.strip()) < 30) and FITZ_AVAILABLE:
             try:
-                if debug: log_debug("이미지 변환 후 OCR 시도", "warn")
+                if debug: log_debug("OCR 전환", "warn")
                 doc = fitz.open(stream=file_bytes, filetype="pdf")
                 if page_idx < len(doc):
                     pix = doc[page_idx].get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
                     raw_text = api_call_vision_ocr(pix.tobytes("png"))
-            except Exception as e:
-                if debug: log_debug(f"변환 오류: {e}", "err")
+            except: pass
     
-    final_text = clean_noise_text(raw_text) if raw_text else ""
-    return final_text
+    # [최종] 꼬리말 제거
+    return clean_noise_text(raw_text) if raw_text else ""
 
 def get_page_image_bytes(file_bytes, file_type, page_idx):
     if "image" in file_type: return file_bytes
@@ -366,6 +377,7 @@ if 'page_idx' not in st.session_state: st.session_state.page_idx = 0
 if 'file_hash' not in st.session_state: st.session_state.file_hash = None
 if 'file_bytes_cache' not in st.session_state: st.session_state.file_bytes_cache = None
 if 'start_page_offset' not in st.session_state: st.session_state.start_page_offset = 1
+# [핵심] 텍스트 에디터 키 (동적 관리)
 if 'main_editor_area' not in st.session_state: st.session_state.main_editor_area = ""
 
 st.title("📝 국어활동 AI 분석기")
@@ -430,7 +442,7 @@ if main_file:
         
         extracted = extract_text_unified(current_bytes, main_file.type, 0)
         st.session_state.main_editor_area = extracted
-        log_debug(f"파일 로드 및 텍스트 추출 완료 ({len(extracted)}자)", "success")
+        log_debug(f"파일 로드 및 텍스트 추출 완료", "success")
         st.rerun()
     
     file_bytes = st.session_state.file_bytes_cache
@@ -474,10 +486,10 @@ with col_v:
                     st.session_state.main_editor_area = extract_text_unified(file_bytes, main_file.type, st.session_state.page_idx)
                     st.rerun()
             
-            # [복구] 쪽수 표시 및 오프셋 설정
+            # [복구] 쪽수 계산 및 오프셋 입력
             st.session_state.start_page_offset = st.number_input("시작 쪽수(오프셋)", value=st.session_state.start_page_offset)
             page_str = str(st.session_state.page_idx + st.session_state.start_page_offset)
-            st.caption(f"현재 PDF {st.session_state.page_idx+1}페이지 / 총 {total_pages}페이지 ➡️ 저장될 쪽수: {page_str}쪽")
+            st.caption(f"(현재 {st.session_state.page_idx+1}쪽 / 총 {total_pages}쪽) ➡️ 저장 쪽수: {page_str}쪽")
         else:
             page_str = st.text_input("쪽수", value="1")
     else:
