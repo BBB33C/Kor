@@ -150,7 +150,7 @@ def save_backup_to_cloud(mode_key, df):
     except: return False
 
 # =========================================================
-# [3] 데이터 가공 및 비교 학습 엔진
+# [3] 데이터 가공 및 비교 학습 엔진 (로직 무삭제 보존)
 # =========================================================
 def clean_val_for_save(v):
     if isinstance(v, str): 
@@ -258,7 +258,7 @@ def save_logic_with_learning():
     save_backup_to_cloud(st.session_state.mode_key, st.session_state.master_df)
 
 # =========================================================
-# [4] AI 분석 및 PDF 처리 (메타데이터 제거 및 탐색 로직)
+# [4] AI 분석 및 PDF 처리 (메타데이터 제거 로직 보존)
 # =========================================================
 def clean_raw_text(text):
     # 인디자인(.indd), 날짜, 불필요 파일 시스템 정보 제거
@@ -372,26 +372,20 @@ if st.session_state.step == 0:
         if st.button("🏔️\n\n북한 문화어\n\n(문화어 규범 기준)\n\n[ 시작하기 ]", key="btn_north", use_container_width=True):
             st.session_state.mode_key = "NORTH"; st.session_state.step = 1; st.rerun()
 
-# STEP 1: 데이터 소스 선택 (Excel/PDF/이미지 통합 지원)
+# STEP 1: 데이터 소스 선택 (Excel 전용으로 복구)
 elif st.session_state.step == 1:
     st.header("📂 데이터 소스 선택")
     col1, col2 = st.columns(2)
     with col1:
         with st.container(border=True):
             st.subheader("📂 이어하기")
-            up_file = st.file_uploader("기존 프로젝트 또는 분석 파일 업로드", type=['xlsx', 'pdf', 'png', 'jpg'])
-            if up_file:
-                if up_file.name.lower().endswith('.xlsx'):
-                    try:
-                        st.session_state.master_df = pd.read_excel(up_file)
-                        st.session_state.step = 2; st.rerun()
-                    except: st.error("파일 형식이 올바르지 않습니다.")
-                else:
-                    st.session_state.file_bytes = up_file.getvalue()
-                    st.session_state.file_type = up_file.type
-                    st.session_state.page_idx = 0
-                    st.session_state.extracted_text = extract_text_unified(st.session_state.file_bytes, up_file.type, 0)
+            # [사용자 지시 반영] 엑셀 파일(.xlsx)만 업로드 가능하도록 되돌림
+            up_excel = st.file_uploader("기존 분석 엑셀 파일 업로드", type=['xlsx'])
+            if up_excel:
+                try:
+                    st.session_state.master_df = pd.read_excel(up_excel)
                     st.session_state.step = 2; st.rerun()
+                except: st.error("엑셀 파일 형식이 올바르지 않습니다.")
     with col2:
         with st.container(border=True):
             st.subheader("🆕 새로 시작하기")
@@ -400,7 +394,7 @@ elif st.session_state.step == 1:
     st.markdown("---")
     if st.button("⬅️ 모드 다시 선택"): st.session_state.step = 0; st.rerun()
 
-# STEP 2: 자료 입력 (페이지 즉시 이동 및 저장 위치 안내 강화)
+# STEP 2: 자료 입력 (페이지 즉시 이동 및 저장 위치 안내 보존)
 elif st.session_state.step == 2:
     st.session_state.is_finished = False
     c_t, c_h = st.columns([8, 2])
@@ -458,7 +452,7 @@ elif st.session_state.step == 2:
                 if st.session_state.file_type == "application/pdf":
                     st.write(f"📄 **PDF 분석 상태:** {st.session_state.page_idx + 1} / {st.session_state.total_pages} 페이지")
                     
-                    # [페이지 제어 및 즉시 이동 센터]
+                    # [페이지 제어 센터]
                     st.markdown('<div class="page-jump-box">', unsafe_allow_html=True)
                     j_col1, j_col2, j_col3 = st.columns([1, 1.5, 1])
                     with j_col1:
@@ -466,7 +460,7 @@ elif st.session_state.step == 2:
                             st.session_state.page_idx -= 1
                             st.session_state.extracted_text = extract_text_unified(st.session_state.file_bytes, st.session_state.file_type, st.session_state.page_idx); st.rerun()
                     with j_col2:
-                        # 숫자 직접 입력하여 페이지 점프
+                        # 숫자 직접 입력하여 페이지 점프 기능 보존
                         target_p = st.number_input("페이지 이동", min_value=1, max_value=st.session_state.total_pages, value=st.session_state.page_idx + 1, label_visibility="collapsed")
                         if target_p != st.session_state.page_idx + 1:
                             st.session_state.page_idx = target_p - 1
@@ -477,7 +471,7 @@ elif st.session_state.step == 2:
                             st.session_state.extracted_text = extract_text_unified(st.session_state.file_bytes, st.session_state.file_type, st.session_state.page_idx); st.rerun()
                     st.markdown('</div>', unsafe_allow_html=True)
                     
-                    # 저장 위치 안내 문구 수정 적용
+                    # 저장 위치 안내 문구 ("~쪽으로 기록됩니다") 보존
                     st.session_state.start_offset = st.number_input("시작 쪽수 설정 (PDF 1쪽의 도서 쪽수)", value=st.session_state.start_offset)
                     actual_save_page = st.session_state.page_idx + st.session_state.start_offset
                     st.info(f"💾 **저장 위치 미리보기:** 현재 페이지 분석 시 엑셀의 **'{actual_save_page}쪽'**으로 기록됩니다.")
