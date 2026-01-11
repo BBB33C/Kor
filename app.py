@@ -35,40 +35,26 @@ if 'page_idx' not in st.session_state: st.session_state.page_idx = 0
 if 'start_offset' not in st.session_state: st.session_state.start_offset = 1
 if 'extracted_text' not in st.session_state: st.session_state.extracted_text = ""
 if 'debug_mode' not in st.session_state: st.session_state.debug_mode = False
-if 'last_raw_response' not in st.session_state: st.session_state.last_raw_response = "" # 디버깅용 저장소
+if 'last_raw_response' not in st.session_state: st.session_state.last_raw_response = "" # 디버깅 데이터 저장용
 
 # =========================================================
-# [1] 디자인: CSS 매직 (다크모드 고정, 네온 효과)
+# [1] 디자인: CSS 매직
 # =========================================================
 if st.session_state.step == 0:
     st.markdown("""
         <style>
-            /* 0. 강제 다크 모드 */
-            .stApp {
-                background-color: #0e1117 !important;
-                color: #ffffff !important;
-            }
-            
-            /* 기본 폰트 */
+            .stApp { background-color: #0e1117 !important; color: #ffffff !important; }
             .stTextArea textarea { font-family: 'Malgun Gothic', sans-serif !important; }
-            
-            /* 1. 메인 버튼 스타일 (화면 중앙 2개) */
             div.block-container div[data-testid="column"] div.stButton > button {
-                width: 100%;
-                height: 320px;
+                width: 100%; height: 320px;
                 background-color: #262730 !important;
                 border: 2px solid rgba(255,255,255,0.05) !important;
                 border-radius: 20px !important;
                 color: #eeeeee !important;
+                font-size: 1.5rem !important; font-weight: 700 !important;
                 transition: all 0.3s ease !important;
-                font-size: 1.5rem !important;
-                font-weight: 700 !important;
-                white-space: pre-wrap;
-                line-height: 1.6 !important;
                 box-shadow: 0 4px 10px rgba(0,0,0,0.3) !important;
             }
-            
-            /* 호버 효과 */
             div.block-container div[data-testid="column"] div.stButton > button:hover {
                 transform: translateY(-8px);
                 background-color: #2b2c36 !important;
@@ -76,7 +62,6 @@ if st.session_state.step == 0:
         </style>
     """, unsafe_allow_html=True)
 else:
-    # [Step 1~4] 작업 화면용 스타일
     st.markdown("""
         <style>
             .stApp { background-color: #0e1117 !important; color: #ffffff !important; }
@@ -85,14 +70,14 @@ else:
         </style>
     """, unsafe_allow_html=True)
 
-# 라이브러리 로드 확인
+# 라이브러리 로드
 try:
     import pdfplumber
     PLUMBER_AVAILABLE = True
 except ImportError:
     PLUMBER_AVAILABLE = False
 try:
-    import fitz  # PyMuPDF
+    import fitz
     FITZ_AVAILABLE = True
 except ImportError:
     FITZ_AVAILABLE = False
@@ -157,8 +142,18 @@ def save_backup_to_cloud(mode_key, df):
     except: return False
 
 # =========================================================
-# [3] AI 엔진 & 데이터 로직 (디버깅 강화)
+# [3] AI 엔진 & 데이터 로직
 # =========================================================
+def generate_prompt_from_sheet(sheet_data):
+    if not sheet_data: return ""
+    rules = []
+    for row in sheet_data[-100:]:
+        if row.get('action') == 'delete':
+            rules.append(f"- [제외 권장]: '{row.get('original_word')}'는 과거 삭제 이력이 있습니다. 문맥상 불필요하면 제외하세요.")
+        elif row.get('action') in ['add', 'modify']:
+            rules.append(f"- [고정 규칙]: '{row.get('original_word')}' -> 원형:'{row.get('root_word')}', 분류:'{row.get('origin')}', 품사:'{row.get('pos')}'")
+    return "\n[사용자 학습 데이터]:\n" + "\n".join(rules) + "\n" if rules else ""
+
 def api_call_direct(prompt, image_bytes=None):
     if not API_KEY: return None
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={API_KEY.strip()}"
@@ -169,10 +164,9 @@ def api_call_direct(prompt, image_bytes=None):
     try:
         res = requests.post(url, headers=headers, json={"contents": [{"parts": parts}]}, timeout=300)
         if res.status_code == 200:
-            # 원본 응답 텍스트 반환
             return res.json()['candidates'][0]['content']['parts'][0]['text']
         else:
-            return f"API Error: {res.status_code} - {res.text}"
+            return f"API Error: {res.status_code}"
     except Exception as e:
         return f"Request Error: {str(e)}"
 
@@ -186,8 +180,7 @@ def extract_text_unified(file_bytes, file_type, page_idx):
         if PLUMBER_AVAILABLE:
             try:
                 with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
-                    if page_idx < len(pdf.pages):
-                        raw_text = pdf.pages[page_idx].extract_text()
+                    if page_idx < len(pdf.pages): raw_text = pdf.pages[page_idx].extract_text()
             except: pass
         if (not raw_text or len(raw_text) < 10) and FITZ_AVAILABLE:
             try:
@@ -201,7 +194,6 @@ def extract_text_unified(file_bytes, file_type, page_idx):
                     pix = doc[page_idx].get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
                     raw_text = api_call_vision_ocr(pix.tobytes("png"))
              except: pass
-
     lines = raw_text.split('\n')
     cleaned = [l for l in lines if not re.search(r'\.indd|\d{4}-\d{2}-\d{2}|오후|오전', l)]
     return "\n".join(cleaned).strip()
@@ -261,7 +253,7 @@ def merge_master_data(old_df, new_df):
     result_df = result_df.sort_values(['sk', '자료']).drop('sk', axis=1)
     return result_df
 
-# [수정된 함수] API 응답 원본도 함께 반환
+# [수정] AI 분석 함수 (Raw Response 반환 추가)
 def get_analysis_hybrid(text, image_bytes, sheet_data, mode_key):
     prompt = f"""
     당신은 '{"대한민국 표준어" if mode_key=="SOUTH" else "북한 문화어"}' 형태소 분석 전문가입니다.
@@ -281,24 +273,22 @@ def get_analysis_hybrid(text, image_bytes, sheet_data, mode_key):
     if not raw_response:
         return [], "No response from API"
 
-    # 2. JSON 추출 (Markdown 코드블록 제거)
+    # 2. JSON 파싱 시도
     try:
         clean_json = raw_response.replace("```json", "").replace("```", "").strip()
         match = re.search(r'\[.*\]', clean_json, re.DOTALL)
         if match:
             return json.loads(match.group()), raw_response
         else:
-            return [], raw_response # JSON 패턴 못 찾음
+            return [], raw_response
     except Exception as e:
-        return [], f"JSON Parsing Error: {str(e)}\nRaw: {raw_response}"
+        return [], f"JSON Parsing Error: {str(e)}\nRaw Response: {raw_response}"
 
 # =========================================================
 # [4] UI: 메인 루프
 # =========================================================
 
-# ---------------------------------------------------------
-# [SIDEBAR]: 관리자 모드 제어
-# ---------------------------------------------------------
+# 사이드바 (관리자 모드 제어)
 with st.sidebar:
     st.markdown("### ⚙️ 설정")
     if st.session_state.debug_mode:
@@ -317,27 +307,18 @@ with st.sidebar:
 # ---------------------------------------------------------
 if st.session_state.step == 0:
     st.markdown("<h1 style='text-align: center; margin-bottom: 20px;'>📚 국어활동 AI 분석기</h1>", unsafe_allow_html=True)
-    
     if st.session_state.debug_mode:
-        st.warning("🚧 [관리자 모드]가 활성화되었습니다. 이제 모드를 선택하면 로그 패널과 함께 작업이 시작됩니다.")
+        st.warning("🚧 [관리자 모드] 활성화됨. 분석 시 상세 로그가 표시됩니다.")
     else:
         st.markdown("<p style='text-align: center; color: #888; margin-bottom: 50px;'>원하는 언어 규범을 선택하여 분석을 시작하세요.</p>", unsafe_allow_html=True)
     
     _, c_south, c_north, _ = st.columns([1, 4, 4, 1])
     
     with c_south:
-        # [남한] Royal Blue
         st.markdown("""
         <style>
-            div[data-testid="column"]:nth-of-type(2) div.stButton > button {
-                border-color: rgba(41, 121, 255, 0.4) !important;
-                box-shadow: 0 0 10px rgba(41, 121, 255, 0.1) !important;
-            }
-            div[data-testid="column"]:nth-of-type(2) div.stButton > button:hover {
-                border-color: #2979ff !important;
-                box-shadow: 0 0 35px rgba(41, 121, 255, 0.7) !important;
-                color: #2979ff !important;
-            }
+            div[data-testid="column"]:nth-of-type(2) div.stButton > button { border-color: rgba(41, 121, 255, 0.4) !important; box-shadow: 0 0 10px rgba(41, 121, 255, 0.1) !important; }
+            div[data-testid="column"]:nth-of-type(2) div.stButton > button:hover { border-color: #2979ff !important; box-shadow: 0 0 35px rgba(41, 121, 255, 0.7) !important; color: #2979ff !important; }
         </style>
         """, unsafe_allow_html=True)
         if st.button("🏛️\n\n대한민국 표준어\n\n(표준국어대사전 기준)\n\n[ 시작하기 ]", key="btn_south", use_container_width=True):
@@ -347,18 +328,10 @@ if st.session_state.step == 0:
             time.sleep(0.5); st.rerun()
 
     with c_north:
-        # [북한] Rose Red
         st.markdown("""
         <style>
-            div[data-testid="column"]:nth-of-type(3) div.stButton > button {
-                border-color: rgba(255, 23, 68, 0.4) !important;
-                box-shadow: 0 0 10px rgba(255, 23, 68, 0.1) !important;
-            }
-            div[data-testid="column"]:nth-of-type(3) div.stButton > button:hover {
-                border-color: #ff1744 !important;
-                box-shadow: 0 0 35px rgba(255, 23, 68, 0.7) !important;
-                color: #ff1744 !important;
-            }
+            div[data-testid="column"]:nth-of-type(3) div.stButton > button { border-color: rgba(255, 23, 68, 0.4) !important; box-shadow: 0 0 10px rgba(255, 23, 68, 0.1) !important; }
+            div[data-testid="column"]:nth-of-type(3) div.stButton > button:hover { border-color: #ff1744 !important; box-shadow: 0 0 35px rgba(255, 23, 68, 0.7) !important; color: #ff1744 !important; }
         </style>
         """, unsafe_allow_html=True)
         if st.button("🏔️\n\n북한 문화어\n\n(문화어 규범 기준)\n\n[ 시작하기 ]", key="btn_north", use_container_width=True):
@@ -372,38 +345,27 @@ if st.session_state.step == 0:
 # ---------------------------------------------------------
 elif st.session_state.step == 1:
     st.header("📂 데이터 소스 선택")
-    
-    if st.session_state.debug_mode:
-        st.info(f"🔧 현재 모드: {st.session_state.mode_key} | 디버깅 활성 상태")
+    if st.session_state.debug_mode: st.info(f"🔧 현재 모드: {st.session_state.mode_key}")
 
     col1, col2 = st.columns(2)
-    
     with col1:
         with st.container(border=True):
             st.subheader("📂 이어하기")
-            st.caption("기존 엑셀 파일 (.xlsx)")
             up_excel = st.file_uploader("엑셀 파일 업로드", type=['xlsx'])
             if up_excel:
                 try:
-                    loaded = pd.read_excel(up_excel)
-                    st.session_state.master_df = loaded
+                    st.session_state.master_df = pd.read_excel(up_excel)
                     st.session_state.step = 2
-                    st.toast("데이터 로드 완료")
-                    time.sleep(0.5); st.rerun()
-                except Exception as e: 
-                    st.error("파일 오류")
-                    if st.session_state.debug_mode: st.error(f"Error Log: {e}")
-
+                    st.rerun()
+                except Exception as e: st.error("파일 오류")
     with col2:
         with st.container(border=True):
             st.subheader("🆕 새로 시작하기")
-            st.caption("빈 데이터로 시작")
             st.write("") 
             if st.button("새 프로젝트 생성", use_container_width=True):
                 st.session_state.master_df = None
                 st.session_state.step = 2
                 st.rerun()
-    
     st.markdown("---")
     if st.button("⬅️ 모드 다시 선택"): st.session_state.step = 0; st.rerun()
 
@@ -412,43 +374,39 @@ elif st.session_state.step == 1:
 # ---------------------------------------------------------
 elif st.session_state.step == 2:
     c_title, c_home = st.columns([8, 2])
-    with c_title:
-        st.header("📝 분석 자료 입력")
+    with c_title: st.header("📝 분석 자료 입력")
     with c_home:
         if st.button("🏠 처음으로\n(초기화)", use_container_width=True):
-            st.session_state.clear()
-            st.rerun()
+            st.session_state.clear(); st.rerun()
 
     tab1, tab2 = st.tabs(["📄 파일 분석", "✍️ 직접 입력"])
     
-    # [수정된 분석 로직] 디버깅 + 빈 데이터 필터링
+    # [수정] 3. 실행 로직 함수 (변수 인자 명확화 및 빈 데이터 처리)
     def run_analysis_logic(txt, img=None):
-        if not txt.strip():
-            st.warning("⚠️ 분석할 텍스트가 없습니다.")
+        if not txt or not txt.strip():
+            st.warning("⚠️ 분석할 텍스트가 없습니다. 내용을 확인해주세요.")
             return
 
         with st.spinner("AI 분석 중... (잠시만 기다려주세요)"):
-            # 1. API 호출
             s_data = get_sheet_data_fresh(st.session_state.mode_key)[1]
             res, raw_response = get_analysis_hybrid(txt, img, s_data, st.session_state.mode_key)
             
-            # [디버깅] 원본 응답 저장 (화면 갱신되더라도 유지)
+            # [디버깅 저장]
             st.session_state.last_raw_response = raw_response
             
-            # [버그 수정: 강력한 필터링]
             proc = []
             temp_dict = {}
             om = {'고':'🔵 고', '한':'🟢 한', '외':'🔴 외', '혼':'🟣 혼'}
             pm = {'명사':'📦 명사', '동사':'🏃 동사', '형용사':'🎨 형용사', '부사':'⚡ 부사', '관형사':'🔍 관형사', '대명사':'👤 대명사'}
             
             for r in res:
-                # 안전한 문자열 변환 및 공백 제거
+                # [버그 수정] 빈 데이터(Empty String/Null) 필터링
                 o_word = str(r.get('original_word', '')).strip()
                 r_word = str(r.get('root_word', '')).strip()
                 
-                # 빈 문자열, None, null 문자열 모두 차단
-                if not o_word or o_word.lower() == 'none' or o_word.lower() == 'null': continue
-                if not r_word or r_word.lower() == 'none' or r_word.lower() == 'null': continue
+                # 빈 문자열이면 즉시 스킵
+                if not o_word or o_word.lower() == 'none': continue
+                if not r_word or r_word.lower() == 'none': continue
 
                 key = (r_word, r.get('origin','혼'), r.get('pos','명사'))
                 if key not in temp_dict: temp_dict[key] = []
@@ -456,7 +414,7 @@ elif st.session_state.step == 2:
             
             for (root, origin, pos), origs in temp_dict.items():
                 cnts = Counter(origs)
-                # 포맷팅 시에도 빈 값 한 번 더 체크
+                # 포맷팅 시 빈 문자열 제외
                 valid_items = [f"{w}({c})" for w, c in cnts.items() if w and w.strip()]
                 if not valid_items: continue
                 
@@ -499,35 +457,35 @@ elif st.session_state.step == 2:
             with c2:
                 txt_input = st.text_area("에디터", value=st.session_state.extracted_text, height=500)
                 st.session_state.extracted_text = txt_input
+                # [수정] 파일 탭 전용 버튼 (txt_input 전달)
                 if st.button("🚀 분석 실행", type="primary", use_container_width=True, key="run_file"):
                     run_analysis_logic(txt_input, st.session_state.file_bytes)
 
     with tab2:
         direct_txt = st.text_area("텍스트 입력", height=400)
+        # [수정] 직접 입력 탭 전용 버튼 (direct_txt 전달)
         if st.button("🚀 분석 실행", type="primary", key="run_direct"):
             st.session_state.extracted_text = direct_txt
             run_analysis_logic(direct_txt)
 
 # ---------------------------------------------------------
-# STEP 3: 결과 확인 (디버깅 패널 + 오류 해결)
+# STEP 3: 결과 확인 (디버그 & 오류 해결)
 # ---------------------------------------------------------
 elif st.session_state.step == 3:
     st.header("📊 분석 결과 확인")
     
-    # [디버깅 패널] 관리자 모드일 때만 보임
+    # [수정] 디버그 패널 (Raw Response 확인)
     if st.session_state.debug_mode:
         with st.expander("🔴 [DEBUG] AI 응답 원본 확인", expanded=True):
-            st.info("AI가 반환한 Raw Data입니다. 데이터가 이상하면 여기를 확인하세요.")
+            st.info("AI가 반환한 Raw Data입니다. 오류 발생 시 확인하세요.")
             st.code(st.session_state.get('last_raw_response', '데이터 없음'))
 
     with st.expander("📝 원문 텍스트 보기 (클릭)", expanded=False):
         st.text_area("분석 대상", value=st.session_state.extracted_text, height=200, disabled=True)
 
-    # [호환성 해결] st.dialog vs st.experimental_dialog
-    if hasattr(st, "dialog"):
-        dlg = st.dialog
-    else:
-        dlg = st.experimental_dialog
+    # Dialog 함수 호환성 처리
+    if hasattr(st, "dialog"): dlg = st.dialog
+    else: dlg = st.experimental_dialog
 
     @dlg("➕ 단어 추가")
     def add_manual_item():
