@@ -36,80 +36,57 @@ if 'extracted_text' not in st.session_state: st.session_state.extracted_text = "
 if 'debug_mode' not in st.session_state: st.session_state.debug_mode = False
 
 # =========================================================
-# [1] 디자인: 상시 발광(Always Visible) CSS (Step 0)
+# [1] 디자인: 중앙 정렬 & 네온 발광 CSS (Step 0)
 # =========================================================
 if st.session_state.step == 0:
     st.markdown("""
         <style>
-            /* 0. 강제 다크 모드 적용 (배경색 고정) */
-            .stApp {
-                background-color: #0e1117 !important;
-                color: #ffffff !important;
-            }
-            
             /* 기본 폰트 */
             .stTextArea textarea { font-family: 'Malgun Gothic', sans-serif !important; }
             
-            /* 1. 버튼 공통 스타일 */
-            div.block-container div[data-testid="column"] div.stButton > button {
-                width: 100%;
+            /* 1. 버튼 스타일 */
+            div.stButton > button {
+                width: 100%; /* 컬럼 안에서는 꽉 차게 (컬럼 자체를 줄일 예정) */
                 height: 320px;
                 background-color: #262730 !important;
+                border: 2px solid rgba(255,255,255,0.1) !important;
                 border-radius: 20px !important;
                 color: #eeeeee !important;
                 transition: all 0.3s ease !important;
+                box-shadow: 0 4px 6px rgba(0,0,0,0.3) !important;
+                
+                /* 텍스트 스타일 */
                 font-size: 1.5rem !important;
                 font-weight: 700 !important;
                 white-space: pre-wrap;
                 line-height: 1.6 !important;
-                overflow: visible !important;
-                position: relative;
-                z-index: 1;
             }
             
-            /* 호버 시 떠오름 효과 */
-            div.block-container div[data-testid="column"] div.stButton > button:hover {
+            /* 2. 호버 효과 */
+            div.stButton > button:hover {
                 transform: translateY(-8px);
-                z-index: 10;
+                background-color: #2b2c36 !important;
             }
 
-            /* 2. [왼쪽: 대한민국] - 평소에도 푸른빛 */
-            div[data-testid="column"]:nth-of-type(1) div.stButton > button {
-                border: 3px solid rgba(0, 204, 255, 0.4) !important; /* 평소에도 보임 */
-                box-shadow: 0 0 15px rgba(0, 204, 255, 0.1) !important;
-            }
-            /* 호버 시 강한 파란 발광 */
-            div[data-testid="column"]:nth-of-type(1) div.stButton > button:hover {
-                background-color: #1e293b !important;
+            /* 3. 컬럼별 색상 (CSS 선택자 수정됨) */
+            /* 첫 번째 버튼 (대한민국) -> Cyan Blue Glow */
+            div.stButton > button:first-child:hover {
                 border-color: #00ccff !important;
-                box-shadow: 0 0 40px rgba(0, 204, 255, 0.8) !important;
+                box-shadow: 0 0 30px rgba(0, 204, 255, 0.6) !important;
                 color: #00ccff !important;
             }
-
-            /* 3. [오른쪽: 북한] - 평소에도 붉은빛 */
-            div[data-testid="column"]:nth-of-type(2) div.stButton > button {
-                border: 3px solid rgba(255, 51, 102, 0.4) !important; /* 평소에도 보임 */
-                box-shadow: 0 0 15px rgba(255, 51, 102, 0.1) !important;
-            }
-            /* 호버 시 강한 붉은 발광 */
-            div[data-testid="column"]:nth-of-type(2) div.stButton > button:hover {
-                background-color: #2b1d1d !important;
-                border-color: #ff3366 !important;
-                box-shadow: 0 0 40px rgba(255, 51, 102, 0.8) !important;
-                color: #ff3366 !important;
-            }
+            /* (두 버튼 모두 같은 클래스일 수 있으므로, 정확한 타겟팅을 위해 아래 로직은 Python 측 배치에 의존) */
         </style>
     """, unsafe_allow_html=True)
 else:
     # [Step 1~4] 작업 단계용 스타일
     st.markdown("""
         <style>
-            .stApp { background-color: #0e1117 !important; color: #ffffff !important; }
             .stTextArea textarea { font-family: 'Malgun Gothic', sans-serif !important; font-size: 16px !important; line-height: 1.6 !important; }
             .stButton button { border-radius: 8px; font-weight: bold; height: auto; }
             
             .progress-box { display: flex; justify-content: space-between; margin: 20px 0 40px 0; border-bottom: 1px solid #444; padding-bottom: 10px; }
-            .step-item { color: #888; font-size: 0.9rem; font-weight: 500; }
+            .step-item { color: #666; font-size: 0.9rem; font-weight: 500; }
             .step-active { color: #4CAF50; font-weight: 700; border-bottom: 3px solid #4CAF50; padding-bottom: 7px; }
         </style>
     """, unsafe_allow_html=True)
@@ -364,7 +341,7 @@ if st.session_state.step > 0:
     st.markdown('</div>', unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# STEP 0: 시작 화면 (메인 2개 버튼 + 관리자 알림)
+# STEP 0: 시작 화면 (중앙 정렬 배치)
 # ---------------------------------------------------------
 if st.session_state.step == 0:
     st.markdown("<h1 style='text-align: center; margin-bottom: 20px;'>📚 국어활동 AI 분석기</h1>", unsafe_allow_html=True)
@@ -374,10 +351,22 @@ if st.session_state.step == 0:
     else:
         st.markdown("<p style='text-align: center; color: #888; margin-bottom: 50px;'>원하는 언어 규범을 선택하여 분석을 시작하세요.</p>", unsafe_allow_html=True)
     
-    # 2개의 컬럼만 사용 (집중도 UP & 버튼 크기 확대)
-    c1, c2 = st.columns(2)
+    # [중앙 정렬 트릭] 4개의 컬럼을 쓰고 가운데 2개만 사용
+    # 비율: [빈공간 1] [버튼 4] [버튼 4] [빈공간 1]
+    _, c_south, c_north, _ = st.columns([1, 4, 4, 1])
     
-    with c1:
+    with c_south:
+        st.markdown("""
+        <style>
+            /* 이 컬럼 안의 버튼에만 파란색 효과 적용 */
+            div.stButton > button { border-color: rgba(0,204,255,0.3) !important; }
+            div.stButton > button:hover {
+                border-color: #00ccff !important;
+                box-shadow: 0 0 30px rgba(0, 204, 255, 0.6) !important;
+                color: #00ccff !important;
+            }
+        </style>
+        """, unsafe_allow_html=True)
         label_south = "🏛️\n\n대한민국 표준어\n\n(표준국어대사전 기준)\n\n[ 시작하기 ]"
         if st.button(label_south, key="btn_south", use_container_width=True):
             st.session_state.mode_key = "SOUTH"
@@ -385,7 +374,18 @@ if st.session_state.step == 0:
             st.toast("✅ 대한민국 학습 서버에 연결되었습니다.")
             time.sleep(0.5); st.rerun()
 
-    with c2:
+    with c_north:
+        st.markdown("""
+        <style>
+            /* 이 컬럼 안의 버튼에만 붉은색 효과 적용 */
+            div.stButton > button { border-color: rgba(255,51,102,0.3) !important; }
+            div.stButton > button:hover {
+                border-color: #ff3366 !important;
+                box-shadow: 0 0 30px rgba(255, 51, 102, 0.6) !important;
+                color: #ff3366 !important;
+            }
+        </style>
+        """, unsafe_allow_html=True)
         label_north = "🏔️\n\n북한 문화어\n\n(문화어 규범 기준)\n\n[ 시작하기 ]"
         if st.button(label_north, key="btn_north", use_container_width=True):
             st.session_state.mode_key = "NORTH"
