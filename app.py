@@ -153,7 +153,7 @@ def save_backup_to_cloud(mode_key, df):
     except: return False
 
 # =========================================================
-# [3] 데이터 가공 및 비교 학습 엔진 (오류 수정을 위해 정의를 최상단으로 이동)
+# [3] 데이터 가공 및 비교 학습 엔진
 # =========================================================
 def clean_val_for_save(v):
     if isinstance(v, str): 
@@ -261,10 +261,10 @@ def save_logic_with_learning():
     save_backup_to_cloud(st.session_state.mode_key, st.session_state.master_df)
 
 # =========================================================
-# [4] AI 분석 및 PDF 처리 (메타데이터 제거 로직 보존)
+# [4] AI 분석 및 PDF 처리 (메타데이터 제거 및 필터링 강화)
 # =========================================================
 def clean_raw_text(text):
-    # 인디자인(.indd), 날짜, 불필요 파일 시스템 정보 제거
+    # 인디자인(.indd), 날짜, 불필요 파일 시스템 정보 제거 보존
     text = re.sub(r'.*\.indd.*', '', text)
     text = re.sub(r'\d{4}-\d{2}-\d{2}', '', text)
     text = re.sub(r'(오전|오후)\s+\d{1,2}:\d{2}:\d{2}', '', text)
@@ -322,16 +322,17 @@ def generate_prompt_from_sheet(sheet_data):
     return "\n[사용자 학습 데이터]:\n" + "\n".join(rules) + "\n"
 
 def get_analysis_hybrid(text, image_bytes, sheet_data, mode_key):
-    # 인명/지명/동음이의어 정밀 분류 및 '하다' 규칙 제거 보존
+    # 아라비아 숫자 및 영어 제외 지침 강화
     prompt = f"""
     당신은 국어 분석 전문가입니다. 아래 지침에 따라 텍스트를 JSON으로 분석하십시오.
     {generate_prompt_from_sheet(sheet_data)}
     
     [분석 핵심 규칙]
     1. **특수문자/조사/어미 제거**: 기호나 문장부호, 조사는 절대 포함하지 마세요.
-    2. **의존 명사**: '것', '수', '만큼' 등은 '명사' 품사로 분류하십시오.
-    3. **동음이의어 정밀 처리**: 문맥상 뜻이 갈리는 단어는 반드시 원형 뒤에 괄호로 뜻을 구분하십시오 (예: 배(과일), 배(선박)).
-    4. **개체명 인식 (인명/지명)**: 문맥상 성명은 원형 뒤에 '(이름)', 지역은 '(지명)'을 반드시 표기하십시오 (예: 지혜(이름), 서울(지명)).
+    2. **숫자 및 영어 제외**: 아라비아 숫자(0-9)나 영문자(A-Z, a-z)가 포함된 단어는 무조건 분석 결과에서 제외하십시오. 한글로 표기된 숫자만 포함 가능합니다.
+    3. **의존 명사**: '것', '수', '만큼' 등은 '명사' 품사로 분류하십시오.
+    4. **동음이의어 정밀 처리**: 문맥상 뜻이 갈리는 단어는 반드시 원형 뒤에 괄호로 뜻을 구분하십시오 (예: 배(과일), 배(선박)).
+    5. **개체명 인식 (인명/지명)**: 문맥상 성명은 원형 뒤에 '(이름)', 지역 명칭은 '(지명)'을 반드시 표기하십시오 (예: 지혜(이름), 서울(지명)).
     
     [어종 판별 가이드]
     한자 기반 단어(학교, 분석, 지혜 등)는 반드시 '한'으로 분류하십시오. 순우리말만 '고'입니다.
@@ -349,7 +350,7 @@ def get_analysis_hybrid(text, image_bytes, sheet_data, mode_key):
     except Exception as e: return [], f"JSON Error: {str(e)}\nRaw: {raw}"
 
 # =========================================================
-# [5] UI: 메인 루프 (Wizard)
+# [5] UI: 메인 루프 (PDF/직접입력 로직 통일 및 필터링 강화)
 # =========================================================
 
 with st.sidebar:
@@ -396,7 +397,7 @@ elif st.session_state.step == 1:
     st.markdown("---")
     if st.button("⬅️ 모드 다시 선택"): st.session_state.step = 0; st.rerun()
 
-# STEP 2: 자료 입력 (PDF 이전/다음 및 시작 쪽수 기능 보존)
+# STEP 2: 자료 입력 (로직 통일 및 숫자/영어 필터링 적용)
 elif st.session_state.step == 2:
     st.session_state.is_finished = False
     c_t, c_h = st.columns([8, 2])
@@ -406,6 +407,7 @@ elif st.session_state.step == 2:
 
     input_method = st.radio("방식", ["📄 파일 분석", "✍️ 직접 입력"], horizontal=True, index=st.session_state.current_tab_idx, label_visibility="collapsed")
 
+    # [핵심] 분석 실행 공통 로직 (직접 입력과 PDF 분석 로직 통일)
     def run_analysis_action(txt, img=None):
         if not txt.strip(): st.warning("분석할 내용이 없습니다."); return
         with st.spinner("AI 분석 중..."):
@@ -421,7 +423,11 @@ elif st.session_state.step == 2:
             for r in res:
                 o, root = str(r.get('원본') or '').strip(), str(r.get('원형') or '').strip()
                 orig_v, pos_v = str(r.get('분류') or '혼').strip(), str(r.get('품사') or '명사').strip()
-                if o and root and re.search(r'[가-힣a-zA-Z0-9]', o) and pos_v not in ['조사', '어미', '문장부호']:
+                
+                # 1. 강력 필터링 로직: 아라비아 숫자나 영어가 포함된 경우 분석 결과에서 제외
+                if re.search(r'[0-9a-zA-Z]', o) or re.search(r'[0-9a-zA-Z]', root): continue
+                
+                if o and root and re.search(r'[가-힣]', o) and pos_v not in ['조사', '어미', '문장부호']:
                     draft_items.append({'원본': o, '원형': root, '분류': orig_v, '품사': pos_v})
                     key = (root, orig_v, pos_v)
                     if key not in temp_dict: temp_dict[key] = []
@@ -436,7 +442,6 @@ elif st.session_state.step == 2:
     if input_method == "📄 파일 분석":
         st.session_state.current_tab_idx = 0
         file = st.file_uploader("분석할 파일 업로드 (PDF, PNG, JPG)", type=['pdf', 'png', 'jpg'])
-        
         current_fb = file.getvalue() if file else st.session_state.file_bytes
         current_ft = file.type if file else st.session_state.file_type
         
@@ -475,7 +480,7 @@ elif st.session_state.step == 2:
                     st.markdown("---")
                     st.session_state.start_offset = st.number_input("시작 쪽수 설정 (도서 1쪽의 숫자)", value=st.session_state.start_offset)
                     
-                    # [강조 정보 카드]
+                    # [강조 정보 카드] 요청하신 문구 수정 반영
                     actual_save_page = st.session_state.page_idx + st.session_state.start_offset
                     st.markdown(f"""
                         <div class="info-card">
