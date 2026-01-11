@@ -35,7 +35,7 @@ except ImportError:
 
 # 페이지 기본 설정
 st.set_page_config(
-    page_title="국어활동 AI 분석기 (Ultimate Robust)", 
+    page_title="국어활동 AI 분석기 (Robust Ver.)", 
     page_icon="📚", 
     layout="wide",
     initial_sidebar_state="expanded"
@@ -48,7 +48,7 @@ try:
     if "GEMINI_API_KEY" in st.secrets:
         API_KEY = st.secrets["GEMINI_API_KEY"]
     else:
-        API_KEY = ""
+        API_KEY = "" # 로컬 테스트용
 except:
     API_KEY = ""
 
@@ -179,17 +179,23 @@ def generate_prompt_from_sheet(sheet_data):
         elif row.get('action') in ['add', 'modify']:
             rules.append(f"- [고정 규칙]: '{row.get('original_word')}' -> 원형:'{row.get('root_word')}', 분류:'{row.get('origin')}', 품사:'{row.get('pos')}'")
     if rules:
-        return "\n[🚨 사용자 학습 규칙]:\n" + "\n".join(rules) + "\n"
+        return "\n[🚨 최우선 사용자 학습 규칙]:\n" + "\n".join(rules) + "\n"
     return ""
 
 def api_call_direct(prompt, image_bytes=None):
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={API_KEY.strip()}"
     headers = {'Content-Type': 'application/json'}
     parts = [{"text": prompt}]
+    
     if image_bytes:
         b64_image = base64.b64encode(image_bytes).decode('utf-8')
         parts.append({"inline_data": {"mime_type": "image/png", "data": b64_image}})
-    data = {"contents": [{"parts": parts}], "generationConfig": {"temperature": 0.1, "maxOutputTokens": 8192}}
+    
+    data = {
+        "contents": [{"parts": parts}],
+        "generationConfig": {"temperature": 0.1, "maxOutputTokens": 8192}
+    }
+    
     try:
         response = requests.post(url, headers=headers, json=data, timeout=300)
         if response.status_code != 200: return None
@@ -203,8 +209,14 @@ def api_call_vision_ocr(image_bytes):
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={API_KEY.strip()}"
     headers = {'Content-Type': 'application/json'}
     base64_image = base64.b64encode(image_bytes).decode('utf-8')
+    
     prompt_text = "이 이미지에 있는 텍스트를 보이는 그대로 추출해주세요. 말풍선, 단락은 줄바꿈으로 구분."
-    data = {"contents": [{"parts": [{"text": prompt_text}, {"inline_data": {"mime_type": "image/png", "data": base64_image}}]}], "generationConfig": {"temperature": 0.1}}
+    
+    data = {
+        "contents": [{"parts": [{"text": prompt_text}, {"inline_data": {"mime_type": "image/png", "data": base64_image}}]}],
+        "generationConfig": {"temperature": 0.1}
+    }
+    
     try:
         response = requests.post(url, headers=headers, json=data, timeout=300)
         if response.status_code == 200:
@@ -243,7 +255,7 @@ def get_analysis_hybrid(text, image_bytes, sheet_data, mode_key):
     [JSON 예시]
     [
         {{"original_word": "배를", "root_word": "배", "origin": "고", "pos": "명사"}},
-        {{"original_word": "공부했다", "root_word": "공부", "origin": "한", "pos": "명사"}}
+        {{"original_word": "공부했다", "root_word": "공부", "origin": "한", "pos": "동사"}}
     ]
     """
     
@@ -278,27 +290,23 @@ def get_analysis_hybrid(text, image_bytes, sheet_data, mode_key):
         return all_results
 
 # =========================================================
-# [4] 파일 처리 및 텍스트 추출 (GP9 로직 + 메모리 복제 수정)
+# [4] 파일 처리 및 텍스트 추출 (핵심 변경: bytes 사용)
 # =========================================================
-def extract_text_unified(file_obj, page_idx):
-    """GP9 추출 로직 + BytesIO 복제(파일 닫힘 방지)"""
-    file_type = file_obj.type
-    
-    # [핵심 수정] 파일 객체를 직접 쓰지 않고, 메모리에 복제본을 생성해 사용
-    # 이렇게 하면 라이브러리가 파일을 닫아도 원본 file_obj는 안전함
-    bytes_data = file_obj.getvalue()
-    
+def extract_text_unified(file_bytes, file_type, page_idx):
+    """
+    [핵심 수정] 파일 객체가 아닌 'bytes' 데이터를 직접 받아 처리
+    이로써 파일 닫힘(Closed file)이나 커서 위치 문제를 원천 차단함
+    """
     if "image" in file_type:
-        try: return api_call_vision_ocr(bytes_data)
+        try: return api_call_vision_ocr(file_bytes)
         except: return ""
         
     elif "pdf" in file_type:
         text = ""
-        # 1. pdfplumber 시도
+        # 1. pdfplumber 시도 (BytesIO로 래핑하여 전달)
         if PLUMBER_AVAILABLE:
             try:
-                # 복제된 스트림 사용
-                with pdfplumber.open(io.BytesIO(bytes_data)) as pdf:
+                with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
                     if page_idx < len(pdf.pages):
                         page = pdf.pages[page_idx]
                         width, height = page.width, page.height
@@ -311,20 +319,18 @@ def extract_text_unified(file_obj, page_idx):
                             text = page.extract_text()
             except: pass
         
-        # 2. Fitz 시도
+        # 2. Fitz 시도 (stream 파라미터 사용)
         if not text and FITZ_AVAILABLE:
             try:
-                # 복제된 스트림 사용
-                doc = fitz.open(stream=bytes_data, filetype="pdf")
+                doc = fitz.open(stream=file_bytes, filetype="pdf")
                 if page_idx < len(doc):
                     text = doc[page_idx].get_text()
             except: pass
         
-        # 3. Vision OCR 시도
+        # 3. Vision OCR 시도 (스캔본 대응)
         if (not text or len(text.strip()) < 30) and FITZ_AVAILABLE:
             try:
-                # 복제된 스트림 사용
-                doc = fitz.open(stream=bytes_data, filetype="pdf")
+                doc = fitz.open(stream=file_bytes, filetype="pdf")
                 if page_idx < len(doc):
                     pix = doc[page_idx].get_pixmap(matrix=fitz.Matrix(2, 2))
                     img_bytes = pix.tobytes("png")
@@ -334,17 +340,15 @@ def extract_text_unified(file_obj, page_idx):
         return text if text else ""
     return ""
 
-def get_page_image_bytes(file_obj, page_idx):
-    """뷰어용 이미지 생성"""
-    file_type = file_obj.type
-    # [핵심 수정] 여기서도 복제본 사용
-    bytes_data = file_obj.getvalue()
-    
+def get_page_image_bytes(file_bytes, file_type, page_idx):
+    """
+    [핵심 수정] 파일 객체 대신 bytes 데이터를 직접 사용하여 이미지 생성
+    """
     if "image" in file_type:
-        return bytes_data
+        return file_bytes
     elif "pdf" in file_type and FITZ_AVAILABLE:
         try:
-            doc = fitz.open(stream=bytes_data, filetype="pdf")
+            doc = fitz.open(stream=file_bytes, filetype="pdf")
             if 0 <= page_idx < len(doc):
                 pix = doc[page_idx].get_pixmap(matrix=fitz.Matrix(2.0, 2.0)) 
                 return pix.tobytes("png")
@@ -512,15 +516,22 @@ with st.sidebar:
 st.subheader("1. 분석 자료 입력")
 main_file = st.file_uploader("PDF/이미지 파일", type=['pdf', 'png', 'jpg'])
 
+# [오류 해결 1] AttributeError 방지를 위해 .id 사용 금지
 if main_file:
-    # [오류 해결] AttributeError 방지 (id 대신 name+size)
+    # 파일 고유 식별 (이름+크기)
     fid = f"{main_file.name}_{main_file.size}"
+    
     if st.session_state.file_hash != fid:
         st.session_state.file_hash = fid
         st.session_state.page_idx = 0
         st.session_state.analysis_result = []
-        # 파일이 변경되면 즉시 텍스트 추출 실행
-        st.session_state.editor_text_content = extract_text_unified(main_file, 0)
+        
+        # [핵심 수정] 파일 내용을 *즉시* 메모리로 복사 (파일 닫힘 방지)
+        file_bytes = main_file.getvalue()
+        
+        # 텍스트 추출 시 복제된 bytes 전달
+        extracted = extract_text_unified(file_bytes, main_file.type, 0)
+        st.session_state.editor_text_content = extracted
         st.rerun()
 
 total_pages = 1
@@ -538,7 +549,9 @@ col_v, col_i = st.columns([1, 1])
 with col_v:
     if main_file:
         st.info("📷 미리보기")
-        img = get_page_image_bytes(main_file, st.session_state.page_idx)
+        # [핵심 수정] 미리보기 생성 시에도 원본 파일 대신 복제본 사용해야 안전함
+        # 하지만 main_file.getvalue()는 캐시되므로 호출해도 안전
+        img = get_page_image_bytes(main_file.getvalue(), main_file.type, st.session_state.page_idx)
         if img: st.image(img, use_container_width=True)
         else: st.warning("표시 불가")
         
@@ -547,18 +560,19 @@ with col_v:
             with c1:
                 if st.button("◀"):
                     st.session_state.page_idx = max(0, st.session_state.page_idx - 1)
-                    st.session_state.editor_text_content = extract_text_unified(main_file, st.session_state.page_idx)
+                    # 페이지 이동 시에도 bytes 전달
+                    st.session_state.editor_text_content = extract_text_unified(main_file.getvalue(), main_file.type, st.session_state.page_idx)
                     st.rerun()
             with c3:
                 if st.button("▶"):
                     st.session_state.page_idx = min(total_pages - 1, st.session_state.page_idx + 1)
-                    st.session_state.editor_text_content = extract_text_unified(main_file, st.session_state.page_idx)
+                    st.session_state.editor_text_content = extract_text_unified(main_file.getvalue(), main_file.type, st.session_state.page_idx)
                     st.rerun()
             with c2:
                 target = st.number_input("이동", 1, total_pages, st.session_state.page_idx+1)
                 if target-1 != st.session_state.page_idx:
                     st.session_state.page_idx = target-1
-                    st.session_state.editor_text_content = extract_text_unified(main_file, st.session_state.page_idx)
+                    st.session_state.editor_text_content = extract_text_unified(main_file.getvalue(), main_file.type, st.session_state.page_idx)
                     st.rerun()
             
             st.session_state.start_page_offset = st.number_input("시작 쪽수", value=st.session_state.start_page_offset)
@@ -571,7 +585,6 @@ with col_v:
 
 with col_i:
     st.info("📝 분석 내용 (수정 가능)")
-    # [핵심] 입력창 고정
     txt_val = st.text_area("텍스트", value=st.session_state.editor_text_content, height=500, key="editor_area")
     if txt_val != st.session_state.editor_text_content:
         st.session_state.editor_text_content = txt_val
@@ -587,11 +600,10 @@ with col_i:
                 om = {'고':'🔵 고', '한':'🟢 한', '외':'🔴 외', '혼':'🟣 혼'}
                 pm = {'명사':'📦 명사', '동사':'🏃 동사', '형용사':'🎨 형용사', '부사':'⚡ 부사', '관형사':'🔍 관형사', '대명사':'👤 대명사'}
                 
-                # [오류 해결] KeyError 방지용 .get()
+                # [오류 해결 2] KeyError 방지용 .get() 적용
                 cnts = Counter([r.get('original_word', '미상') for r in res])
                 seen = set()
                 for r in res:
-                    # [오류 해결] KeyError 방지 .get() 사용
                     root = r.get('root_word', '')
                     ro = r.get('origin', '혼')
                     rp = r.get('pos', '명사')
@@ -638,7 +650,8 @@ if st.session_state.analysis_result:
                 st.toast("저장됨")
                 if main_file and "pdf" in main_file.type and st.session_state.page_idx < total_pages-1:
                     st.session_state.page_idx += 1
-                    st.session_state.editor_text_content = extract_text_unified(main_file, st.session_state.page_idx)
+                    # 페이지 이동 시에도 bytes 전달
+                    st.session_state.editor_text_content = extract_text_unified(main_file.getvalue(), main_file.type, st.session_state.page_idx)
                     st.session_state.analysis_result = []
                     time.sleep(0.5); st.rerun()
     with c3:
