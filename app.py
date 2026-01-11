@@ -76,7 +76,7 @@ else:
             div.stRadio > div[role="radiogroup"] { display: flex; flex-direction: row; gap: 10px; }
             /* 유저 친화적 컨트롤러 스타일 */
             .control-card { background-color: #1e2129; padding: 20px; border-radius: 15px; border: 1px solid #3d4251; margin-bottom: 20px; }
-            .status-badge { background-color: #2979ff; padding: 4px 12px; border-radius: 20px; font-size: 0.9rem; font-weight: 600; }
+            .status-badge { background-color: #2979ff; padding: 4px 12px; border-radius: 20px; font-size: 0.9rem; font-weight: 600; color: white !important; }
             .info-card { background-color: rgba(41, 121, 255, 0.1); border-left: 5px solid #2979ff; padding: 15px; border-radius: 5px; margin-top: 15px; }
         </style>
     """, unsafe_allow_html=True)
@@ -211,7 +211,6 @@ def save_logic_with_learning():
     final_results = pd.DataFrame(st.session_state.analysis_result)
     initial_draft = pd.DataFrame(st.session_state.initial_draft)
     
-    # 1. 교정 및 삭제 학습
     for _, draft_row in initial_draft.iterrows():
         orig = draft_row['원본']
         match = final_results[final_results['원본'] == orig]
@@ -232,7 +231,6 @@ def save_logic_with_learning():
                     draft_row['원형'], draft_row['분류']
                 ])
                 
-    # 2. 추가 학습
     draft_originals = initial_draft['원본'].tolist()
     for _, final_row in final_results.iterrows():
         if final_row['원본'] not in draft_originals and not final_row['삭제']:
@@ -245,12 +243,10 @@ def save_logic_with_learning():
             
     if learning_logs: send_data_with_retry(sheet, learning_logs, True)
     
-    # 마스터 데이터 업데이트 및 쪽수 계산
     valid = final_results[final_results['삭제']==False].copy()
     valid['n_cnt'] = valid['횟수'].apply(lambda x: int(re.sub(r'[^0-9]', '', str(x))) if re.search(r'\d', str(x)) else 1)
     agg = valid.groupby(['원형', '분류', '품사'], as_index=False).agg({'n_cnt': 'sum'})
     
-    # 시작 쪽수 반영 자동 계산 로직
     p_num = str(st.session_state.page_idx + st.session_state.start_offset)
     temp_rows = []
     for _, item in agg.iterrows():
@@ -261,10 +257,9 @@ def save_logic_with_learning():
     save_backup_to_cloud(st.session_state.mode_key, st.session_state.master_df)
 
 # =========================================================
-# [4] AI 분석 및 PDF 처리 (메타데이터 제거 및 필터링 강화)
+# [4] AI 분석 및 PDF 처리
 # =========================================================
 def clean_raw_text(text):
-    # 인디자인(.indd), 날짜, 불필요 파일 시스템 정보 제거 보존
     text = re.sub(r'.*\.indd.*', '', text)
     text = re.sub(r'\d{4}-\d{2}-\d{2}', '', text)
     text = re.sub(r'(오전|오후)\s+\d{1,2}:\d{2}:\d{2}', '', text)
@@ -322,7 +317,6 @@ def generate_prompt_from_sheet(sheet_data):
     return "\n[사용자 학습 데이터]:\n" + "\n".join(rules) + "\n"
 
 def get_analysis_hybrid(text, image_bytes, sheet_data, mode_key):
-    # 아라비아 숫자 및 영어 제외 지침 강화
     prompt = f"""
     당신은 국어 분석 전문가입니다. 아래 지침에 따라 텍스트를 JSON으로 분석하십시오.
     {generate_prompt_from_sheet(sheet_data)}
@@ -350,7 +344,7 @@ def get_analysis_hybrid(text, image_bytes, sheet_data, mode_key):
     except Exception as e: return [], f"JSON Error: {str(e)}\nRaw: {raw}"
 
 # =========================================================
-# [5] UI: 메인 루프 (PDF/직접입력 로직 통일 및 필터링 강화)
+# [5] UI: 메인 루프
 # =========================================================
 
 with st.sidebar:
@@ -361,7 +355,6 @@ with st.sidebar:
         st.markdown("<br>"*5, unsafe_allow_html=True)
         if st.button("🛠️ 관리자 모드 켜기"): st.session_state.debug_mode = True; st.rerun()
 
-# STEP 0: 시작 화면
 if st.session_state.step == 0:
     st.markdown("<h1 style='text-align: center; margin-bottom: 20px;'>📚 국어활동 AI 분석기</h1>", unsafe_allow_html=True)
     st.markdown("<p style='text-align: center; color: #888; margin-bottom: 50px;'>원하는 언어 규범을 선택하여 분석을 시작하세요.</p>", unsafe_allow_html=True)
@@ -376,7 +369,6 @@ if st.session_state.step == 0:
         if st.button("🏔️\n\n북한 문화어\n\n(문화어 규범 기준)\n\n[ 시작하기 ]", key="btn_north", use_container_width=True):
             st.session_state.mode_key = "NORTH"; st.session_state.step = 1; st.rerun()
 
-# STEP 1: 데이터 소스 선택
 elif st.session_state.step == 1:
     st.header("📂 데이터 소스 선택")
     col1, col2 = st.columns(2)
@@ -397,7 +389,6 @@ elif st.session_state.step == 1:
     st.markdown("---")
     if st.button("⬅️ 모드 다시 선택"): st.session_state.step = 0; st.rerun()
 
-# STEP 2: 자료 입력 (로직 통일 및 숫자/영어 필터링 적용)
 elif st.session_state.step == 2:
     st.session_state.is_finished = False
     c_t, c_h = st.columns([8, 2])
@@ -424,7 +415,7 @@ elif st.session_state.step == 2:
                 o, root = str(r.get('원본') or '').strip(), str(r.get('원형') or '').strip()
                 orig_v, pos_v = str(r.get('분류') or '혼').strip(), str(r.get('품사') or '명사').strip()
                 
-                # 1. 강력 필터링 로직: 아라비아 숫자나 영어가 포함된 경우 분석 결과에서 제외
+                # 강력 필터링 로직: 아라비아 숫자나 영어가 포함된 경우 제외
                 if re.search(r'[0-9a-zA-Z]', o) or re.search(r'[0-9a-zA-Z]', root): continue
                 
                 if o and root and re.search(r'[가-힣]', o) and pos_v not in ['조사', '어미', '문장부호']:
@@ -442,6 +433,7 @@ elif st.session_state.step == 2:
     if input_method == "📄 파일 분석":
         st.session_state.current_tab_idx = 0
         file = st.file_uploader("분석할 파일 업로드 (PDF, PNG, JPG)", type=['pdf', 'png', 'jpg'])
+        
         current_fb = file.getvalue() if file else st.session_state.file_bytes
         current_ft = file.type if file else st.session_state.file_type
         
@@ -457,7 +449,7 @@ elif st.session_state.step == 2:
                 if img: st.image(img, use_container_width=True)
                 
                 if st.session_state.file_type == "application/pdf":
-                    # [유저 친화적 통합 컨트롤러 카드]
+                    # [유저 친화적 통합 컨트롤러 카드] - 불필요한 입력창 제거
                     st.markdown('<div class="control-card">', unsafe_allow_html=True)
                     st.markdown(f"<span class='status-badge'>📄 PDF 상태: {st.session_state.page_idx + 1} / {st.session_state.total_pages} 페이지</span>", unsafe_allow_html=True)
                     
@@ -480,7 +472,6 @@ elif st.session_state.step == 2:
                     st.markdown("---")
                     st.session_state.start_offset = st.number_input("시작 쪽수 설정 (도서 1쪽의 숫자)", value=st.session_state.start_offset)
                     
-                    # [강조 정보 카드] 요청하신 문구 수정 반영
                     actual_save_page = st.session_state.page_idx + st.session_state.start_offset
                     st.markdown(f"""
                         <div class="info-card">
