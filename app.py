@@ -40,7 +40,7 @@ if 'current_tab_idx' not in st.session_state: st.session_state.current_tab_idx =
 if 'is_finished' not in st.session_state: st.session_state.is_finished = False
 
 # =========================================================
-# [1] 디자인: CSS 매직 (상징색 및 레이아웃 최적화)
+# [1] 디자인: CSS 매직 (메인 화면 대형 버튼 및 레이아웃 복구)
 # =========================================================
 if st.session_state.step == 0:
     st.markdown("""
@@ -56,6 +56,8 @@ if st.session_state.step == 0:
                 font-size: 1.5rem !important; font-weight: 700 !important;
                 transition: all 0.3s ease !important;
                 box-shadow: 0 4px 10px rgba(0,0,0,0.3) !important;
+                white-space: pre-wrap !important;
+                line-height: 1.4 !important;
             }
             div.block-container div[data-testid="column"] div.stButton > button:hover {
                 transform: translateY(-8px);
@@ -86,7 +88,7 @@ except ImportError:
     FITZ_AVAILABLE = False
 
 # =========================================================
-# [2] 구글 시트 및 API 유틸리티 (핵심 기능 포함)
+# [2] 구글 시트 및 API 유틸리티
 # =========================================================
 try:
     if "GEMINI_API_KEY" in st.secrets:
@@ -281,7 +283,8 @@ def get_analysis_hybrid(text, image_bytes, sheet_data, mode_key):
     
     [어종(Origin) 분류 기준]
     한자어 여부를 엄격히 판단하세요. 단순히 한글 표기라고 '고'로 판단하면 안 됩니다.
-    1. **한 (한자어)**: 한자 기반 단어. 예: 학교(學校), 분석(分析), 질문(質問), 지혜(智慧)
+    1. **한 (한자어)**: 한자(Chinese Characters)에 기반한 단어는 반드시 '한'으로 분류하세요.
+       - 예시: 학교(學校), 분석(分析), 질문(質問), 지혜(智慧)
     2. **고 (고유어)**: 순우리말. 예: 하늘, 바다, 가다, 예쁘다, 잘
     3. **외 (외래어)**: 영어 등 서양 언어 유래 단어. 예: 버스, 컴퓨터, 데이터
     
@@ -298,7 +301,7 @@ def get_analysis_hybrid(text, image_bytes, sheet_data, mode_key):
     except Exception as e: return [], f"JSON Error: {str(e)}\nRaw: {raw}"
 
 # =========================================================
-# [5] UI: 메인 루프 (연속 작업 흐름 최적화)
+# [5] UI: 메인 루프 (Wizard)
 # =========================================================
 
 # 사이드바 관리자 모드
@@ -310,17 +313,32 @@ with st.sidebar:
         st.markdown("<br>"*5, unsafe_allow_html=True)
         if st.button("🛠️ 관리자 모드 켜기"): st.session_state.debug_mode = True; st.rerun()
 
-# STEP 0: 시작 화면
+# STEP 0: 시작 화면 (메인 버튼 문구 및 디자인 완벽 복구)
 if st.session_state.step == 0:
-    st.markdown("<h1 style='text-align: center;'>📚 국어활동 AI 분석기</h1>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align: center; color: #888; margin-bottom: 50px;'>언어 규범을 선택하세요.</p>", unsafe_allow_html=True)
-    _, c_s, c_n, _ = st.columns([1, 4, 4, 1])
-    with c_s:
-        st.markdown("<style>div[data-testid='column']:nth-of-type(2) div.stButton > button { border-color: #2979ff !important; box-shadow: 0 0 10px rgba(41,121,255,0.2) !important; }</style>", unsafe_allow_html=True)
-        if st.button("🏛️ 대한민국 표준어", use_container_width=True): st.session_state.mode_key = "SOUTH"; st.session_state.step = 1; st.rerun()
-    with c_n:
-        st.markdown("<style>div[data-testid='column']:nth-of-type(3) div.stButton > button { border-color: #ff1744 !important; box-shadow: 0 0 10px rgba(255,23,68,0.2) !important; }</style>", unsafe_allow_html=True)
-        if st.button("🏔️ 북한 문화어", use_container_width=True): st.session_state.mode_key = "NORTH"; st.session_state.step = 1; st.rerun()
+    st.markdown("<h1 style='text-align: center; margin-bottom: 20px;'>📚 국어활동 AI 분석기</h1>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center; color: #888; margin-bottom: 50px;'>원하는 언어 규범을 선택하여 분석을 시작하세요.</p>", unsafe_allow_html=True)
+    
+    _, c_south, c_north, _ = st.columns([1, 4, 4, 1])
+    
+    with c_south:
+        st.markdown("""
+        <style>
+            div[data-testid="column"]:nth-of-type(2) div.stButton > button { border-color: rgba(41, 121, 255, 0.4) !important; box-shadow: 0 0 10px rgba(41, 121, 255, 0.1) !important; }
+            div[data-testid="column"]:nth-of-type(2) div.stButton > button:hover { border-color: #2979ff !important; box-shadow: 0 0 35px rgba(41, 121, 255, 0.7) !important; color: #2979ff !important; }
+        </style>
+        """, unsafe_allow_html=True)
+        if st.button("🏛️\n\n대한민국 표준어\n\n(표준국어대사전 기준)\n\n[ 시작하기 ]", key="btn_south", use_container_width=True):
+            st.session_state.mode_key = "SOUTH"; st.session_state.step = 1; st.rerun()
+
+    with c_north:
+        st.markdown("""
+        <style>
+            div[data-testid="column"]:nth-of-type(3) div.stButton > button { border-color: rgba(255, 23, 68, 0.4) !important; box-shadow: 0 0 10px rgba(255, 23, 68, 0.1) !important; }
+            div[data-testid="column"]:nth-of-type(3) div.stButton > button:hover { border-color: #ff1744 !important; box-shadow: 0 0 35px rgba(255, 23, 68, 0.7) !important; color: #ff1744 !important; }
+        </style>
+        """, unsafe_allow_html=True)
+        if st.button("🏔️\n\n북한 문화어\n\n(문화어 규범 기준)\n\n[ 시작하기 ]", key="btn_north", use_container_width=True):
+            st.session_state.mode_key = "NORTH"; st.session_state.step = 1; st.rerun()
 
 # STEP 1: 데이터 소스 선택
 elif st.session_state.step == 1:
@@ -329,7 +347,7 @@ elif st.session_state.step == 1:
     with c1:
         with st.container(border=True):
             st.subheader("📂 이어하기")
-            up = st.file_uploader("엑셀 파일 업로드", type=['xlsx'])
+            up = st.file_uploader("기존 분석 엑셀 업로드", type=['xlsx'])
             if up: st.session_state.master_df = pd.read_excel(up); st.session_state.step = 2; st.rerun()
     with c2:
         with st.container(border=True):
@@ -338,7 +356,7 @@ elif st.session_state.step == 1:
                 st.session_state.master_df = None; st.session_state.step = 2; st.rerun()
     if st.button("⬅️ 모드 다시 선택"): st.session_state.step = 0; st.rerun()
 
-# STEP 2: 자료 입력 (상태 유지 기능)
+# STEP 2: 자료 입력 (상태 유지 기능 포함)
 elif st.session_state.step == 2:
     st.session_state.is_finished = False
     c_t, c_h = st.columns([8, 2])
@@ -388,14 +406,14 @@ elif st.session_state.step == 2:
             with c2:
                 txt_in = st.text_area("에디터", value=st.session_state.extracted_text, height=500)
                 st.session_state.extracted_text = txt_in
-                if st.button("🚀 분석 실행", type="primary", key="f_run"): run_analysis(txt_in, fb)
+                if st.button("🚀 분석 실행", type="primary", use_container_width=True, key="f_run"): run_analysis(txt_in, fb)
     else:
         st.session_state.current_tab_idx = 1
         direct_t = st.text_area("텍스트 입력 창", value=st.session_state.extracted_text, height=450)
         st.session_state.extracted_text = direct_t
-        if st.button("🚀 분석 실행", type="primary", key="d_run"): run_analysis(direct_t)
+        if st.button("🚀 분석 실행", type="primary", use_container_width=True, key="d_run"): run_analysis(direct_t)
 
-# STEP 3: 결과 확인 (연속 작업 최적화)
+# STEP 3: 결과 확인 (연속 작업 흐름 최적화)
 elif st.session_state.step == 3:
     c_h, c_b = st.columns([8, 2])
     with c_h: st.header("📊 분석 결과 확인")
@@ -439,4 +457,5 @@ elif st.session_state.step == 3:
         c1, c2 = st.columns(2)
         with c1: st.download_button("📥 결과 파일 다운로드", buf.getvalue(), fname, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True, type="primary")
         with c2:
-            if st.button("🔄 입력창으로 돌아가기", use_container_width=True): st.session_state.step = 2; st.session_state.is_finished = False; st.rerun()
+            if st.button("🔄 입력창으로 돌아가기", use_container_width=True):
+                st.session_state.step = 2; st.session_state.is_finished = False; st.rerun()
