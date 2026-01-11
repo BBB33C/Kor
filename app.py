@@ -79,6 +79,8 @@ else:
             .info-card { background-color: rgba(41, 121, 255, 0.1); border-left: 5px solid #2979ff; padding: 15px; border-radius: 5px; margin-top: 15px; }
             .debug-box { background-color: #000; color: #0f0; font-family: monospace; padding: 10px; border-radius: 5px; font-size: 0.8rem; overflow-x: auto; }
             button:disabled { opacity: 0.5 !important; cursor: not-allowed !important; }
+            /* 레이아웃 구분선 */
+            .section-divider { border-bottom: 2px solid #3d4251; margin: 25px 0; }
         </style>
     """, unsafe_allow_html=True)
 
@@ -205,6 +207,7 @@ def merge_master_data(old_df, new_df):
     return result_df
 
 def save_logic_with_learning():
+    """비교 학습 엔진 로직"""
     sheet, _ = get_sheet_data_fresh(st.session_state.mode_key)
     now = datetime.now().isoformat()
     learning_logs = []
@@ -246,7 +249,7 @@ def save_logic_with_learning():
             
     if learning_logs: send_data_with_retry(sheet, learning_logs, True)
     
-    # 마스터 데이터 업데이트 및 쪽수 계산
+    # 마스터 데이터 업데이트
     valid = final_results[final_results['삭제']==False].copy()
     valid['n_cnt'] = valid['횟수'].apply(lambda x: int(re.sub(r'[^0-9]', '', str(x))) if re.search(r'\d', str(x)) else 1)
     agg = valid.groupby(['원형', '분류', '품사'], as_index=False).agg({'n_cnt': 'sum'})
@@ -272,7 +275,7 @@ def clean_raw_text(text):
     return '\n'.join(lines)
 
 def process_image_for_api(image_bytes):
-    """이미지를 명시적으로 PIL PNG로 변환하여identify 오류 해결"""
+    """이미지를 명시적으로 PIL PNG로 변환하여 에러 방지"""
     if not image_bytes: return None
     try:
         img_io = io.BytesIO(image_bytes)
@@ -342,7 +345,7 @@ def generate_prompt_from_sheet(sheet_data):
     rules = []
     for row in sheet_data[-150:]:
         orig, root, origin, pos, action = row.get('original_word',''), row.get('root_word',''), row.get('origin',''), row.get('pos',''), row.get('action','')
-        if action == 'delete': rules.append(f"- '{orig}'는 분석 제외.")
+        if action == 'delete': rules.append(f"- '{orig}'는 분석 결과에서 제외.")
         elif action in ['modify', 'add']: rules.append(f"- '{orig}' 분석 결과는 원형:'{root}', 분류:'{origin}', 품사:'{pos}'가 정답.")
     return "\n[사용자 학습 데이터]:\n" + "\n".join(rules) + "\n"
 
@@ -539,111 +542,122 @@ elif st.session_state.step == 2:
         if st.button("🚀 분석 실행", type="primary", use_container_width=True): 
             run_analysis_action(direct_t)
 
-# STEP 3: 결과 확인 (이미지/원문 통합 뷰어 모드)
+# STEP 3: 결과 확인 (상단: 이미지/원문, 하단: 편집표 배치 개편)
 elif st.session_state.step == 3:
     ch, cb = st.columns([8, 2])
     with ch: st.header("📊 분석 결과 확인")
     with cb:
         if st.button("⬅️ 입력 수정하기", use_container_width=True): st.session_state.step = 2; st.rerun()
     
-    # [수정] 좌측 이미지 미리보기, 우측 분석 결과 표 배치
-    c_left, c_right = st.columns([1, 1.2])
+    # [개편] 상단: 이미지(좌) / 원문(우) 배치
+    top_left, top_right = st.columns([1, 1])
     
-    with c_left:
-        st.subheader("🖼️ 원문 이미지/텍스트")
-        # 이미지 있으면 표시
+    with top_left:
+        st.subheader("🖼️ 원문 이미지")
         img = get_page_image(st.session_state.file_bytes, st.session_state.file_type, st.session_state.page_idx)
         if img:
             st.image(img, use_container_width=True, caption=f"현재 페이지: {st.session_state.page_idx + 1}")
-        
-        # 분석 대상 원문 (사용자 요청대로 세로 길이 500px 확보)
-        with st.expander("📝 분석 대상 원문 확인 (비교 대조용)", expanded=True):
-            st.text_area("원문 원본", value=st.session_state.extracted_text, height=500, disabled=True)
-
-    with c_right:
-        st.subheader("📋 분석 결과 편집")
-        # [안정성 적용] 정밀 디버깅 모드
-        if st.session_state.debug_mode:
-            with st.expander("🛠️ [정밀 디버깅] 분석 프로세스 로그", expanded=False):
-                st.markdown(f"<div class='debug-box'>{st.session_state.get('debug_log', 'No log')}</div>", unsafe_allow_html=True)
-                raw_data = st.session_state.get('last_raw_response', '')
-                if raw_data and isinstance(raw_data, str): st.code(raw_data, language="json")
-
-        dlg_func = st.dialog if hasattr(st, "dialog") else st.experimental_dialog
-        @dlg_func("➕ 단어 직접 추가")
-        def add_manual():
-            with st.form("manual_add_form"):
-                o, r = st.text_input("원본 단어"), st.text_input("원형(기본형)")
-                org = st.selectbox("어종 분류", ["고","한","외","혼"]); p = st.selectbox("품사", ["명사","동사","형용사","부사","관형사","대명사","고유명사","감탄사"])
-                cnt = st.number_input("출연 횟수", 1, 100, 1)
-                if st.form_submit_button("추가 완료"):
-                    with st.spinner("단어 추가 중..."):
-                        om = {'고':'🔵 고', '한':'🟢 한', '외':'🔴 외', '혼':'🟣 혼'}
-                        pm = {'명사':'📦 명사', '동사':'🏃 동사', '형용사':'🎨 형용사', '부사':'⚡ 부사', '관형사':'🔍 관형사', '대명사':'👤 대명사', '감탄사':'❗ 감탄사'}
-                        st.session_state.analysis_result.append({"삭제": False, "횟수": f"{cnt}회", "원본": f"{o}(수동)", "원형": r, "분류": om.get(org, org), "품사": pm.get(p, p)})
-                        st.rerun()
-
-        df_res = pd.DataFrame(st.session_state.analysis_result)
-        if not df_res.empty:
-            st.info("💡 데이터 동기화를 위해 짧은 로딩(2.5초)이 발생합니다.")
-            edited = st.data_editor(
-                df_res,
-                column_config={
-                    "삭제": st.column_config.CheckboxColumn("삭제"),
-                    "원본": st.column_config.TextColumn("원본", disabled=True),
-                    "분류": st.column_config.SelectboxColumn("분류", options=["🔵 고", "🟢 한", "🔴 외", "🟣 혼"]),
-                    "품사": st.column_config.SelectboxColumn("품사", options=["📦 명사", "🏃 동사", "🎨 형용사", "⚡ 부사", "🔍 관형사", "👤 대명사", "고유명사", "❗ 감탄사"])
-                },
-                use_container_width=True, num_rows="dynamic", key="step3_editor"
-            )
-            
-            if not edited.equals(df_res):
-                with st.spinner("🔄 데이터 동기화 중..."):
-                    time.sleep(2.5)
-                    st.session_state.analysis_result = edited.to_dict('records')
-                    st.rerun()
         else:
-            st.warning("분석된 결과 단어가 없습니다.")
+            st.info("파일 이미지가 없습니다.")
 
-        if not st.session_state.is_finished:
-            b1, b2, b3 = st.columns([1, 1, 2])
-            with b1:
-                if st.button("➕ 단어 추가", use_container_width=True): add_manual()
-            with b2:
-                if st.button("⛔ 선택 삭제", use_container_width=True):
-                    with st.spinner("삭제 반영 중..."):
-                        st.session_state.analysis_result = [r for r in st.session_state.analysis_result if not r.get('삭제', False)]
+    with top_right:
+        st.subheader("📝 원문 텍스트 확인")
+        # 비교 대조용 원문 (세로 길이 500px 확보)
+        st.text_area("원문 원본", value=st.session_state.extracted_text, height=500, disabled=True, label_visibility="collapsed")
+
+    st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
+
+    # [개편] 하단: 분석 결과 편집 표
+    st.subheader("📋 분석 결과 편집")
+    
+    if st.session_state.debug_mode:
+        with st.expander("🛠️ [정밀 디버깅] 로그 확인", expanded=False):
+            st.markdown(f"<div class='debug-box'>{st.session_state.get('debug_log', 'No log')}</div>", unsafe_allow_html=True)
+            raw_data = st.session_state.get('last_raw_response', '')
+            if raw_data and isinstance(raw_data, str): st.code(raw_data, language="json")
+
+    dlg_func = st.dialog if hasattr(st, "dialog") else st.experimental_dialog
+    @dlg_func("➕ 단어 직접 추가")
+    def add_manual():
+        with st.form("manual_add_form"):
+            o, r = st.text_input("원본 단어"), st.text_input("원형(기본형)")
+            org = st.selectbox("어종 분류", ["고","한","외","혼"]); p = st.selectbox("품사", ["명사","동사","형용사","부사","관형사","대명사","고유명사","감탄사"])
+            cnt = st.number_input("출연 횟수", 1, 100, 1)
+            if st.form_submit_button("추가 완료"):
+                with st.spinner("단어 추가 중..."):
+                    om = {'고':'🔵 고', '한':'🟢 한', '외':'🔴 외', '혼':'🟣 혼'}
+                    pm = {'명사':'📦 명사', '동사':'🏃 동사', '형용사':'🎨 형용사', '부사':'⚡ 부사', '관형사':'🔍 관형사', '대명사':'👤 대명사', '감탄사':'❗ 감탄사'}
+                    st.session_state.analysis_result.append({"삭제": False, "횟수": f"{cnt}회", "원본": f"{o}(수동)", "원형": r, "분류": om.get(org, org), "품사": pm.get(p, p)})
+                    st.rerun()
+
+    df_res = pd.DataFrame(st.session_state.analysis_result)
+    if not df_res.empty:
+        st.info("💡 데이터 동기화를 위해 짧은 로딩(2.5초)이 발생합니다.")
+        edited = st.data_editor(
+            df_res,
+            column_config={
+                "삭제": st.column_config.CheckboxColumn("삭제"),
+                "원본": st.column_config.TextColumn("원본", disabled=True),
+                "분류": st.column_config.SelectboxColumn("분류", options=["🔵 고", "🟢 한", "🔴 외", "🟣 혼"]),
+                "품사": st.column_config.SelectboxColumn("품사", options=["📦 명사", "🏃 동사", "🎨 형용사", "⚡ 부사", "🔍 관형사", "👤 대명사", "고유명사", "❗ 감탄사"])
+            },
+            use_container_width=True, num_rows="dynamic", key="step3_editor"
+        )
+        
+        if not edited.equals(df_res):
+            with st.spinner("🔄 데이터 동기화 중..."):
+                time.sleep(2.5)
+                st.session_state.analysis_result = edited.to_dict('records')
+                st.rerun()
+    else:
+        st.warning("분석된 결과 단어가 없습니다.")
+
+    if not st.session_state.is_finished:
+        b1, b2, b_save_only, b_save_next = st.columns([1, 1, 1.5, 2])
+        with b1:
+            if st.button("➕ 단어 추가", use_container_width=True): add_manual()
+        with b2:
+            if st.button("⛔ 선택 삭제", use_container_width=True):
+                with st.spinner("삭제 반영 중..."):
+                    st.session_state.analysis_result = [r for r in st.session_state.analysis_result if not r.get('삭제', False)]
+                    time.sleep(1.5)
+                    st.rerun()
+        with b_save_only:
+            # [신규] 현재 페이지만 저장하는 버튼
+            if st.button("💾 현재 페이지만 저장", use_container_width=True):
+                with st.status("데이터 저장 중..."):
+                    save_logic_with_learning()
+                    st.success("✅ 현재 페이지 데이터가 저장되었습니다.")
+                    time.sleep(1)
+                    st.rerun()
+        with b_save_next:
+            # [기능 유지] 저장하고 다음 쪽 가기 기능
+            if st.button("🚀 저장하고 다음 쪽 가기", type="primary", use_container_width=True):
+                with st.status("데이터 통합 및 다음 쪽 준비 중..."):
+                    save_logic_with_learning()
+                    # 다음 페이지로 이동 로직 (PDF일 경우)
+                    if st.session_state.file_type == "application/pdf" and st.session_state.page_idx < st.session_state.total_pages - 1:
+                        st.session_state.page_idx += 1
+                        st.session_state.extracted_text = extract_text_unified(st.session_state.file_bytes, st.session_state.file_type, st.session_state.page_idx)
+                        st.session_state.analysis_result = [] # 초기화
+                        st.session_state.step = 2 # 입력창으로 복귀
+                        st.success(f"✅ 저장 완료! {st.session_state.page_idx + st.session_state.start_offset}쪽으로 이동합니다.")
                         time.sleep(1.5)
                         st.rerun()
-            with b3:
-                # [수정] 저장하고 다음 쪽 가기 기능 완벽 연동
-                if st.button("💾 저장하고 다음 쪽 가기", type="primary", use_container_width=True):
-                    with st.status("데이터 통합 및 클라우드 저장 중..."):
-                        save_logic_with_learning()
-                        # 다음 페이지로 이동 로직 (PDF일 경우)
-                        if st.session_state.file_type == "application/pdf" and st.session_state.page_idx < st.session_state.total_pages - 1:
-                            st.session_state.page_idx += 1
-                            # 다음 쪽 텍스트 자동 추출
-                            st.session_state.extracted_text = extract_text_unified(st.session_state.file_bytes, st.session_state.file_type, st.session_state.page_idx)
-                            st.session_state.analysis_result = [] # 초기화
-                            st.session_state.step = 2 # 입력창으로 복귀
-                            st.success(f"✅ 저장 완료! {st.session_state.page_idx + st.session_state.start_offset}쪽으로 이동합니다.")
-                            time.sleep(1.5)
-                            st.rerun()
-                        else:
-                            st.session_state.is_finished = True
-                            st.balloons()
-                            st.rerun()
-        else:
-            st.success("✅ 모든 페이지 분석 데이터가 통합 저장되었습니다!")
-            fname = f"Result_{st.session_state.mode_key}_{datetime.now().strftime('%m%d_%H%M')}.xlsx"
-            buf = io.BytesIO()
-            with pd.ExcelWriter(buf, engine='openpyxl') as w: 
-                st.session_state.master_df.to_excel(w, index=False)
-                
-            c1, c2 = st.columns(2)
-            with c1:
-                st.download_button(label=f"📥 {fname} 다운로드", data=buf.getvalue(), file_name=fname, use_container_width=True, type="primary")
-            with c2:
-                if st.button("🔄 처음 단계로 이동", use_container_width=True):
-                    st.session_state.step = 2; st.session_state.is_finished = False; st.rerun()
+                    else:
+                        st.session_state.is_finished = True
+                        st.balloons()
+                        st.rerun()
+    else:
+        st.success("✅ 모든 페이지 분석 데이터가 통합 저장되었습니다!")
+        fname = f"Result_{st.session_state.mode_key}_{datetime.now().strftime('%m%d_%H%M')}.xlsx"
+        buf = io.BytesIO()
+        with pd.ExcelWriter(buf, engine='openpyxl') as w: 
+            st.session_state.master_df.to_excel(w, index=False)
+            
+        c1, c2 = st.columns(2)
+        with c1:
+            st.download_button(label=f"📥 {fname} 다운로드", data=buf.getvalue(), file_name=fname, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True, type="primary")
+        with c2:
+            if st.button("🔄 처음 단계로 이동", use_container_width=True):
+                st.session_state.step = 2; st.session_state.is_finished = False; st.rerun()
