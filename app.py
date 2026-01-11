@@ -36,12 +36,12 @@ if 'extracted_text' not in st.session_state: st.session_state.extracted_text = "
 if 'debug_mode' not in st.session_state: st.session_state.debug_mode = False
 
 # =========================================================
-# [1] 디자인: 색상 개선 & 중앙 정렬 CSS (Step 0)
+# [1] 디자인: CSS 매직 (진행바 스타일 제거됨)
 # =========================================================
 if st.session_state.step == 0:
     st.markdown("""
         <style>
-            /* 0. 강제 다크 모드 (배경색 고정) */
+            /* 0. 강제 다크 모드 */
             .stApp {
                 background-color: #0e1117 !important;
                 color: #ffffff !important;
@@ -74,16 +74,12 @@ if st.session_state.step == 0:
         </style>
     """, unsafe_allow_html=True)
 else:
-    # [Step 1~4] 작업 단계용 스타일
+    # [Step 1~4] 작업 단계용 스타일 (진행바 CSS 삭제로 깔끔해짐)
     st.markdown("""
         <style>
             .stApp { background-color: #0e1117 !important; color: #ffffff !important; }
             .stTextArea textarea { font-family: 'Malgun Gothic', sans-serif !important; font-size: 16px !important; line-height: 1.6 !important; }
             .stButton button { border-radius: 8px; font-weight: bold; height: auto; }
-            
-            .progress-box { display: flex; justify-content: space-between; margin: 20px 0 40px 0; border-bottom: 1px solid #444; padding-bottom: 10px; }
-            .step-item { color: #888; font-size: 0.9rem; font-weight: 500; }
-            .step-active { color: #4CAF50; font-weight: 700; border-bottom: 3px solid #4CAF50; padding-bottom: 7px; }
         </style>
     """, unsafe_allow_html=True)
 
@@ -306,11 +302,11 @@ def get_page_image(file_bytes, file_type, page_idx):
     return None
 
 # =========================================================
-# [4] UI: 메인 루프 (10단계 Wizard)
+# [4] UI: 메인 루프 (진행바 제거됨)
 # =========================================================
 
 # ---------------------------------------------------------
-# [SIDEBAR]: 관리자 모드 제어
+# [SIDEBAR]: 관리자 모드 제어 (구석에 숨김)
 # ---------------------------------------------------------
 with st.sidebar:
     st.markdown("### ⚙️ 설정")
@@ -320,21 +316,10 @@ with st.sidebar:
             st.session_state.debug_mode = False
             st.rerun()
     else:
-        st.markdown("<br>"*5, unsafe_allow_html=True)
+        st.markdown("<br>"*5, unsafe_allow_html=True) # 여백
         if st.button("🛠️ 관리자 모드 켜기", use_container_width=True):
             st.session_state.debug_mode = True
             st.rerun()
-
-# 진행바
-if st.session_state.step > 0:
-    steps = ["1. 모드 선택", "2. 데이터 소스", "3. 자료 입력", "4. 결과 확인"]
-    st.markdown('<div class="progress-box">', unsafe_allow_html=True)
-    cols = st.columns(4)
-    for i, (col, title) in enumerate(zip(cols, steps)):
-        with col:
-            cls = "step-active" if i+1 == st.session_state.step else "step-item"
-            st.markdown(f'<div class="{cls}">{title}</div>', unsafe_allow_html=True)
-    st.markdown('</div>', unsafe_allow_html=True)
 
 # ---------------------------------------------------------
 # STEP 0: 시작 화면 (중앙 정렬 + 업그레이드된 색상)
