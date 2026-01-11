@@ -7,7 +7,7 @@ import io
 import os
 import time
 import base64
-import hashlib  # [수정] 누락된 라이브러리 추가
+import hashlib  # [수정] 필수 라이브러리 추가
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
@@ -32,7 +32,7 @@ except ImportError:
 # ⚙️ 설정
 # =========================================================
 st.set_page_config(
-    page_title="국어활동 AI 분석기 (Final Fixed)", 
+    page_title="국어활동 AI 분석기 (Final)", 
     page_icon="📚", 
     layout="wide",
     initial_sidebar_state="expanded"
@@ -201,12 +201,17 @@ def get_analysis_hybrid(text, image_bytes, sheet_data, mode_key):
     
     [분석 단계]
     1. 문맥 파악. 2. 조사/어미 제거. 3. '하다' 용언 처리(명사 분류). 4. 품사 필터링.
-    5. 동음이의어: 원형 뒤 (의미) 붙임.
-    6. 인명/지명: 품사를 '고유명사'로 표기.
-    7. 출력: JSON 포맷.
+    5. **동음이의어/인명 구분 (필수)**: 
+       - 사람 이름이나 지명은 원형 뒤에 (이름), (지명)을 붙이세요. (예: 지혜(이름), 서울(지명))
+       - 뜻이 다른 동음이의어도 괄호로 구분하세요. (예: 배(과일), 배(선박))
+    6. 출력: JSON 포맷.
 
     [JSON 예시]
-    [{{"original_word": "배를", "root_word": "배(과일)", "origin": "고", "pos": "명사"}}]
+    [
+        {{"original_word": "지혜가", "root_word": "지혜(이름)", "origin": "한", "pos": "명사"}},
+        {{"original_word": "지혜를", "root_word": "지혜", "origin": "한", "pos": "명사"}},
+        {{"original_word": "바른", "root_word": "바르다", "origin": "고", "pos": "형용사"}}
+    ]
     """
     
     if image_bytes:
@@ -494,9 +499,8 @@ with col_i:
                 om = {'고':'🔵 고', '한':'🟢 한', '외':'🔴 외', '혼':'🟣 혼'}
                 pm = {'명사':'📦 명사', '동사':'🏃 동사', '형용사':'🎨 형용사', '부사':'⚡ 부사', '관형사':'🔍 관형사', '대명사':'👤 대명사'}
                 
-                cnts = Counter([(r.get('root_word', ''), r.get('origin', '혼'), r.get('pos', '명사')) for r in res])
-                seen = set()
-                
+                # [수정] 원형+분류+품사를 키로 그룹핑 -> 동음이의어 구분
+                temp_dict = {}
                 for r in res:
                     root = r.get('root_word', '')
                     ro = r.get('origin', '혼')
@@ -504,16 +508,25 @@ with col_i:
                     row = r.get('original_word', '미상')
                     
                     key = (root, ro, rp)
-                    if key not in seen:
-                        proc.append({
-                            "delete_check": False,
-                            "count": f"{cnts[key]}회", 
-                            "original_word": row,
-                            "root_word": root,
-                            "origin": om.get(ro, ro),
-                            "pos": pm.get(rp, rp)
-                        })
-                        seen.add(key)
+                    if key not in temp_dict:
+                        temp_dict[key] = []
+                    temp_dict[key].append(row)
+                
+                # [수정] 원래 단어 리스트업: "바른(1), 바르게(1)"
+                for (root, ro, rp), originals in temp_dict.items():
+                    cnts = Counter(originals)
+                    formatted_orig = ", ".join([f"{w}({c})" for w, c in cnts.items()])
+                    total_c = sum(cnts.values())
+                    
+                    proc.append({
+                        "delete_check": False,
+                        "count": f"{total_c}회",
+                        "original_word": formatted_orig,
+                        "root_word": root,
+                        "origin": om.get(ro, ro),
+                        "pos": pm.get(rp, rp)
+                    })
+                    
                 st.session_state.analysis_result = proc
 
 if st.session_state.analysis_result:
