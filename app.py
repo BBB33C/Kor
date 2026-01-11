@@ -12,7 +12,7 @@ from datetime import datetime
 from collections import Counter
 
 # =========================================================
-# [0] 라이브러리 상태 체크 및 임포트 (GP9 원본 안전장치)
+# [0] 라이브러리 임포트 및 상태 체크 (GP9 원본 안전장치)
 # =========================================================
 try:
     import pdfplumber
@@ -35,14 +35,14 @@ except ImportError:
 
 # 페이지 기본 설정
 st.set_page_config(
-    page_title="국어활동 AI 분석기 (GP9 Integrity Ver.)", 
+    page_title="국어활동 AI 분석기 (Ultimate Fixed)", 
     page_icon="📚", 
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
 # =========================================================
-# [1] API 및 설정 (눈 보호 CSS 적용)
+# [1] API 및 스타일 설정 (눈 보호 모드 적용)
 # =========================================================
 try:
     if "GEMINI_API_KEY" in st.secrets:
@@ -377,10 +377,10 @@ def get_analysis_hybrid(text, image_bytes, sheet_data, mode_key):
         return all_results
 
 # =========================================================
-# [4] 파일 처리 및 텍스트 추출 (_GP9 복원)
+# [4] 파일 처리 및 텍스트 추출 (GP9 로직 100% 복구)
 # =========================================================
 def extract_text_unified(file_obj, page_idx):
-    """PDF/이미지 통합 텍스트 추출기 (폴백 로직 포함)"""
+    """GP9의 정밀 추출 로직 (Crop -> OCR Fallback)"""
     file_type = file_obj.type
     
     # 이미지는 Vision으로 처리하므로 텍스트 추출 안 함 (빈 문자열 반환)
@@ -396,7 +396,15 @@ def extract_text_unified(file_obj, page_idx):
                 with pdfplumber.open(file_obj) as pdf:
                     if page_idx < len(pdf.pages):
                         page = pdf.pages[page_idx]
-                        text = page.extract_text()
+                        # GP9는 헤더/푸터 제외를 위해 crop을 시도했음
+                        width, height = page.width, page.height
+                        try:
+                            # 상단 5%, 하단 10% 제외
+                            crop_box = (0, height * 0.05, width, height * 0.9)
+                            cropped = page.crop(crop_box)
+                            text = cropped.extract_text()
+                        except:
+                            text = page.extract_text()
             except: pass
         
         # 2. 텍스트가 없으면 fitz 시도 (PyMuPDF)
@@ -407,8 +415,8 @@ def extract_text_unified(file_obj, page_idx):
                     text = doc[page_idx].get_text()
             except: pass
         
-        # 3. 텍스트가 여전히 없거나 너무 짧으면(이미지형 PDF), Vision OCR 시도 (GP9의 강력한 기능)
-        if (not text or len(text.strip()) < 10) and FITZ_AVAILABLE:
+        # 3. [핵심 복구] 텍스트가 너무 적으면 이미지로 변환해 Vision OCR (스캔본 대응)
+        if (not text or len(text.strip()) < 30) and FITZ_AVAILABLE:
             try:
                 doc = fitz.open(stream=file_obj.getvalue(), filetype="pdf")
                 if page_idx < len(doc):
@@ -439,40 +447,29 @@ def get_page_image_bytes(file_obj, page_idx):
     return None
 
 # =========================================================
-# [5] 데이터 저장 로직 (_GP9 핵심 - 동적 컬럼)
+# [5] 데이터 저장 로직 (GP9 동적 컬럼)
 # =========================================================
 def clean_val(v):
-    """이모지 및 특수문자 제거"""
     if isinstance(v, str):
         return v.replace('🔵 ', '').replace('🟢 ', '').replace('🔴 ', '').replace('🟣 ', '').replace('📦 ', '').replace('🏃 ', '').replace('🎨 ', '').replace('⚡ ', '').replace('🔍 ', '').replace('👤 ', '')
     return v
 
 def calc_freq(row):
-    """쪽수 컬럼들을 모두 합산하여 출연횟수 자동 계산"""
     total = 0
     for c in row.index:
         if str(c).startswith('쪽수'):
             v = str(row[c])
-            # "15_2" 형식 처리 (15쪽 2번)
             if '_' in v: 
                 try: total += int(v.split('_')[1])
                 except: total += 1
-            elif v not in ['nan', '', 'None']: 
-                total += 1
+            elif v not in ['nan', '', 'None']: total += 1
     return total
 
 def save_logic(edited_df, page_str, sheet_obj, context_text):
-    """
-    [핵심 복원] GP9의 동적 컬럼 저장 및 자동 백업 로직
-    - 중복 단어 발생 시 행 추가가 아니라 '쪽수N' 컬럼 추가
-    - 학습 데이터 자동 전송
-    - 클라우드 자동 백업
-    """
-    # 1. 학습 데이터 전송 ('의미' 제외)
+    # 1. 학습 전송
     if sheet_obj:
         logs = []
         for _, row in edited_df.iterrows():
-            # 삭제 체크되지 않은 유효한 데이터만 학습
             if not row['delete_check']:
                 logs.append([
                     datetime.now().isoformat(),
@@ -486,29 +483,25 @@ def save_logic(edited_df, page_str, sheet_obj, context_text):
         if logs: 
             send_data_with_retry(sheet_obj, logs, is_multiple=True)
 
-    # 2. 마스터 데이터프레임 업데이트 (엑셀 저장용)
-    # 삭제되지 않은 행만 필터링
+    # 2. 마스터 업데이트
     valid_rows = edited_df[edited_df['delete_check'] == False].copy()
     
-    # 빈도 문자열 파싱 (예: "3회" -> 3)
     def parse_count(val):
         try: return int(str(val).replace('회', '').strip())
         except: return 1
     valid_rows['numeric_count'] = valid_rows['count'].apply(parse_count)
     
-    # '의미' 없이 그룹화 (사용자 요청 반영)
+    # '의미' 없이 그룹화
     aggregated = valid_rows.groupby(['root_word', 'origin', 'pos'], as_index=False).agg({
         'numeric_count': 'sum', 
         'original_word': lambda x: ', '.join(x.unique())
     })
     
-    # 마스터 DF 초기화
     if st.session_state.master_df is None:
         st.session_state.master_df = pd.DataFrame(columns=['구분', '자료', '출연횟수', '쪽수1'])
     
     master = st.session_state.master_df
     
-    # 쪽수 컬럼 데이터 타입 정리 (문자열 등 허용)
     for c in master.columns:
         if '쪽수' in c: master[c] = master[c].astype(object)
 
@@ -518,54 +511,40 @@ def save_logic(edited_df, page_str, sheet_obj, context_text):
         root = item['root_word']
         origin_val = clean_val(item['origin'])
         cnt = item['numeric_count']
-        
-        # 저장할 값 포맷: "쪽수_빈도" (빈도가 1보다 크면)
         val_to_save = f"{page_str}_{cnt}" if cnt > 1 else page_str
         
-        # 기존 데이터에 있는지 확인 (자료 + 구분) - 의미 제외됨
+        # '의미' 없이 자료+구분 기준 식별
         mask = (master['자료'] == root) & (master['구분'] == origin_val)
         
         if mask.any():
-            # 이미 있으면 해당 행의 인덱스를 찾음
             idx = master[mask].index[0]
-            
-            # 빈 쪽수 컬럼 찾기
             filled_cols = [c for c in master.columns if '쪽수' in c and pd.notna(master.at[idx, c])]
-            
-            # 다음 컬럼 이름 생성 (예: 쪽수5)
             next_col = f"쪽수{len(filled_cols) + 1}"
             
-            # 컬럼이 없으면 새로 생성
             if next_col not in master.columns:
                 master[next_col] = None 
             
-            # 값 기입
             master.at[idx, next_col] = val_to_save
         else:
-            # 없으면 새 행 추가
             new_rows_list.append({
                 '구분': origin_val,
                 '자료': root,
-                '출연횟수': 0, # 나중에 재계산
+                '출연횟수': 0, 
                 '쪽수1': val_to_save
             })
             
-    # 새 행들을 마스터에 병합
     if new_rows_list:
         master = pd.concat([master, pd.DataFrame(new_rows_list)], ignore_index=True)
-        
-    # 출연횟수 전체 재계산 (쪽수 컬럼 기반)
+    
     master['출연횟수'] = master.apply(calc_freq, axis=1)
     
-    # 정렬 (고 -> 한 -> 외 -> 혼 순서)
     sort_map = {'고':1, '순':1, '한':2, '외':3, '혼':4}
     master['sort_key'] = master['구분'].map(sort_map).fillna(5)
     master = master.sort_values(['sort_key', '자료']).drop('sort_key', axis=1)
     
-    # 세션 업데이트
     st.session_state.master_df = master
     
-    # [GP9 기능] 자동 백업 실행
+    # 자동 백업 실행
     if save_backup_to_cloud(st.session_state.last_mode, master):
         pass 
     else:
@@ -576,7 +555,6 @@ def save_logic(edited_df, page_str, sheet_obj, context_text):
 # =========================================================
 # [6] 메인 UI 구성
 # =========================================================
-# 세션 상태 변수 초기화 (새로고침 시 데이터 증발 방지)
 if 'master_df' not in st.session_state: st.session_state.master_df = None
 if 'analysis_result' not in st.session_state: st.session_state.analysis_result = []
 if 'page_idx' not in st.session_state: st.session_state.page_idx = 0
@@ -584,28 +562,23 @@ if 'file_hash' not in st.session_state: st.session_state.file_hash = None
 if 'start_page_offset' not in st.session_state: st.session_state.start_page_offset = 1
 if 'manual_page_input' not in st.session_state: st.session_state.manual_page_input = "1"
 if 'last_uploaded_file_name' not in st.session_state: st.session_state.last_uploaded_file_name = None
-# [핵심] 입력 텍스트 상태 보존용 (새로고침 방지)
 if 'editor_text_content' not in st.session_state: st.session_state.editor_text_content = ""
 
 st.title("📝 국어활동 AI 분석기")
 
-# ----------------------------
 # [사이드바] 설정 및 도구
-# ----------------------------
 with st.sidebar:
     st.header("⚙️ 설정")
     mode = st.radio("언어 모드", ["🇰🇷 표준어", "🇰🇵 문화어"])
     MODE_KEY = "SOUTH" if "표준어" in mode else "NORTH"
     
-    # 모드 변경 감지 및 자동 백업/리셋
     if 'last_mode' not in st.session_state: st.session_state.last_mode = MODE_KEY
     if st.session_state.last_mode != MODE_KEY:
-        # 데이터가 있으면 백업 후 초기화
         if st.session_state.master_df is not None:
             save_backup_to_cloud(st.session_state.last_mode, st.session_state.master_df)
         st.session_state.master_df = None
         st.session_state.last_mode = MODE_KEY
-        st.rerun() # 화면 갱신
+        st.rerun()
         
     sheet, sheet_data = get_sheet_data_fresh(MODE_KEY)
     if sheet: 
@@ -616,7 +589,6 @@ with st.sidebar:
     st.markdown("---")
     st.header("📂 이어하기")
     
-    # [Req 1] 엑셀 이어하기 (Merge Logic - 덮어쓰지 않음)
     up_excel = st.file_uploader("엑셀 파일 선택", type=['xlsx'])
     
     if up_excel and up_excel.name != st.session_state.last_uploaded_file_name:
@@ -632,18 +604,16 @@ with st.sidebar:
                     st.session_state.master_df = loaded
                 
                 st.session_state.last_uploaded_file_name = up_excel.name
-                st.success("데이터 병합 완료! (기존 데이터 보존됨)")
+                st.success("데이터 병합 완료!")
                 time.sleep(1)
                 st.rerun()
             except Exception as e:
                 st.error(f"엑셀 로드 오류: {e}")
 
-    # 백업 및 복구 버튼
     c1, c2 = st.columns(2)
     with c1:
         if st.button("☁️ 강제 백업"): 
-            if save_backup_to_cloud(MODE_KEY, st.session_state.master_df): 
-                st.toast("클라우드 백업 성공", icon="☁️")
+            if save_backup_to_cloud(MODE_KEY, st.session_state.master_df): st.toast("백업 성공")
     with c2:
         if st.button("🔄 복구"):
             r = load_backup_from_cloud(MODE_KEY)
@@ -679,17 +649,9 @@ with st.sidebar:
     if search_q and sheet_data:
         found = [row for row in sheet_data if search_q in str(row.get('root_word')) or search_q in str(row.get('original_word'))]
         if found:
-            for f in found[-3:]: 
-                st.text(f"[{f.get('action')}] {f.get('root_word')} ({f.get('origin')})")
-        else:
-            if search_q: st.caption("검색 결과가 없습니다.")
+            for f in found[-3:]: st.text(f"[{f.get('action')}] {f.get('root_word')} ({f.get('origin')})")
 
-# ----------------------------
-# [메인 화면]
-# ----------------------------
 st.subheader("1. 분석 자료 입력")
-
-# 파일 업로드 (PDF/이미지)
 main_file = st.file_uploader("PDF/이미지 파일 (선택)", type=['pdf', 'png', 'jpg'])
 
 # [오류 해결] AttributeError: ... has no attribute 'id' 방지
@@ -722,13 +684,10 @@ with col_view:
     if main_file:
         st.info("📷 미리보기")
         img_bytes = get_page_image_bytes(main_file, st.session_state.page_idx)
-        if img_bytes: 
-            st.image(img_bytes, use_container_width=True)
-        else:
-            st.warning("미리보기를 생성할 수 없습니다.")
+        if img_bytes: st.image(img_bytes, use_container_width=True)
+        else: st.warning("미리보기를 생성할 수 없습니다.")
         
         if "pdf" in main_file.type:
-            # 페이지 이동 컨트롤
             c_prev, c_jump, c_next = st.columns([1, 2, 1])
             with c_prev:
                 if st.button("◀"):
@@ -758,23 +717,17 @@ with col_view:
         st.info("파일 없음 (직접 입력 모드)")
         page_str = st.text_input("저장될 쪽수", value="1")
 
-# [우측] 텍스트 입력 및 분석 (상시 노출)
 with col_input:
     st.info("📝 분석 내용 입력 (수정 가능)")
-    
-    # [핵심] 텍스트창 상태 고정 (key 사용 + session_state 동기화)
     txt_val = st.text_area(
         "분석할 텍스트를 입력하세요.", 
         value=st.session_state.editor_text_content,
         height=500,
         key="main_editor_area"
     )
-    
-    # 사용자가 입력한 내용 업데이트
     if txt_val != st.session_state.editor_text_content:
         st.session_state.editor_text_content = txt_val
 
-    # 분석 실행 버튼
     if st.button("🚀 분석 실행", type="primary", use_container_width=True):
         if not txt_val.strip():
             st.warning("분석할 텍스트가 없습니다.")
@@ -817,11 +770,9 @@ with col_input:
                 
                 st.session_state.analysis_result = proc
 
-# [결과 화면] 탭 이동 없이 바로 아래 표시
 if st.session_state.analysis_result:
     st.divider()
     st.subheader("2. 분석 결과 확인")
-    
     df_r = pd.DataFrame(st.session_state.analysis_result)
     
     # '의미' 열 제거됨
@@ -837,11 +788,9 @@ if st.session_state.analysis_result:
     )
     
     c1, c2, c3 = st.columns(3)
-    
-    # [버튼 1] 체크 항목 삭제 (학습 포함)
     with c1:
-        if st.button("⛔ 체크 항목 삭제"):
-            dels = edited[edited['delete_check'] == True]
+        if st.button("⛔ 체크 삭제"):
+            dels = edited[edited['delete_check']==True]
             if not dels.empty and sheet:
                 # 삭제 규칙 학습 전송 ('의미' 제외)
                 l = [[datetime.now().isoformat(), r['original_word'], r['root_word'], "", "", 'delete', 'User'] for _, r in dels.iterrows()]
@@ -854,7 +803,6 @@ if st.session_state.analysis_result:
                 st.session_state.analysis_result = leftover
                 st.rerun()
 
-    # [버튼 2] 저장하고 다음 페이지로
     with c2:
         if st.button("💾 저장하고 다음 (▶)"):
             if save_logic(edited, page_str, sheet, txt_val):
@@ -874,13 +822,11 @@ if st.session_state.analysis_result:
                 else:
                     st.success("저장 완료. (이미지/직접입력 모드는 다음 페이지가 없습니다)")
 
-    # [버튼 3] 저장만 하기
     with c3:
         if st.button("💾 저장만 하기"):
             if save_logic(edited, page_str, sheet, txt_val):
                 st.success("저장되었습니다.")
 
-# [하단] 전체 누적 데이터 표시 (GP9 기능)
 if st.session_state.master_df is not None:
     st.markdown("---")
     st.subheader("📊 전체 누적 데이터")
