@@ -36,12 +36,12 @@ if 'extracted_text' not in st.session_state: st.session_state.extracted_text = "
 if 'debug_mode' not in st.session_state: st.session_state.debug_mode = False
 
 # =========================================================
-# [1] 디자인: 강제 다크 모드 & 네온 발광 CSS (Step 0)
+# [1] 디자인: 상시 발광(Always Visible) CSS (Step 0)
 # =========================================================
 if st.session_state.step == 0:
     st.markdown("""
         <style>
-            /* 0. 강제 다크 모드 적용 (테마 설정 무시) */
+            /* 0. 강제 다크 모드 적용 (배경색 고정) */
             .stApp {
                 background-color: #0e1117 !important;
                 color: #ffffff !important;
@@ -50,55 +50,58 @@ if st.session_state.step == 0:
             /* 기본 폰트 */
             .stTextArea textarea { font-family: 'Malgun Gothic', sans-serif !important; }
             
-            /* 1. 메인 버튼 스타일 (화면 중앙 2개 버튼) */
+            /* 1. 버튼 공통 스타일 */
             div.block-container div[data-testid="column"] div.stButton > button {
                 width: 100%;
-                height: 320px; /* 버튼 크기 */
-                background-color: #262730 !important; /* 버튼 기본색 */
-                border: 2px solid rgba(255,255,255,0.1) !important;
+                height: 320px;
+                background-color: #262730 !important;
                 border-radius: 20px !important;
                 color: #eeeeee !important;
                 transition: all 0.3s ease !important;
-                box-shadow: 0 4px 6px rgba(0,0,0,0.3) !important;
-                
-                /* 텍스트 스타일 */
                 font-size: 1.5rem !important;
                 font-weight: 700 !important;
                 white-space: pre-wrap;
                 line-height: 1.6 !important;
-                
-                /* 빛 잘림 방지 */
                 overflow: visible !important;
                 position: relative;
                 z-index: 1;
             }
             
-            /* 2. 호버 효과 (떠오름 + 배경색 변화) */
+            /* 호버 시 떠오름 효과 */
             div.block-container div[data-testid="column"] div.stButton > button:hover {
                 transform: translateY(-8px);
-                background-color: #2b2c36 !important;
-                z-index: 10; /* 호버 시 맨 위로 */
+                z-index: 10;
             }
 
-            /* 3. 컬럼별 네온 발광 색상 지정 (핵심) */
-            
-            /* [왼쪽: 대한민국] -> Cyan Blue Glow */
+            /* 2. [왼쪽: 대한민국] - 평소에도 푸른빛 */
+            div[data-testid="column"]:nth-of-type(1) div.stButton > button {
+                border: 3px solid rgba(0, 204, 255, 0.4) !important; /* 평소에도 보임 */
+                box-shadow: 0 0 15px rgba(0, 204, 255, 0.1) !important;
+            }
+            /* 호버 시 강한 파란 발광 */
             div[data-testid="column"]:nth-of-type(1) div.stButton > button:hover {
+                background-color: #1e293b !important;
                 border-color: #00ccff !important;
-                box-shadow: 0 0 35px rgba(0, 204, 255, 0.7) !important; /* 발광 세기 강화 */
+                box-shadow: 0 0 40px rgba(0, 204, 255, 0.8) !important;
                 color: #00ccff !important;
             }
 
-            /* [오른쪽: 북한] -> Neon Red Glow */
+            /* 3. [오른쪽: 북한] - 평소에도 붉은빛 */
+            div[data-testid="column"]:nth-of-type(2) div.stButton > button {
+                border: 3px solid rgba(255, 51, 102, 0.4) !important; /* 평소에도 보임 */
+                box-shadow: 0 0 15px rgba(255, 51, 102, 0.1) !important;
+            }
+            /* 호버 시 강한 붉은 발광 */
             div[data-testid="column"]:nth-of-type(2) div.stButton > button:hover {
+                background-color: #2b1d1d !important;
                 border-color: #ff3366 !important;
-                box-shadow: 0 0 35px rgba(255, 51, 102, 0.7) !important; /* 발광 세기 강화 */
+                box-shadow: 0 0 40px rgba(255, 51, 102, 0.8) !important;
                 color: #ff3366 !important;
             }
         </style>
     """, unsafe_allow_html=True)
 else:
-    # [Step 1~4] 작업 단계용 스타일 (여기도 다크 모드 유지)
+    # [Step 1~4] 작업 단계용 스타일
     st.markdown("""
         <style>
             .stApp { background-color: #0e1117 !important; color: #ffffff !important; }
