@@ -17,7 +17,7 @@ from collections import Counter
 # [0] 기본 설정 및 상태 초기화
 # =========================================================
 st.set_page_config(
-    page_title="국어활동 AI 분석기 (Final)", 
+    page_title="국어활동 AI 분석기 (Ghost)", 
     page_icon="📚", 
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -36,57 +36,77 @@ if 'extracted_text' not in st.session_state: st.session_state.extracted_text = "
 if 'debug_mode' not in st.session_state: st.session_state.debug_mode = False
 
 # =========================================================
-# [1] 디자인: CSS 매직 (그라데이션 & 빅 타일 버튼 - !important 적용)
+# [1] 디자인: 고스트 버튼 CSS 매직 (Step 0 전용)
 # =========================================================
 if st.session_state.step == 0:
-    # [Step 0 전용] 화려한 그라데이션 버튼 스타일 (색상 강제 적용)
     st.markdown("""
         <style>
-            /* 기본 폰트 */
-            .stTextArea textarea { font-family: 'Malgun Gothic', sans-serif !important; }
-            
-            /* 버튼 공통: 크기 키우기 및 텍스트 설정 */
-            div.stButton > button {
+            /* 1. 디자인 카드 스타일 (HTML로 그려질 부분) */
+            .ghost-card {
+                height: 240px;
                 width: 100%;
-                height: 220px;
-                border: none !important;
-                border-radius: 20px !important;
-                color: white !important;
-                transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
-                box-shadow: 0 4px 15px rgba(0,0,0,0.2) !important;
-                font-size: 1.2rem !important;
-                font-weight: 600 !important;
-                white-space: pre-wrap; /* 줄바꿈 허용 */
+                border-radius: 20px;
+                padding: 30px 20px;
+                text-align: center;
+                color: white;
+                display: flex;
+                flex-direction: column;
+                justify-content: center;
+                align-items: center;
+                box-shadow: 0 10px 25px rgba(0,0,0,0.3);
+                transition: transform 0.3s ease;
+                margin-bottom: 20px;
             }
             
-            /* 호버 효과: 둥실 떠오름 */
-            div.stButton > button:hover {
+            /* 카드 애니메이션 효과 */
+            .ghost-card:hover {
                 transform: translateY(-8px) scale(1.02);
-                box-shadow: 0 15px 30px rgba(0,0,0,0.4) !important;
             }
 
-            /* [컬럼 1: 대한민국] - 오션 블루 & 민트 (강제 적용) */
-            div[data-testid="column"]:nth-of-type(1) div.stButton > button {
-                background: linear-gradient(135deg, #1e3a8a 0%, #0284c7 60%, #06b6d4 100%) !important;
-                border: 2px solid #38bdf8 !important;
+            /* 색상 테마: 오션 블루 (남한) */
+            .card-south {
+                background: linear-gradient(135deg, #1e3a8a 0%, #0ea5e9 100%);
+                border: 1px solid #7dd3fc;
             }
 
-            /* [컬럼 2: 북한] - 로즈 와인 & 코랄 (강제 적용) */
-            div[data-testid="column"]:nth-of-type(2) div.stButton > button {
-                background: linear-gradient(135deg, #881337 0%, #be123c 60%, #fb7185 100%) !important;
-                border: 2px solid #fda4af !important;
+            /* 색상 테마: 로즈 와인 (북한) */
+            .card-north {
+                background: linear-gradient(135deg, #881337 0%, #f43f5e 100%);
+                border: 1px solid #fda4af;
             }
 
-            /* [컬럼 3: 관리자] - 다크 글래스 (강제 적용) */
-            div[data-testid="column"]:nth-of-type(3) div.stButton > button {
-                background: linear-gradient(135deg, #1f2937 0%, #374151 50%, #4b5563 100%) !important;
-                border: 2px solid #6b7280 !important;
-                color: #e5e7eb !important;
-                opacity: 0.9;
+            /* 색상 테마: 다크 글래스 (관리자) */
+            .card-debug {
+                background: rgba(255, 255, 255, 0.05);
+                border: 1px solid #444;
+                color: #aaa;
             }
-            div[data-testid="column"]:nth-of-type(3) div.stButton > button:hover {
-                opacity: 1.0;
-                background: linear-gradient(135deg, #374151 0%, #4b5563 50%, #6b7280 100%) !important;
+            .card-debug:hover {
+                background: rgba(255, 255, 255, 0.1);
+                color: #fff;
+                border: 1px solid #888;
+            }
+
+            .card-icon { font-size: 3rem; margin-bottom: 15px; }
+            .card-title { font-size: 1.5rem; font-weight: 700; margin-bottom: 10px; }
+            .card-desc { font-size: 1rem; opacity: 0.9; font-weight: 300; }
+
+            /* 2. 고스트 버튼 (투명 클릭 트랩) */
+            /* Streamlit 컬럼을 relative로 설정하여 절대 위치 기준점 잡기 */
+            div[data-testid="column"] {
+                position: relative;
+            }
+
+            /* 버튼을 카드 위로 덮어씌우고 투명하게 만듦 */
+            div.stButton > button {
+                position: absolute !important;
+                top: 0 !important;
+                left: 0 !important;
+                width: 100% !important;
+                height: 240px !important; /* 카드 높이와 동일하게 */
+                opacity: 0 !important;    /* 완전 투명 */
+                z-index: 10 !important;   /* 카드보다 위에 배치 */
+                cursor: pointer !important;
             }
         </style>
     """, unsafe_allow_html=True)
@@ -342,7 +362,7 @@ if st.session_state.step > 0:
     st.markdown('</div>', unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# STEP 0: 시작 화면 (그라데이션 빅 타일 버튼)
+# STEP 0: 시작 화면 (고스트 버튼 적용)
 # ---------------------------------------------------------
 if st.session_state.step == 0:
     st.markdown("<h1 style='text-align: center; margin-bottom: 20px;'>📚 국어활동 AI 분석기</h1>", unsafe_allow_html=True)
@@ -351,24 +371,48 @@ if st.session_state.step == 0:
     c1, c2, c3 = st.columns(3)
     
     with c1:
-        # [대한민국: Ocean & Mint]
-        if st.button("🏛️\n\n대한민국 표준어\n\n(표준국어대사전 기준)", key="btn_south", use_container_width=True):
+        # 1. 예쁜 카드 그리기 (HTML)
+        st.markdown("""
+        <div class="ghost-card card-south">
+            <div class="card-icon">🏛️</div>
+            <div class="card-title">대한민국 표준어</div>
+            <div class="card-desc">표준국어대사전 기준<br>두음법칙 적용</div>
+        </div>
+        """, unsafe_allow_html=True)
+        # 2. 투명 버튼 덮어쓰기
+        if st.button("btn_south_hidden", key="btn_south"):
             st.session_state.mode_key = "SOUTH"
             st.session_state.step = 1
             st.toast("✅ 대한민국 학습 서버에 연결되었습니다.")
             time.sleep(0.5); st.rerun()
 
     with c2:
-        # [북한: Rose & Coral]
-        if st.button("🏔️\n\n북한 문화어\n\n(문화어 규범 기준)", key="btn_north", use_container_width=True):
+        # 1. 예쁜 카드 그리기 (HTML)
+        st.markdown("""
+        <div class="ghost-card card-north">
+            <div class="card-icon">🏔️</div>
+            <div class="card-title">북한 문화어</div>
+            <div class="card-desc">북한 문화어 규범 기준<br>두음법칙 미적용</div>
+        </div>
+        """, unsafe_allow_html=True)
+        # 2. 투명 버튼 덮어쓰기
+        if st.button("btn_north_hidden", key="btn_north"):
             st.session_state.mode_key = "NORTH"
             st.session_state.step = 1
             st.toast("✅ 북한 학습 서버에 연결되었습니다.")
             time.sleep(0.5); st.rerun()
 
     with c3:
-        # [관리자: Dark Glass]
-        if st.button("🛠️\n\n관리자 모드\n\n(시스템 로그/오류 해결)", key="btn_debug", use_container_width=True):
+        # 1. 예쁜 카드 그리기 (HTML)
+        st.markdown("""
+        <div class="ghost-card card-debug">
+            <div class="card-icon">🛠️</div>
+            <div class="card-title">관리자 모드</div>
+            <div class="card-desc">시스템 로그 확인 및<br>긴급 오류 해결</div>
+        </div>
+        """, unsafe_allow_html=True)
+        # 2. 투명 버튼 덮어쓰기
+        if st.button("btn_debug_hidden", key="btn_debug"):
             st.session_state.debug_mode = True
             st.info("로그 패널이 활성화되었습니다.")
 
