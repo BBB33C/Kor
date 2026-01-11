@@ -35,7 +35,7 @@ if 'page_idx' not in st.session_state: st.session_state.page_idx = 0
 if 'start_offset' not in st.session_state: st.session_state.start_offset = 1
 if 'extracted_text' not in st.session_state: st.session_state.extracted_text = ""
 if 'debug_mode' not in st.session_state: st.session_state.debug_mode = False
-if 'last_raw_response' not in st.session_state: st.session_state.last_raw_response = "" # 디버깅 데이터 저장용
+if 'last_raw_response' not in st.session_state: st.session_state.last_raw_response = "" 
 
 # =========================================================
 # [1] 디자인: CSS 매직
@@ -148,10 +148,16 @@ def generate_prompt_from_sheet(sheet_data):
     if not sheet_data: return ""
     rules = []
     for row in sheet_data[-100:]:
+        # 시트 데이터도 한글 키로 관리된다고 가정하거나, 기존 영문 키를 매핑
+        orig = row.get('original_word', '')
+        root = row.get('root_word', '')
+        origin = row.get('origin', '')
+        pos = row.get('pos', '')
+        
         if row.get('action') == 'delete':
-            rules.append(f"- [제외 권장]: '{row.get('original_word')}'는 과거 삭제 이력이 있습니다. 문맥상 불필요하면 제외하세요.")
+            rules.append(f"- [제외 권장]: '{orig}'는 제외.")
         elif row.get('action') in ['add', 'modify']:
-            rules.append(f"- [고정 규칙]: '{row.get('original_word')}' -> 원형:'{row.get('root_word')}', 분류:'{row.get('origin')}', 품사:'{row.get('pos')}'")
+            rules.append(f"- [고정 규칙]: '{orig}' -> 원형:'{root}', 분류:'{origin}', 품사:'{pos}'")
     return "\n[사용자 학습 데이터]:\n" + "\n".join(rules) + "\n" if rules else ""
 
 def api_call_direct(prompt, image_bytes=None):
@@ -253,7 +259,7 @@ def merge_master_data(old_df, new_df):
     result_df = result_df.sort_values(['sk', '자료']).drop('sk', axis=1)
     return result_df
 
-# [수정] AI 분석 함수 (Raw Response 반환 추가)
+# [핵심 수정] 1. AI에게 한글 키로 요청
 def get_analysis_hybrid(text, image_bytes, sheet_data, mode_key):
     prompt = f"""
     당신은 '{"대한민국 표준어" if mode_key=="SOUTH" else "북한 문화어"}' 형태소 분석 전문가입니다.
@@ -262,18 +268,28 @@ def get_analysis_hybrid(text, image_bytes, sheet_data, mode_key):
     [분석 규칙]
     1. 조사/어미 제거, '하다' 용언은 명사로 분류.
     2. 품사: 명사, 동사, 형용사, 부사, 관형사, 대명사, 고유명사.
-    3. **동음이의어: 원형 뒤에 괄호로 뜻 구분 (필수).** (예: 배(과일), 배(선박))
-    4. **인명/지명: 원형 뒤에 (이름)/(지명) 표기 (필수).** (예: 지혜(이름), 서울(지명))
-    5. 출력: JSON 포맷 (반드시 빈 리스트 []가 아닌 유효한 데이터를 포함할 것)
+    3. 동음이의어: 원형 뒤에 괄호로 뜻 구분 (예: 배(과일), 배(선박))
+    4. 인명/지명: 원형 뒤에 (이름)/(지명) 표기 (예: 지혜(이름), 서울(지명))
+    
+    [필수 JSON 키(Key) 및 출력 형식]
+    반드시 아래 **한글 키(Key)**를 사용하세요. 영어 키를 쓰지 마세요.
+    - 원본: 문장에서 쓰인 원래 단어 (예: "갔습니다")
+    - 원형: 기본형 (예: "가다")
+    - 분류: 어종 (고/한/외/혼)
+    - 품사: 품사 (명사/동사 등)
+    
+    [출력 예시]
+    [
+      {{"원본": "학교에", "원형": "학교", "분류": "한", "품사": "명사"}},
+      {{"원본": "갔다", "원형": "가다", "분류": "고", "품사": "동사"}}
+    ]
     """
     
-    # 1. API 호출
-    raw_response = api_call_direct(prompt + f"\n[텍스트]:\n{text[:5000]}", image_bytes)
+    raw_response = api_call_direct(prompt + f"\n[분석할 텍스트]:\n{text[:5000]}", image_bytes)
     
     if not raw_response:
         return [], "No response from API"
 
-    # 2. JSON 파싱 시도
     try:
         clean_json = raw_response.replace("```json", "").replace("```", "").strip()
         match = re.search(r'\[.*\]', clean_json, re.DOTALL)
@@ -288,7 +304,7 @@ def get_analysis_hybrid(text, image_bytes, sheet_data, mode_key):
 # [4] UI: 메인 루프
 # =========================================================
 
-# 사이드바 (관리자 모드 제어)
+# 사이드바
 with st.sidebar:
     st.markdown("### ⚙️ 설정")
     if st.session_state.debug_mode:
@@ -381,7 +397,7 @@ elif st.session_state.step == 2:
 
     tab1, tab2 = st.tabs(["📄 파일 분석", "✍️ 직접 입력"])
     
-    # [수정] 3. 실행 로직 함수 (변수 인자 명확화 및 빈 데이터 처리)
+    # [수정] 2. 로직 함수: 한글 키 파싱 및 필터링
     def run_analysis_logic(txt, img=None):
         if not txt or not txt.strip():
             st.warning("⚠️ 분석할 텍스트가 없습니다. 내용을 확인해주세요.")
@@ -391,42 +407,44 @@ elif st.session_state.step == 2:
             s_data = get_sheet_data_fresh(st.session_state.mode_key)[1]
             res, raw_response = get_analysis_hybrid(txt, img, s_data, st.session_state.mode_key)
             
-            # [디버깅 저장]
             st.session_state.last_raw_response = raw_response
             
             proc = []
             temp_dict = {}
+            # 한글 키 사용
             om = {'고':'🔵 고', '한':'🟢 한', '외':'🔴 외', '혼':'🟣 혼'}
             pm = {'명사':'📦 명사', '동사':'🏃 동사', '형용사':'🎨 형용사', '부사':'⚡ 부사', '관형사':'🔍 관형사', '대명사':'👤 대명사'}
             
             for r in res:
-                # [버그 수정] 빈 데이터(Empty String/Null) 필터링
-                o_word = str(r.get('original_word', '')).strip()
-                r_word = str(r.get('root_word', '')).strip()
+                # 한글 키 우선, 없으면 영문 키 fallback
+                o_word = str(r.get('원본') or r.get('original_word') or '').strip()
+                r_word = str(r.get('원형') or r.get('root_word') or '').strip()
+                origin_val = str(r.get('분류') or r.get('origin') or '혼').strip()
+                pos_val = str(r.get('품사') or r.get('pos') or '명사').strip()
                 
-                # 빈 문자열이면 즉시 스킵
+                # 빈 데이터 필터링
                 if not o_word or o_word.lower() == 'none': continue
                 if not r_word or r_word.lower() == 'none': continue
 
-                key = (r_word, r.get('origin','혼'), r.get('pos','명사'))
+                key = (r_word, origin_val, pos_val)
                 if key not in temp_dict: temp_dict[key] = []
                 temp_dict[key].append(o_word)
             
             for (root, origin, pos), origs in temp_dict.items():
                 cnts = Counter(origs)
-                # 포맷팅 시 빈 문자열 제외
                 valid_items = [f"{w}({c})" for w, c in cnts.items() if w and w.strip()]
                 if not valid_items: continue
                 
                 fmt_orig = ", ".join(valid_items)
                 
+                # [중요] 한글 키로 저장
                 proc.append({
-                    "delete_check": False,
-                    "count": f"{sum(cnts.values())}회",
-                    "original_word": fmt_orig,
-                    "root_word": root,
-                    "origin": om.get(origin, origin),
-                    "pos": pm.get(pos, pos)
+                    "삭제": False,
+                    "횟수": f"{sum(cnts.values())}회",
+                    "원본": fmt_orig,
+                    "원형": root,
+                    "분류": om.get(origin, origin),
+                    "품사": pm.get(pos, pos)
                 })
             
             st.session_state.analysis_result = proc
@@ -457,33 +475,29 @@ elif st.session_state.step == 2:
             with c2:
                 txt_input = st.text_area("에디터", value=st.session_state.extracted_text, height=500)
                 st.session_state.extracted_text = txt_input
-                # [수정] 파일 탭 전용 버튼 (txt_input 전달)
                 if st.button("🚀 분석 실행", type="primary", use_container_width=True, key="run_file"):
                     run_analysis_logic(txt_input, st.session_state.file_bytes)
 
     with tab2:
         direct_txt = st.text_area("텍스트 입력", height=400)
-        # [수정] 직접 입력 탭 전용 버튼 (direct_txt 전달)
         if st.button("🚀 분석 실행", type="primary", key="run_direct"):
             st.session_state.extracted_text = direct_txt
             run_analysis_logic(direct_txt)
 
 # ---------------------------------------------------------
-# STEP 3: 결과 확인 (디버그 & 오류 해결)
+# STEP 3: 결과 확인 (한글 키 적용)
 # ---------------------------------------------------------
 elif st.session_state.step == 3:
     st.header("📊 분석 결과 확인")
     
-    # [수정] 디버그 패널 (Raw Response 확인)
     if st.session_state.debug_mode:
         with st.expander("🔴 [DEBUG] AI 응답 원본 확인", expanded=True):
-            st.info("AI가 반환한 Raw Data입니다. 오류 발생 시 확인하세요.")
+            st.info("AI가 반환한 Raw Data입니다.")
             st.code(st.session_state.get('last_raw_response', '데이터 없음'))
 
     with st.expander("📝 원문 텍스트 보기 (클릭)", expanded=False):
         st.text_area("분석 대상", value=st.session_state.extracted_text, height=200, disabled=True)
 
-    # Dialog 함수 호환성 처리
     if hasattr(st, "dialog"): dlg = st.dialog
     else: dlg = st.experimental_dialog
 
@@ -499,28 +513,32 @@ elif st.session_state.step == 3:
                 om = {'고':'🔵 고', '한':'🟢 한', '외':'🔴 외', '혼':'🟣 혼'}
                 pm = {'명사':'📦 명사', '동사':'🏃 동사', '형용사':'🎨 형용사', '부사':'⚡ 부사', '관형사':'🔍 관형사', '대명사':'👤 대명사'}
                 new_row = {
-                    "delete_check": False,
-                    "count": f"{cnt}회",
-                    "original_word": f"{o}(수동)",
-                    "root_word": r,
-                    "origin": om.get(org, org),
-                    "pos": pm.get(p, p)
+                    "삭제": False,
+                    "횟수": f"{cnt}회",
+                    "원본": f"{o}(수동)",
+                    "원형": r,
+                    "분류": om.get(org, org),
+                    "품사": pm.get(p, p)
                 }
                 st.session_state.analysis_result.append(new_row)
+                
+                # 구글 시트에 로그 남기기 (키 이름만 맞추면 됨)
                 sheet = get_sheet_data_fresh(st.session_state.mode_key)[0]
                 send_data_with_retry(sheet, [datetime.now().isoformat(), o, r, org, p, 'add', '수동'])
                 st.rerun()
 
     df_res = pd.DataFrame(st.session_state.analysis_result)
+    
+    # [수정] 한글 키 매핑 적용
     edited = st.data_editor(
         df_res,
         column_config={
-            "delete_check": st.column_config.CheckboxColumn("삭제"),
-            "original_word": st.column_config.TextColumn("원본", disabled=True),
-            "root_word": st.column_config.TextColumn("원형"),
-            "count": st.column_config.TextColumn("횟수"),
-            "origin": st.column_config.SelectboxColumn("분류", options=["🔵 고", "🟢 한", "🔴 외", "🟣 혼"]),
-            "pos": st.column_config.SelectboxColumn("품사", options=["📦 명사", "🏃 동사", "🎨 형용사", "⚡ 부사", "🔍 관형사", "👤 대명사", "고유명사"])
+            "삭제": st.column_config.CheckboxColumn("삭제"),
+            "원본": st.column_config.TextColumn("원본", disabled=True),
+            "원형": st.column_config.TextColumn("원형"),
+            "횟수": st.column_config.TextColumn("횟수"),
+            "분류": st.column_config.SelectboxColumn("분류", options=["🔵 고", "🟢 한", "🔴 외", "🟣 혼"]),
+            "품사": st.column_config.SelectboxColumn("품사", options=["📦 명사", "🏃 동사", "🎨 형용사", "⚡ 부사", "🔍 관형사", "👤 대명사", "고유명사"])
         },
         use_container_width=True,
         num_rows="dynamic",
@@ -535,14 +553,38 @@ elif st.session_state.step == 3:
         if st.button("➕ 단어 추가", use_container_width=True): add_manual_item()
     with ac2:
         if st.button("⛔ 선택 삭제", use_container_width=True):
-            to_delete = edited[edited['delete_check']==True]
+            to_delete = edited[edited['삭제']==True]
             if not to_delete.empty:
                 sheet = get_sheet_data_fresh(st.session_state.mode_key)[0]
-                logs = [[datetime.now().isoformat(), r['original_word'], r['root_word'], "", "", 'delete', 'User'] for _, r in to_delete.iterrows()]
+                logs = [[datetime.now().isoformat(), r['원본'], r['원형'], "", "", 'delete', 'User'] for _, r in to_delete.iterrows()]
                 send_data_with_retry(sheet, logs, True)
-                st.session_state.analysis_result = edited[edited['delete_check']==False].to_dict('records')
+                st.session_state.analysis_result = edited[edited['삭제']==False].to_dict('records')
                 st.rerun()
             else: st.toast("선택된 항목이 없습니다.")
+
+    def save_logic_common():
+        sheet = get_sheet_data_fresh(st.session_state.mode_key)[0]
+        logs = []
+        for _, row in edited.iterrows():
+            if not row['삭제']:
+                logs.append([datetime.now().isoformat(), row['원본'], row['원형'], clean_val_for_save(row['분류']), clean_val_for_save(row['품사']), 'modify', 'result'])
+        send_data_with_retry(sheet, logs, True)
+        
+        valid = edited[edited['삭제']==False].copy()
+        # '1회' -> 1 로 숫자 변환
+        valid['n_cnt'] = valid['횟수'].apply(lambda x: int(re.sub(r'[^0-9]', '', str(x))) if re.search(r'\d', str(x)) else 1)
+        
+        # [수정] 한글 키로 그룹화
+        agg = valid.groupby(['원형', '분류', '품사'], as_index=False).agg({'n_cnt': 'sum'})
+        
+        p_num = str(st.session_state.page_idx + st.session_state.start_offset)
+        temp_rows = []
+        for _, item in agg.iterrows():
+            val = f"{p_num}_{item['n_cnt']}" if item['n_cnt'] > 1 else p_num
+            temp_rows.append({'구분': clean_val_for_save(item['분류']), '자료': item['원형'], '쪽수1': val})
+            
+        st.session_state.master_df = merge_master_data(st.session_state.master_df, pd.DataFrame(temp_rows))
+        save_backup_to_cloud(st.session_state.mode_key, st.session_state.master_df)
 
     with ac3:
         if st.button("💾 저장하기 (완료)", type="primary", use_container_width=True):
