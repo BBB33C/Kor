@@ -37,9 +37,10 @@ if 'extracted_text' not in st.session_state: st.session_state.extracted_text = "
 if 'debug_mode' not in st.session_state: st.session_state.debug_mode = False
 if 'last_raw_response' not in st.session_state: st.session_state.last_raw_response = ""
 if 'current_tab_idx' not in st.session_state: st.session_state.current_tab_idx = 0 
+if 'is_finished' not in st.session_state: st.session_state.is_finished = False # 완료 상태 추적
 
 # =========================================================
-# [1] 디자인: CSS 매직 (고급 색상 및 중앙 정렬 유지)
+# [1] 디자인: CSS 매직
 # =========================================================
 if st.session_state.step == 0:
     st.markdown("""
@@ -228,7 +229,7 @@ def save_logic_common():
     save_backup_to_cloud(st.session_state.mode_key, st.session_state.master_df)
 
 # =========================================================
-# [4] AI 분석 엔진 (프롬프트 강화 및 규칙 수정)
+# [4] AI 분석 엔진
 # =========================================================
 def generate_prompt_from_sheet(sheet_data):
     if not sheet_data: return ""
@@ -289,11 +290,12 @@ def get_page_image(file_bytes, file_type, page_idx):
     if "image" in file_type: return file_bytes
     if "pdf" in file_type and FITZ_AVAILABLE:
         doc = fitz.open(stream=file_bytes, filetype="pdf")
-        if page_idx < len(doc): return doc[page_idx].get_pixmap(matrix=fitz.Matrix(2.0, 2.0)).tobytes("png")
+        if page_idx < len(doc): return doc[source_references] == ["uploaded:app.py"]
+
+st.session_state.file_bytes, file_type, page_idx.tobytes("png")
     return None
 
 def get_analysis_hybrid(text, image_bytes, sheet_data, mode_key):
-    # '명사+하다' 강제 규칙 삭제됨
     prompt = f"""
     당신은 '{"대한민국 표준어" if mode_key=="SOUTH" else "북한 문화어"}' 형태소 분석 전문가입니다.
     {generate_prompt_from_sheet(sheet_data)}
@@ -303,10 +305,9 @@ def get_analysis_hybrid(text, image_bytes, sheet_data, mode_key):
     2. **조사 및 어미 제외**: '은/는/이/가/을/를' 등의 조사와 '-다/요/까' 등의 어미는 독립된 항목으로 출력하지 마세요. (어근에 붙어있으면 제거하고 원형만 추출)
     3. **의존 명사 포함**: '것', '수', '만큼', '따위' 등의 의존 명사는 '명사'로 분류하여 결과에 포함하세요.
     
-    [어종(Origin) 분류 기준 (정확도 필수)]
-    단순히 한글로 표기되었다고 '고(고유어)'로 판단하지 말고, 한자어 여부를 엄격히 판단하세요.
-    1. **한 (한자어)**: 한자(Chinese Characters)에 기반한 단어는 반드시 '한'으로 분류하세요.
-       - 예시: 학교(學校), 분석(分析), 질문(質問), 입력(入力), 감탄(感歎)
+    [어종(Origin) 분류 기준]
+    한자어 여부를 엄격히 판단하세요.
+    1. **한 (한자어)**: 한자(Chinese Characters)에 기반한 단어. 예: 학교(學校), 분석(分析), 질문(質問)
     2. **고 (고유어)**: 순우리말. 예: 하늘, 바다, 가다, 아름답다
     3. **외 (외래어)**: 영어 등 서양 언어 유래 단어. 예: 버스, 컴퓨터, 데이터
     
@@ -327,7 +328,7 @@ def get_analysis_hybrid(text, image_bytes, sheet_data, mode_key):
     except Exception as e: return [], f"JSON Error: {str(e)}\nRaw: {raw_response}"
 
 # =========================================================
-# [5] UI: 메인 루프 (Wizard)
+# [5] UI: 메인 루프
 # =========================================================
 
 # [사이드바] 관리자 전용
@@ -343,7 +344,7 @@ with st.sidebar:
             st.session_state.debug_mode = True; st.rerun()
 
 # ---------------------------------------------------------
-# STEP 0: 시작 화면 (오션 블루 / 로즈 레드 상징색 적용)
+# STEP 0: 시작 화면
 # ---------------------------------------------------------
 if st.session_state.step == 0:
     st.markdown("<h1 style='text-align: center; margin-bottom: 20px;'>📚 국어활동 AI 분석기</h1>", unsafe_allow_html=True)
@@ -383,9 +384,12 @@ elif st.session_state.step == 1:
     if st.button("⬅️ 모드 다시 선택"): st.session_state.step = 0; st.rerun()
 
 # ---------------------------------------------------------
-# STEP 2: 자료 입력 (탭 상태 및 텍스트 보존 로직)
+# STEP 2: 자료 입력
 # ---------------------------------------------------------
 elif st.session_state.step == 2:
+    # 초기화
+    st.session_state.is_finished = False 
+    
     c_title, c_home = st.columns([8, 2])
     with c_title: st.header("📝 분석 자료 입력")
     with c_home:
@@ -394,10 +398,9 @@ elif st.session_state.step == 2:
 
     input_method = st.radio("입력 방식", ["📄 파일 분석", "✍️ 직접 입력"], horizontal=True, index=st.session_state.current_tab_idx, label_visibility="collapsed")
 
-    # 분석 실행 공통 로직
     def run_analysis_action(txt, img=None):
         if not txt or not txt.strip(): st.warning("⚠️ 분석할 텍스트가 없습니다."); return
-        with st.spinner("AI 분석 중... (어종 분류 정밀 분석 포함)"):
+        with st.spinner("AI 분석 중..."):
             s_data = get_sheet_data_fresh(st.session_state.mode_key)[1]
             res, raw = get_analysis_hybrid(txt, img, s_data, st.session_state.mode_key)
             st.session_state.last_raw_response = raw
@@ -412,7 +415,6 @@ elif st.session_state.step == 2:
                 origin_val = str(r.get('분류') or r.get('origin') or '혼').strip()
                 pos_val = str(r.get('품사') or r.get('pos') or '명사').strip()
                 
-                # 강력한 필터링 (빈 문자열, 특수문자만 있는 경우, 조사/어미 제외)
                 if not o_word or not r_word or not re.search(r'[가-힣a-zA-Z0-9]', o_word): continue
                 if pos_val in ['조사', '어미', '문장부호', '특수문자']: continue
 
@@ -423,17 +425,13 @@ elif st.session_state.step == 2:
             for (root, origin, pos), origs in temp_dict.items():
                 cnts = Counter(origs)
                 proc.append({
-                    "삭제": False, 
-                    "횟수": f"{sum(cnts.values())}회", 
+                    "삭제": False, "횟수": f"{sum(cnts.values())}회", 
                     "원본": ", ".join([f"{w}({c})" for w, c in cnts.items() if w]), 
-                    "원형": root, 
-                    "분류": om.get(origin, origin), 
-                    "품사": pm.get(pos, pos)
+                    "원형": root, "분류": om.get(origin, origin), "품사": pm.get(pos, pos)
                 })
             
             st.session_state.analysis_result = proc
-            st.session_state.step = 3
-            st.rerun()
+            st.session_state.step = 3; st.rerun()
 
     if input_method == "📄 파일 분석":
         st.session_state.current_tab_idx = 0
@@ -455,26 +453,25 @@ elif st.session_state.step == 2:
                         st.session_state.extracted_text = extract_text_unified(fb, file.type, st.session_state.page_idx); st.rerun()
                     st.session_state.start_offset = st.number_input("시작 쪽수", value=st.session_state.start_offset)
             with c2:
-                txt_in = st.text_area("에디터 (수정 가능)", value=st.session_state.extracted_text, height=500)
+                txt_in = st.text_area("에디터", value=st.session_state.extracted_text, height=500)
                 st.session_state.extracted_text = txt_in
                 if st.button("🚀 분석 실행", type="primary", use_container_width=True, key="run_file"):
                     run_analysis_action(txt_in, fb)
     else:
         st.session_state.current_tab_idx = 1
-        st.caption("텍스트를 직접 입력하세요.")
         direct_t = st.text_area("텍스트 입력 창", value=st.session_state.extracted_text, height=450)
         st.session_state.extracted_text = direct_t
         if st.button("🚀 분석 실행", type="primary", use_container_width=True, key="run_direct"):
             run_analysis_action(direct_t)
 
 # ---------------------------------------------------------
-# STEP 3: 결과 확인 (수정 페이지로 돌아가기 버튼 포함)
+# STEP 3: 결과 확인 (완료 시 다운로드 영역 노출)
 # ---------------------------------------------------------
 elif st.session_state.step == 3:
     ch, cb = st.columns([8, 2])
     with ch: st.header("📊 분석 결과 확인")
     with cb:
-        if st.button("⬅️ 입력 수정하기", use_container_width=True):
+        if st.button("⬅️ 입력창으로 돌아가기", use_container_width=True):
             st.session_state.step = 2; st.rerun()
             
     if st.session_state.debug_mode:
@@ -487,8 +484,7 @@ elif st.session_state.step == 3:
     @dlg_func("➕ 단어 추가")
     def add_manual():
         with st.form("manual_add"):
-            o = st.text_input("원본 단어")
-            r = st.text_input("원형(기본형)")
+            o = st.text_input("원본 단어"); r = st.text_input("원형(기본형)")
             org = st.selectbox("분류", ["고","한","외","혼"])
             p = st.selectbox("품사", ["명사","동사","형용사","부사","관형사","대명사","고유명사","감탄사"])
             cnt = st.number_input("횟수", 1, 100, 1)
@@ -499,7 +495,6 @@ elif st.session_state.step == 3:
                     "삭제": False, "횟수": f"{cnt}회", "원본": f"{o}(수동)", "원형": r, 
                     "분류": om.get(org, org), "품사": pm.get(p, p)
                 })
-                # 로그 남기기
                 sheet = get_sheet_data_fresh(st.session_state.mode_key)[0]
                 send_data_with_retry(sheet, [datetime.now().isoformat(), o, r, org, p, 'add', '수동'])
                 st.rerun()
@@ -511,8 +506,6 @@ elif st.session_state.step == 3:
         column_config={
             "삭제": st.column_config.CheckboxColumn("삭제"),
             "원본": st.column_config.TextColumn("원본", disabled=True),
-            "원형": st.column_config.TextColumn("원형"),
-            "횟수": st.column_config.TextColumn("횟수"),
             "분류": st.column_config.SelectboxColumn("분류", options=["🔵 고", "🟢 한", "🔴 외", "🟣 혼"]),
             "품사": st.column_config.SelectboxColumn("품사", options=["📦 명사", "🏃 동사", "🎨 형용사", "⚡ 부사", "🔍 관형사", "👤 대명사", "고유명사", "❗ 감탄사"])
         },
@@ -520,30 +513,42 @@ elif st.session_state.step == 3:
     )
     if not edited.equals(df_res): st.session_state.analysis_result = edited.to_dict('records')
 
-    a1, a2, a3 = st.columns([1, 1, 2])
-    with a1:
-        if st.button("➕ 단어 추가", use_container_width=True): add_manual()
-    with a2:
-        if st.button("⛔ 선택 삭제", use_container_width=True):
-            st.session_state.analysis_result = edited[edited['삭제']==False].to_dict('records'); st.rerun()
-    with a3:
-        if st.button("💾 저장하기 (완료)", type="primary", use_container_width=True):
-            save_logic_common(); st.session_state.step = 4; st.rerun()
-
-# ---------------------------------------------------------
-# STEP 4: 최종 완료 및 다운로드
-# ---------------------------------------------------------
-elif st.session_state.step == 4:
-    st.balloons(); st.header("✅ 모든 분석이 완료되었습니다!")
-    if st.session_state.master_df is not None:
+    # 하단 버튼 영역
+    if not st.session_state.is_finished:
+        # 분석 중 상태일 때 버튼들
+        a1, a2, a3 = st.columns([1, 1, 2])
+        with a1:
+            if st.button("➕ 단어 추가", use_container_width=True): add_manual()
+        with a2:
+            if st.button("⛔ 선택 삭제", use_container_width=True):
+                st.session_state.analysis_result = edited[edited['삭제']==False].to_dict('records'); st.rerun()
+        with a3:
+            if st.button("💾 저장하기 (완료)", type="primary", use_container_width=True):
+                save_logic_common()
+                st.session_state.is_finished = True # 완료 플래그 활성화
+                st.balloons(); st.rerun()
+    else:
+        # [저장 완료 후] 다운로드 및 입력창 돌아가기 버튼 노출
+        st.success("✅ 분석 데이터가 성공적으로 저장되었습니다!")
+        
         fname = f"국어활동_{st.session_state.mode_key}_{datetime.now().strftime('%m%d_%H%M')}.xlsx"
         buf = io.BytesIO()
         with pd.ExcelWriter(buf, engine='openpyxl') as w: 
             st.session_state.master_df.to_excel(w, index=False)
-        
+            
         c1, c2 = st.columns(2)
         with c1:
-            st.download_button("📥 결과 파일 다운로드", buf.getvalue(), fname, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True, type="primary")
+            st.download_button(
+                label=f"📥 {fname} 다운로드",
+                data=buf.getvalue(),
+                file_name=fname,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                type="primary"
+            )
         with c2:
-            if st.button("🔄 처음으로 돌아가기", use_container_width=True):
-                st.session_state.clear(); st.rerun()
+            # 처음으로 돌아가기 대신 '입력창으로 돌아가기'로 명칭 변경
+            if st.button("🔄 입력창으로 돌아가기", use_container_width=True):
+                st.session_state.step = 2
+                st.session_state.is_finished = False
+                st.rerun()
