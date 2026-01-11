@@ -428,8 +428,8 @@ elif st.session_state.step == 2:
     with c_title:
         st.header("📝 분석 자료 입력")
     with c_home:
-        # 우측 상단에 홈 버튼 배치
-        if st.button("🏠 처음으로 (초기화)", use_container_width=True):
+        # 우측 상단에 홈 버튼 배치 (줄바꿈 적용)
+        if st.button("🏠 처음으로\n(초기화)", use_container_width=True):
             st.session_state.clear()
             st.rerun()
 
