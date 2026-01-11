@@ -306,7 +306,7 @@ def get_page_image(file_bytes, file_type, page_idx):
 # =========================================================
 
 # ---------------------------------------------------------
-# [SIDEBAR]: 관리자 모드 제어 (홈 버튼 제거됨)
+# [SIDEBAR]: 관리자 모드 제어
 # ---------------------------------------------------------
 with st.sidebar:
     st.markdown("### ⚙️ 설정")
@@ -322,7 +322,7 @@ with st.sidebar:
             st.rerun()
 
 # ---------------------------------------------------------
-# STEP 0: 시작 화면 (중앙 정렬 + 색상 개선)
+# STEP 0: 시작 화면
 # ---------------------------------------------------------
 if st.session_state.step == 0:
     st.markdown("<h1 style='text-align: center; margin-bottom: 20px;'>📚 국어활동 AI 분석기</h1>", unsafe_allow_html=True)
@@ -420,15 +420,14 @@ elif st.session_state.step == 1:
     if st.button("⬅️ 모드 다시 선택"): st.session_state.step = 0; st.rerun()
 
 # ---------------------------------------------------------
-# STEP 2: 자료 입력 (홈 버튼: 상단 우측 배치)
+# STEP 2: 자료 입력
 # ---------------------------------------------------------
 elif st.session_state.step == 2:
-    # 상단 레이아웃: [제목 영역 8] : [홈 버튼 영역 2]
+    # 상단 레이아웃
     c_title, c_home = st.columns([8, 2])
     with c_title:
         st.header("📝 분석 자료 입력")
     with c_home:
-        # 우측 상단에 홈 버튼 배치 (줄바꿈 적용)
         if st.button("🏠 처음으로\n(초기화)", use_container_width=True):
             st.session_state.clear()
             st.rerun()
@@ -468,7 +467,8 @@ elif st.session_state.step == 2:
                 txt_input = st.text_area("에디터", value=st.session_state.extracted_text, height=500, label_visibility="collapsed")
                 st.session_state.extracted_text = txt_input
                 
-                if st.button("🚀 분석 실행", type="primary", use_container_width=True):
+                # 버튼 키 추가 (중복 방지)
+                if st.button("🚀 분석 실행", type="primary", use_container_width=True, key="btn_run_file"):
                     with st.spinner("AI 분석 중..."):
                         s_data = get_sheet_data_fresh(st.session_state.mode_key)[1]
                         send_img = st.session_state.file_bytes if len(txt_input) < 50 else None
@@ -502,7 +502,8 @@ elif st.session_state.step == 2:
 
     with tab2:
         direct_txt = st.text_area("텍스트 입력", height=400)
-        if st.button("🚀 분석 실행 (Direct)", type="primary"):
+        # (Direct) 삭제 및 버튼 키 추가
+        if st.button("🚀 분석 실행", type="primary", key="btn_run_direct"):
             st.session_state.extracted_text = direct_txt
             with st.spinner("AI 분석 중..."):
                 s_data = get_sheet_data_fresh(st.session_state.mode_key)[1]
@@ -537,7 +538,8 @@ elif st.session_state.step == 2:
 elif st.session_state.step == 3:
     st.header("📊 분석 결과 확인")
     
-    @st.experimental_dialog("➕ 단어 추가")
+    # [수정된 부분] st.dialog 사용 (정식 함수)
+    @st.dialog("➕ 단어 추가")
     def add_manual_item():
         with st.form("add_form"):
             o = st.text_input("원본")
