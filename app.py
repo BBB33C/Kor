@@ -7,7 +7,7 @@ import io
 import os
 import time
 import base64
-import hashlib  # [수정] 필수 라이브러리 추가
+import hashlib
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
@@ -32,7 +32,7 @@ except ImportError:
 # ⚙️ 설정
 # =========================================================
 st.set_page_config(
-    page_title="국어활동 AI 분석기 (Final)", 
+    page_title="국어활동 AI 분석기 (Refined)", 
     page_icon="📚", 
     layout="wide",
     initial_sidebar_state="expanded"
@@ -155,12 +155,14 @@ def load_backup_from_cloud(mode_key):
 def generate_prompt_from_sheet(sheet_data):
     if not sheet_data: return ""
     rules = []
+    # 최신 학습 내용 반영 (Soft Filter)
     for row in sheet_data[-50:]:
         if row.get('action') == 'delete':
-            rules.append(f"- [삭제 규칙]: '{row.get('original_word')}'는 분석 결과에서 제외하세요.")
+            # "차단"이 아니라 "제외 권장"으로 뉘앙스 조절
+            rules.append(f"- [삭제 이력]: '{row.get('original_word')}'는 이 문맥에서 불필요하다고 판단되었습니다. 문맥을 고려해 제외하세요.")
         elif row.get('action') in ['add', 'modify']:
             rules.append(f"- [고정 규칙]: '{row.get('original_word')}' -> 원형:'{row.get('root_word')}', 분류:'{row.get('origin')}', 품사:'{row.get('pos')}'")
-    return "\n[사용자 학습 규칙 (최우선 적용)]:\n" + "\n".join(rules) + "\n" if rules else ""
+    return "\n[사용자 학습 데이터 (참고용)]:\n" + "\n".join(rules) + "\n" if rules else ""
 
 def api_call_direct(prompt, image_bytes=None):
     if not API_KEY: return None
@@ -288,10 +290,16 @@ def get_page_image_bytes(file_bytes, file_type, page_idx):
     return None
 
 # =========================================================
-# [5] 데이터 저장 & 병합
+# [5] 데이터 저장 & 병합 & 정제
 # =========================================================
-def clean_val(v):
-    if isinstance(v, str): return v.replace('🔵 ', '').replace('🟢 ', '').replace('🔴 ', '').replace('🟣 ', '').replace('📦 ', '').replace('🏃 ', '').replace('🎨 ', '').replace('⚡ ', '').replace('🔍 ', '').replace('👤 ', '')
+def clean_val_for_save(v):
+    """[복구 및 강화] 저장 전 텍스트 정제 로직"""
+    if isinstance(v, str): 
+        # 1. 이모지 제거
+        v = v.replace('🔵 ', '').replace('🟢 ', '').replace('🔴 ', '').replace('🟣 ', '').replace('📦 ', '').replace('🏃 ', '').replace('🎨 ', '').replace('⚡ ', '').replace('🔍 ', '').replace('👤 ', '')
+        # 2. 기타 불필요한 특수문자나 공백 처리 (GP9 스타일)
+        v = v.strip()
+        return v
     return v
 
 def calc_freq(row):
@@ -341,7 +349,7 @@ def save_logic(edited_df, page_str, sheet_obj, context_text):
         logs = []
         for _, row in edited_df.iterrows():
             if not row['delete_check']:
-                logs.append([datetime.now().isoformat(), row['original_word'], row['root_word'], clean_val(row['origin']), clean_val(row['pos']), 'modify', context_text[:50]])
+                logs.append([datetime.now().isoformat(), row['original_word'], row['root_word'], clean_val_for_save(row['origin']), clean_val_for_save(row['pos']), 'modify', context_text[:50]])
         if logs: send_data_with_retry(sheet_obj, logs, True)
 
     valid = edited_df[edited_df['delete_check'] == False].copy()
@@ -351,7 +359,7 @@ def save_logic(edited_df, page_str, sheet_obj, context_text):
     
     temp_rows = []
     for _, item in agg.iterrows():
-        root, origin, cnt = item['root_word'], clean_val(item['origin']), item['n_cnt']
+        root, origin, cnt = item['root_word'], clean_val_for_save(item['origin']), item['n_cnt']
         val = f"{page_str}_{cnt}" if cnt > 1 else page_str
         temp_rows.append({'구분': origin, '자료': root, '쪽수1': val})
     
@@ -459,6 +467,7 @@ with col_v:
         if "pdf" in file_type:
             c1, c2, c3 = st.columns([1, 2, 1])
             with c1:
+                # [데이터 보호] 이동 전 자동 저장(병합) 로직은 복잡도를 높일 수 있어, 버튼 분리로 해결
                 if st.button("◀"):
                     st.session_state.page_idx = max(0, st.session_state.page_idx - 1)
                     st.session_state.main_editor_area = extract_text_unified(file_bytes, main_file.type, st.session_state.page_idx)
@@ -499,7 +508,6 @@ with col_i:
                 om = {'고':'🔵 고', '한':'🟢 한', '외':'🔴 외', '혼':'🟣 혼'}
                 pm = {'명사':'📦 명사', '동사':'🏃 동사', '형용사':'🎨 형용사', '부사':'⚡ 부사', '관형사':'🔍 관형사', '대명사':'👤 대명사'}
                 
-                # [수정] 원형+분류+품사를 키로 그룹핑 -> 동음이의어 구분
                 temp_dict = {}
                 for r in res:
                     root = r.get('root_word', '')
@@ -512,7 +520,6 @@ with col_i:
                         temp_dict[key] = []
                     temp_dict[key].append(row)
                 
-                # [수정] 원래 단어 리스트업: "바른(1), 바르게(1)"
                 for (root, ro, rp), originals in temp_dict.items():
                     cnts = Counter(originals)
                     formatted_orig = ", ".join([f"{w}({c})" for w, c in cnts.items()])
