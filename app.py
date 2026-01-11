@@ -20,7 +20,7 @@ st.set_page_config(
     page_title="국어활동 AI 분석기 (Wizard)", 
     page_icon="📚", 
     layout="wide",
-    initial_sidebar_state="collapsed" # 단계별 집중을 위해 사이드바 기본 닫힘
+    initial_sidebar_state="collapsed" # 단계별 집중을 위해 기본 닫힘
 )
 
 try:
@@ -36,7 +36,7 @@ except ImportError:
     FITZ_AVAILABLE = False
 
 # =========================================================
-# [1] API 및 시트 연결 (GP9 로직 유지)
+# [1] API 및 시트 연결
 # =========================================================
 try:
     if "GEMINI_API_KEY" in st.secrets:
@@ -49,16 +49,27 @@ except:
 MODEL_NAME = "gemini-2.0-flash-exp"
 SHEET_NAME = "Korean_DB"
 
-# [스타일] 가독성 및 단계별 UI 최적화
+# [스타일] 가독성 및 카드형 디자인 적용
 st.markdown("""
     <style>
         .stTextArea textarea { font-family: 'Malgun Gothic', sans-serif !important; font-size: 16px !important; line-height: 1.6 !important; }
         .step-header { font-size: 20px; font-weight: bold; color: #4CAF50; margin-bottom: 10px; }
         .stButton button { border-radius: 8px; font-weight: bold; }
+        
         /* 진행바 스타일 */
         .progress-container { display: flex; justify-content: space-between; margin-bottom: 20px; color: #888; }
         .progress-item { font-size: 14px; }
         .progress-active { color: #4CAF50; font-weight: bold; border-bottom: 2px solid #4CAF50; }
+        
+        /* 카드형 디자인 */
+        .mode-card {
+            border: 1px solid #ddd; border-radius: 10px; padding: 20px;
+            text-align: center; background-color: #262730; margin-bottom: 10px;
+            transition: transform 0.2s;
+        }
+        .mode-card:hover { transform: scale(1.02); border-color: #4CAF50; }
+        .card-title { font-size: 1.2rem; font-weight: bold; margin-bottom: 5px; }
+        .card-desc { font-size: 0.9rem; color: #aaa; margin-bottom: 15px; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -108,7 +119,7 @@ def save_backup_to_cloud(mode_key, df):
     except: return False
 
 # =========================================================
-# [2] 핵심 로직: AI & 텍스트 처리 (GP9 계승)
+# [2] 핵심 로직: AI & 텍스트 처리
 # =========================================================
 def generate_prompt_from_sheet(sheet_data):
     if not sheet_data: return ""
@@ -228,7 +239,6 @@ def merge_master_data(old_df, new_df):
     return result_df
 
 def extract_text_unified(file_bytes, file_type, page_idx):
-    # (GP9의 안전한 텍스트 추출 로직 복원)
     raw_text = ""
     if "image" in file_type: raw_text = api_call_vision_ocr(file_bytes)
     elif "pdf" in file_type:
@@ -244,7 +254,6 @@ def extract_text_unified(file_bytes, file_type, page_idx):
                 if page_idx < len(doc): raw_text = doc[page_idx].get_text()
             except: pass
         if (not raw_text or len(raw_text) < 10) and FITZ_AVAILABLE:
-             # 이미지형 PDF 대응
              try:
                 doc = fitz.open(stream=file_bytes, filetype="pdf")
                 if page_idx < len(doc):
@@ -252,7 +261,6 @@ def extract_text_unified(file_bytes, file_type, page_idx):
                     raw_text = api_call_vision_ocr(pix.tobytes("png"))
              except: pass
 
-    # 꼬리말 제거
     lines = raw_text.split('\n')
     cleaned = [l for l in lines if not re.search(r'\.indd|\d{4}-\d{2}-\d{2}|오후|오전', l)]
     return "\n".join(cleaned).strip()
@@ -277,37 +285,52 @@ if 'page_idx' not in st.session_state: st.session_state.page_idx = 0
 if 'start_offset' not in st.session_state: st.session_state.start_offset = 1
 if 'extracted_text' not in st.session_state: st.session_state.extracted_text = ""
 
-# 진행 상태 표시줄
-steps = ["1.모드선택", "2.데이터소스", "3.자료입력", "4.결과확인"]
-cols = st.columns(4)
-for i, (col, title) in enumerate(zip(cols, steps)):
-    with col:
-        if i == st.session_state.step: st.markdown(f"<div class='progress-active'>{title}</div>", unsafe_allow_html=True)
-        else: st.markdown(f"<div class='progress-item'>{title}</div>", unsafe_allow_html=True)
-st.divider()
+# 진행 상태 표시줄 (스텝 1 이상일 때만 표시)
+if st.session_state.step > 0:
+    steps = ["1.모드선택", "2.데이터소스", "3.자료입력", "4.결과확인"]
+    cols = st.columns(4)
+    for i, (col, title) in enumerate(zip(cols, steps)):
+        with col:
+            if i+1 == st.session_state.step: st.markdown(f"<div class='progress-active'>{title}</div>", unsafe_allow_html=True)
+            else: st.markdown(f"<div class='progress-item'>{title}</div>", unsafe_allow_html=True)
+    st.divider()
 
 # ---------------------------------------------------------
-# STEP 0: 모드 선택
+# STEP 0: 모드 선택 (카드형 디자인)
 # ---------------------------------------------------------
 if st.session_state.step == 0:
-    st.header("🏳️ 분석 모드를 선택하세요")
+    st.markdown("<h1 style='text-align: center;'>📚 국어활동 AI 분석기</h1>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center; color: gray;'>원하는 언어 규범을 선택하여 분석을 시작하세요.</p><br>", unsafe_allow_html=True)
+    
     c1, c2, c3 = st.columns(3)
+    
     with c1:
-        if st.button("🇰🇷 대한민국 표준어 모드", use_container_width=True, type="primary"):
-            st.session_state.mode_key = "SOUTH"
-            st.session_state.step = 1
-            st.toast("✅ 대한민국 학습 서버에 연결되었습니다.")
-            time.sleep(0.5); st.rerun()
+        with st.container(border=True):
+            st.markdown("<div style='text-align:center;'><h3>🇰🇷 대한민국</h3></div>", unsafe_allow_html=True)
+            st.markdown("<div style='text-align:center; color:#888; margin-bottom:15px;'>국립국어원 표준어 규범 기준<br>두음법칙 적용</div>", unsafe_allow_html=True)
+            if st.button("표준어 모드 시작", key="btn_south", use_container_width=True, type="primary"):
+                st.session_state.mode_key = "SOUTH"
+                st.session_state.step = 1
+                st.toast("✅ 대한민국 학습 서버에 연결되었습니다.")
+                time.sleep(0.5); st.rerun()
+
     with c2:
-        if st.button("🇰🇵 북한 문화어 모드", use_container_width=True, type="primary"):
-            st.session_state.mode_key = "NORTH"
-            st.session_state.step = 1
-            st.toast("✅ 북한 학습 서버에 연결되었습니다.")
-            time.sleep(0.5); st.rerun()
+        with st.container(border=True):
+            st.markdown("<div style='text-align:center;'><h3>🇰🇵 북한 문화어</h3></div>", unsafe_allow_html=True)
+            st.markdown("<div style='text-align:center; color:#888; margin-bottom:15px;'>북한 문화어 규범 기준<br>두음법칙 미적용</div>", unsafe_allow_html=True)
+            if st.button("문화어 모드 시작", key="btn_north", use_container_width=True, type="primary"):
+                st.session_state.mode_key = "NORTH"
+                st.session_state.step = 1
+                st.toast("✅ 북한 학습 서버에 연결되었습니다.")
+                time.sleep(0.5); st.rerun()
+
     with c3:
-        if st.button("🛠️ 디버깅 모드", use_container_width=True):
-            st.session_state.debug_mode = True
-            st.info("디버깅 로그 패널이 활성화되었습니다.")
+        with st.container(border=True):
+            st.markdown("<div style='text-align:center;'><h3>🛠️ 관리자 모드</h3></div>", unsafe_allow_html=True)
+            st.markdown("<div style='text-align:center; color:#888; margin-bottom:15px;'>시스템 로그 확인 및<br>오류 해결 도구</div>", unsafe_allow_html=True)
+            if st.button("디버깅 모드 진입", key="btn_debug", use_container_width=True):
+                st.session_state.debug_mode = True
+                st.info("디버깅 로그 패널이 활성화되었습니다.")
 
 # ---------------------------------------------------------
 # STEP 1: 데이터 소스 (이어하기 vs 새로하기)
@@ -319,14 +342,14 @@ elif st.session_state.step == 1:
     with col1:
         with st.container(border=True):
             st.subheader("📂 이어하기")
-            st.caption("기존 엑셀 파일이 있다면 업로드하세요.")
+            st.caption("기존 엑셀 파일이 있다면 업로드하세요. (자동 병합)")
             up_excel = st.file_uploader("엑셀 파일 (.xlsx)", type=['xlsx'])
             if up_excel:
                 try:
                     loaded = pd.read_excel(up_excel)
-                    st.session_state.master_df = loaded # 스마트 병합은 저장 시점에 수행
+                    st.session_state.master_df = loaded # 병합은 저장 시점
                     st.session_state.step = 2
-                    st.toast("기존 데이터를 불러왔습니다. (병합 대기 중)")
+                    st.toast("기존 데이터를 불러왔습니다.")
                     time.sleep(0.5); st.rerun()
                 except: st.error("파일 읽기 실패")
 
@@ -334,6 +357,7 @@ elif st.session_state.step == 1:
         with st.container(border=True):
             st.subheader("🆕 새로 시작하기")
             st.caption("기존 데이터 없이 빈 상태로 시작합니다.")
+            st.write("") # Spacer
             if st.button("새로 만들기", use_container_width=True):
                 st.session_state.master_df = None
                 st.session_state.step = 2
@@ -345,7 +369,6 @@ elif st.session_state.step == 1:
 # STEP 2: 자료 입력 및 검수
 # ---------------------------------------------------------
 elif st.session_state.step == 2:
-    # [처음으로] 안전장치
     if st.sidebar.button("🏠 처음으로 (초기화)"):
         st.session_state.clear()
         st.rerun()
@@ -358,7 +381,6 @@ elif st.session_state.step == 2:
     with tab1:
         file = st.file_uploader("파일 업로드", type=['pdf', 'png', 'jpg'])
         if file:
-            # 파일 변경 감지
             file_bytes = file.getvalue()
             if st.session_state.file_bytes != file_bytes:
                 st.session_state.file_bytes = file_bytes
@@ -372,7 +394,6 @@ elif st.session_state.step == 2:
                 img = get_page_image(st.session_state.file_bytes, st.session_state.file_type, st.session_state.page_idx)
                 if img: st.image(img, use_container_width=True)
                 
-                # PDF 네비게이션
                 if "pdf" in st.session_state.file_type:
                     b1, b2 = st.columns(2)
                     if b1.button("◀ 이전"):
@@ -388,16 +409,14 @@ elif st.session_state.step == 2:
             with c_text:
                 st.caption("✍️ 추출 텍스트 (수정 가능)")
                 txt_input = st.text_area("내용 검수", value=st.session_state.extracted_text, height=500)
-                st.session_state.extracted_text = txt_input # 실시간 반영
+                st.session_state.extracted_text = txt_input
                 
                 if st.button("🚀 분석 실행 (파일)", type="primary", use_container_width=True):
                     with st.spinner("AI 분석 중..."):
                         s_data = get_sheet_data_fresh(st.session_state.mode_key)[1]
-                        # 이미지 바이트 전달 여부 결정
                         send_img = st.session_state.file_bytes if len(txt_input) < 50 else None
                         res = get_analysis_hybrid(txt_input, send_img, s_data, st.session_state.mode_key)
                         
-                        # 결과 처리 (동음이의어 키 분리)
                         proc = []
                         temp_dict = {}
                         om = {'고':'🔵 고', '한':'🟢 한', '외':'🔴 외', '혼':'🟣 혼'}
@@ -434,12 +453,11 @@ elif st.session_state.step == 2:
         direct_txt = st.text_area("분석할 텍스트 입력", height=400)
         if st.button("🚀 분석 실행 (직접)", type="primary"):
             st.session_state.extracted_text = direct_txt
-            # (위와 동일한 분석 로직 수행 - 코드 중복 방지 위해 함수화 가능하나 여기선 직관성을 위해 생략)
             with st.spinner("AI 분석 중..."):
                 s_data = get_sheet_data_fresh(st.session_state.mode_key)[1]
                 res = get_analysis_hybrid(direct_txt, None, s_data, st.session_state.mode_key)
-                # ... (결과 처리 로직 동일) ...
-                # (생략: 위와 동일한 proc 생성 코드)
+                
+                # 결과 처리 (중복 코드 최소화)
                 proc = []
                 temp_dict = {}
                 om = {'고':'🔵 고', '한':'🟢 한', '외':'🔴 외', '혼':'🟣 혼'}
@@ -468,8 +486,6 @@ elif st.session_state.step == 2:
 elif st.session_state.step == 3:
     st.header("📊 분석 결과 확인")
     
-    # [모달] 수동 추가 (Streamlit 1.34+ dialog 사용 권장, 여기선 expander로 구현하여 호환성 확보)
-    # 사용자 요청: 모달처럼 보이길 원함 -> dialog 함수 사용
     @st.experimental_dialog("➕ 단어 수동 추가")
     def add_manual_item():
         with st.form("add_form"):
@@ -490,13 +506,10 @@ elif st.session_state.step == 3:
                     "pos": pm.get(p, p)
                 }
                 st.session_state.analysis_result.append(new_row)
-                
-                # 시트에도 학습 데이터 전송
                 sheet = get_sheet_data_fresh(st.session_state.mode_key)[0]
                 send_data_with_retry(sheet, [datetime.now().isoformat(), o, r, org, p, 'add', '수동'])
                 st.rerun()
 
-    # 결과 테이블
     df_res = pd.DataFrame(st.session_state.analysis_result)
     edited = st.data_editor(
         df_res,
@@ -513,32 +526,24 @@ elif st.session_state.step == 3:
         key="editor"
     )
     
-    # 변경 사항 동기화
     if not edited.equals(df_res):
         st.session_state.analysis_result = edited.to_dict('records')
 
-    # 하단 액션 버튼
     ac1, ac2, ac3 = st.columns([1, 1, 2])
     with ac1:
-        if st.button("➕ 단어 추가"):
-            add_manual_item()
+        if st.button("➕ 단어 추가"): add_manual_item()
     with ac2:
         if st.button("⛔ 선택 삭제"):
             to_delete = edited[edited['delete_check']==True]
             if not to_delete.empty:
-                # 삭제 학습
                 sheet = get_sheet_data_fresh(st.session_state.mode_key)[0]
                 logs = [[datetime.now().isoformat(), r['original_word'], r['root_word'], "", "", 'delete', 'User'] for _, r in to_delete.iterrows()]
                 send_data_with_retry(sheet, logs, True)
-                
                 st.session_state.analysis_result = edited[edited['delete_check']==False].to_dict('records')
                 st.rerun()
-            else:
-                st.toast("삭제할 항목을 선택해주세요.")
+            else: st.toast("삭제할 항목을 선택해주세요.")
 
-    # 저장 및 완료 로직
     def save_process():
-        # 1. 학습 데이터 전송
         sheet = get_sheet_data_fresh(st.session_state.mode_key)[0]
         logs = []
         for _, row in edited.iterrows():
@@ -546,14 +551,11 @@ elif st.session_state.step == 3:
                 logs.append([datetime.now().isoformat(), row['original_word'], row['root_word'], clean_val_for_save(row['origin']), clean_val_for_save(row['pos']), 'modify', 'result'])
         send_data_with_retry(sheet, logs, True)
         
-        # 2. 데이터 병합 (Smart Merge)
         valid = edited[edited['delete_check']==False].copy()
         valid['n_cnt'] = valid['count'].apply(lambda x: int(re.sub(r'[^0-9]', '', str(x))) if re.search(r'\d', str(x)) else 1)
         agg = valid.groupby(['root_word', 'origin', 'pos'], as_index=False).agg({'n_cnt': 'sum'})
         
-        # 쪽수 계산
         p_num = str(st.session_state.page_idx + st.session_state.start_offset)
-        
         temp_rows = []
         for _, item in agg.iterrows():
             root, org, cnt = item['root_word'], clean_val_for_save(item['origin']), item['n_cnt']
@@ -561,16 +563,12 @@ elif st.session_state.step == 3:
             temp_rows.append({'구분': org, '자료': root, '쪽수1': val})
             
         st.session_state.master_df = merge_master_data(st.session_state.master_df, pd.DataFrame(temp_rows))
-        
-        # 3. 백업
         save_backup_to_cloud(st.session_state.mode_key, st.session_state.master_df)
         st.session_state.step = 4
         st.rerun()
 
     with ac3:
-        # PDF이고 마지막 페이지가 아니면 '저장하고 다음장' 노출
         is_pdf = st.session_state.file_type and "pdf" in st.session_state.file_type
-        # 임시로 PDF 페이지 수 확인 (fitz 사용)
         total_p = 1
         if is_pdf and FITZ_AVAILABLE:
             try: total_p = len(fitz.open(stream=st.session_state.file_bytes, filetype="pdf"))
@@ -578,18 +576,28 @@ elif st.session_state.step == 3:
             
         if is_pdf and st.session_state.page_idx < total_p - 1:
             if st.button("💾 저장하고 다음 장 (▶)", type="primary", use_container_width=True):
-                # 저장 로직 수행 후 페이지 증가
+                # 저장 로직 (간소화)
                 sheet = get_sheet_data_fresh(st.session_state.mode_key)[0]
-                # (위의 save_process 로직 중 일부만 실행하고 step=2로 회귀)
-                # 코드 중복 방지를 위해 여기선 직접 구현
-                # ... (데이터 병합 및 백업 동일)
+                logs = [[datetime.now().isoformat(), row['original_word'], row['root_word'], clean_val_for_save(row['origin']), clean_val_for_save(row['pos']), 'modify', 'result'] for _, row in edited.iterrows() if not row['delete_check']]
+                send_data_with_retry(sheet, logs, True)
+                
+                valid = edited[edited['delete_check']==False].copy()
+                valid['n_cnt'] = valid['count'].apply(lambda x: int(re.sub(r'[^0-9]', '', str(x))) if re.search(r'\d', str(x)) else 1)
+                agg = valid.groupby(['root_word', 'origin', 'pos'], as_index=False).agg({'n_cnt': 'sum'})
+                
+                p_num = str(st.session_state.page_idx + st.session_state.start_offset)
+                temp_rows = []
+                for _, item in agg.iterrows():
+                    val = f"{p_num}_{item['n_cnt']}" if item['n_cnt'] > 1 else p_num
+                    temp_rows.append({'구분': clean_val_for_save(item['origin']), '자료': item['root_word'], '쪽수1': val})
+                
+                st.session_state.master_df = merge_master_data(st.session_state.master_df, pd.DataFrame(temp_rows))
                 save_backup_to_cloud(st.session_state.mode_key, st.session_state.master_df)
                 
-                # 다음 장 이동
                 st.session_state.page_idx += 1
                 st.session_state.extracted_text = extract_text_unified(st.session_state.file_bytes, st.session_state.file_type, st.session_state.page_idx)
                 st.session_state.analysis_result = []
-                st.session_state.step = 2 # 다시 입력 단계로
+                st.session_state.step = 2 
                 st.toast(f"저장 완료! {st.session_state.page_idx+1}페이지로 이동합니다.")
                 st.rerun()
         else:
@@ -603,10 +611,8 @@ elif st.session_state.step == 4:
     st.balloons()
     st.header("✅ 작업이 완료되었습니다!")
     
-    # 엑셀 다운로드
     if st.session_state.master_df is not None:
         fname = "KR 국어 정리.xlsx" if st.session_state.mode_key == "SOUTH" else "KP 국어 정리.xlsx"
-        
         buf = io.BytesIO()
         with pd.ExcelWriter(buf, engine='openpyxl') as w: 
             st.session_state.master_df.to_excel(w, index=False)
