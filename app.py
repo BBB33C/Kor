@@ -12,6 +12,7 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
 from collections import Counter
+import traceback
 
 # =========================================================
 # [0] 기본 설정 및 상태 초기화
@@ -34,6 +35,7 @@ if 'page_idx' not in st.session_state: st.session_state.page_idx = 0
 if 'start_offset' not in st.session_state: st.session_state.start_offset = 1
 if 'extracted_text' not in st.session_state: st.session_state.extracted_text = ""
 if 'debug_mode' not in st.session_state: st.session_state.debug_mode = False
+if 'last_raw_response' not in st.session_state: st.session_state.last_raw_response = "" # 디버깅용 저장소
 
 # =========================================================
 # [1] 디자인: CSS 매직 (다크모드 고정, 네온 효과)
@@ -155,18 +157,8 @@ def save_backup_to_cloud(mode_key, df):
     except: return False
 
 # =========================================================
-# [3] AI 엔진 & 데이터 로직
+# [3] AI 엔진 & 데이터 로직 (디버깅 강화)
 # =========================================================
-def generate_prompt_from_sheet(sheet_data):
-    if not sheet_data: return ""
-    rules = []
-    for row in sheet_data[-100:]:
-        if row.get('action') == 'delete':
-            rules.append(f"- [제외 권장]: '{row.get('original_word')}'는 과거 삭제 이력이 있습니다. 문맥상 불필요하면 제외하세요.")
-        elif row.get('action') in ['add', 'modify']:
-            rules.append(f"- [고정 규칙]: '{row.get('original_word')}' -> 원형:'{row.get('root_word')}', 분류:'{row.get('origin')}', 품사:'{row.get('pos')}'")
-    return "\n[사용자 학습 데이터]:\n" + "\n".join(rules) + "\n" if rules else ""
-
 def api_call_direct(prompt, image_bytes=None):
     if not API_KEY: return None
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={API_KEY.strip()}"
@@ -176,48 +168,50 @@ def api_call_direct(prompt, image_bytes=None):
         parts.append({"inline_data": {"mime_type": "image/png", "data": base64.b64encode(image_bytes).decode('utf-8')}})
     try:
         res = requests.post(url, headers=headers, json={"contents": [{"parts": parts}]}, timeout=300)
-        if res.status_code == 200: return res.json()['candidates'][0]['content']['parts'][0]['text']
-        return None
-    except: return None
+        if res.status_code == 200:
+            # 원본 응답 텍스트 반환
+            return res.json()['candidates'][0]['content']['parts'][0]['text']
+        else:
+            return f"API Error: {res.status_code} - {res.text}"
+    except Exception as e:
+        return f"Request Error: {str(e)}"
 
 def api_call_vision_ocr(image_bytes):
     return api_call_direct("이 이미지의 텍스트를 보이는 그대로 추출해줘. 줄바꿈 유지.", image_bytes) or ""
 
-def split_text_smartly(text, chunk_size=1000):
-    sentences = re.split(r'(?<=[.?!])\s+|\\n', text)
-    chunks = []
-    curr = ""
-    for s in sentences:
-        if len(curr) + len(s) < chunk_size: curr += s + " "
-        else: chunks.append(curr.strip()); curr = s + " "
-    if curr: chunks.append(curr.strip())
-    return chunks
-
-def get_analysis_hybrid(text, image_bytes, sheet_data, mode_key):
-    prompt = f"""
-    당신은 '{"대한민국 표준어" if mode_key=="SOUTH" else "북한 문화어"}' 형태소 분석 전문가입니다.
-    {generate_prompt_from_sheet(sheet_data)}
-    
-    [분석 규칙]
-    1. 조사/어미 제거, '하다' 용언은 명사로 분류.
-    2. 품사: 명사, 동사, 형용사, 부사, 관형사, 대명사, 고유명사.
-    3. **동음이의어: 원형 뒤에 괄호로 뜻 구분 (필수).** (예: 배(과일), 배(선박))
-    4. **인명/지명: 원형 뒤에 (이름)/(지명) 표기 (필수).** (예: 지혜(이름), 서울(지명))
-    5. 출력: JSON 포맷. (반드시 빈 리스트 []가 아닌 유효한 데이터를 포함할 것)
-    """
-    if image_bytes:
-        try: return json.loads(re.search(r'\[.*\]', api_call_direct(prompt + "\n(OCR 참고)", image_bytes), re.DOTALL).group())
-        except: return []
-    else:
-        chunks = split_text_smartly(text)
-        res = []
-        for chunk in chunks:
-            if not chunk.strip(): continue
+def extract_text_unified(file_bytes, file_type, page_idx):
+    raw_text = ""
+    if "image" in file_type: raw_text = api_call_vision_ocr(file_bytes)
+    elif "pdf" in file_type:
+        if PLUMBER_AVAILABLE:
             try:
-                r = api_call_direct(prompt + f"\n[텍스트]:\n{chunk}")
-                if r: res.extend(json.loads(re.search(r'\[.*\]', r, re.DOTALL).group()))
+                with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+                    if page_idx < len(pdf.pages):
+                        raw_text = pdf.pages[page_idx].extract_text()
             except: pass
-        return res
+        if (not raw_text or len(raw_text) < 10) and FITZ_AVAILABLE:
+            try:
+                doc = fitz.open(stream=file_bytes, filetype="pdf")
+                if page_idx < len(doc): raw_text = doc[page_idx].get_text()
+            except: pass
+        if (not raw_text or len(raw_text) < 10) and FITZ_AVAILABLE:
+             try:
+                doc = fitz.open(stream=file_bytes, filetype="pdf")
+                if page_idx < len(doc):
+                    pix = doc[page_idx].get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
+                    raw_text = api_call_vision_ocr(pix.tobytes("png"))
+             except: pass
+
+    lines = raw_text.split('\n')
+    cleaned = [l for l in lines if not re.search(r'\.indd|\d{4}-\d{2}-\d{2}|오후|오전', l)]
+    return "\n".join(cleaned).strip()
+
+def get_page_image(file_bytes, file_type, page_idx):
+    if "image" in file_type: return file_bytes
+    if "pdf" in file_type and FITZ_AVAILABLE:
+        doc = fitz.open(stream=file_bytes, filetype="pdf")
+        if page_idx < len(doc): return doc[page_idx].get_pixmap(matrix=fitz.Matrix(2.0, 2.0)).tobytes("png")
+    return None
 
 def clean_val_for_save(v):
     if isinstance(v, str): 
@@ -267,39 +261,36 @@ def merge_master_data(old_df, new_df):
     result_df = result_df.sort_values(['sk', '자료']).drop('sk', axis=1)
     return result_df
 
-def extract_text_unified(file_bytes, file_type, page_idx):
-    raw_text = ""
-    if "image" in file_type: raw_text = api_call_vision_ocr(file_bytes)
-    elif "pdf" in file_type:
-        if PLUMBER_AVAILABLE:
-            try:
-                with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
-                    if page_idx < len(pdf.pages):
-                        raw_text = pdf.pages[page_idx].extract_text()
-            except: pass
-        if (not raw_text or len(raw_text) < 10) and FITZ_AVAILABLE:
-            try:
-                doc = fitz.open(stream=file_bytes, filetype="pdf")
-                if page_idx < len(doc): raw_text = doc[page_idx].get_text()
-            except: pass
-        if (not raw_text or len(raw_text) < 10) and FITZ_AVAILABLE:
-             try:
-                doc = fitz.open(stream=file_bytes, filetype="pdf")
-                if page_idx < len(doc):
-                    pix = doc[page_idx].get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
-                    raw_text = api_call_vision_ocr(pix.tobytes("png"))
-             except: pass
+# [수정된 함수] API 응답 원본도 함께 반환
+def get_analysis_hybrid(text, image_bytes, sheet_data, mode_key):
+    prompt = f"""
+    당신은 '{"대한민국 표준어" if mode_key=="SOUTH" else "북한 문화어"}' 형태소 분석 전문가입니다.
+    {generate_prompt_from_sheet(sheet_data)}
+    
+    [분석 규칙]
+    1. 조사/어미 제거, '하다' 용언은 명사로 분류.
+    2. 품사: 명사, 동사, 형용사, 부사, 관형사, 대명사, 고유명사.
+    3. **동음이의어: 원형 뒤에 괄호로 뜻 구분 (필수).** (예: 배(과일), 배(선박))
+    4. **인명/지명: 원형 뒤에 (이름)/(지명) 표기 (필수).** (예: 지혜(이름), 서울(지명))
+    5. 출력: JSON 포맷 (반드시 빈 리스트 []가 아닌 유효한 데이터를 포함할 것)
+    """
+    
+    # 1. API 호출
+    raw_response = api_call_direct(prompt + f"\n[텍스트]:\n{text[:5000]}", image_bytes)
+    
+    if not raw_response:
+        return [], "No response from API"
 
-    lines = raw_text.split('\n')
-    cleaned = [l for l in lines if not re.search(r'\.indd|\d{4}-\d{2}-\d{2}|오후|오전', l)]
-    return "\n".join(cleaned).strip()
-
-def get_page_image(file_bytes, file_type, page_idx):
-    if "image" in file_type: return file_bytes
-    if "pdf" in file_type and FITZ_AVAILABLE:
-        doc = fitz.open(stream=file_bytes, filetype="pdf")
-        if page_idx < len(doc): return doc[page_idx].get_pixmap(matrix=fitz.Matrix(2.0, 2.0)).tobytes("png")
-    return None
+    # 2. JSON 추출 (Markdown 코드블록 제거)
+    try:
+        clean_json = raw_response.replace("```json", "").replace("```", "").strip()
+        match = re.search(r'\[.*\]', clean_json, re.DOTALL)
+        if match:
+            return json.loads(match.group()), raw_response
+        else:
+            return [], raw_response # JSON 패턴 못 찾음
+    except Exception as e:
+        return [], f"JSON Parsing Error: {str(e)}\nRaw: {raw_response}"
 
 # =========================================================
 # [4] UI: 메인 루프
@@ -332,7 +323,6 @@ if st.session_state.step == 0:
     else:
         st.markdown("<p style='text-align: center; color: #888; margin-bottom: 50px;'>원하는 언어 규범을 선택하여 분석을 시작하세요.</p>", unsafe_allow_html=True)
     
-    # [중앙 정렬]
     _, c_south, c_north, _ = st.columns([1, 4, 4, 1])
     
     with c_south:
@@ -350,8 +340,7 @@ if st.session_state.step == 0:
             }
         </style>
         """, unsafe_allow_html=True)
-        label_south = "🏛️\n\n대한민국 표준어\n\n(표준국어대사전 기준)\n\n[ 시작하기 ]"
-        if st.button(label_south, key="btn_south", use_container_width=True):
+        if st.button("🏛️\n\n대한민국 표준어\n\n(표준국어대사전 기준)\n\n[ 시작하기 ]", key="btn_south", use_container_width=True):
             st.session_state.mode_key = "SOUTH"
             st.session_state.step = 1
             st.toast("✅ 대한민국 학습 서버에 연결되었습니다.")
@@ -372,8 +361,7 @@ if st.session_state.step == 0:
             }
         </style>
         """, unsafe_allow_html=True)
-        label_north = "🏔️\n\n북한 문화어\n\n(문화어 규범 기준)\n\n[ 시작하기 ]"
-        if st.button(label_north, key="btn_north", use_container_width=True):
+        if st.button("🏔️\n\n북한 문화어\n\n(문화어 규범 기준)\n\n[ 시작하기 ]", key="btn_north", use_container_width=True):
             st.session_state.mode_key = "NORTH"
             st.session_state.step = 1
             st.toast("✅ 북한 학습 서버에 연결되었습니다.")
@@ -423,7 +411,6 @@ elif st.session_state.step == 1:
 # STEP 2: 자료 입력
 # ---------------------------------------------------------
 elif st.session_state.step == 2:
-    # 상단 레이아웃
     c_title, c_home = st.columns([8, 2])
     with c_title:
         st.header("📝 분석 자료 입력")
@@ -434,6 +421,60 @@ elif st.session_state.step == 2:
 
     tab1, tab2 = st.tabs(["📄 파일 분석", "✍️ 직접 입력"])
     
+    # [수정된 분석 로직] 디버깅 + 빈 데이터 필터링
+    def run_analysis_logic(txt, img=None):
+        if not txt.strip():
+            st.warning("⚠️ 분석할 텍스트가 없습니다.")
+            return
+
+        with st.spinner("AI 분석 중... (잠시만 기다려주세요)"):
+            # 1. API 호출
+            s_data = get_sheet_data_fresh(st.session_state.mode_key)[1]
+            res, raw_response = get_analysis_hybrid(txt, img, s_data, st.session_state.mode_key)
+            
+            # [디버깅] 원본 응답 저장 (화면 갱신되더라도 유지)
+            st.session_state.last_raw_response = raw_response
+            
+            # [버그 수정: 강력한 필터링]
+            proc = []
+            temp_dict = {}
+            om = {'고':'🔵 고', '한':'🟢 한', '외':'🔴 외', '혼':'🟣 혼'}
+            pm = {'명사':'📦 명사', '동사':'🏃 동사', '형용사':'🎨 형용사', '부사':'⚡ 부사', '관형사':'🔍 관형사', '대명사':'👤 대명사'}
+            
+            for r in res:
+                # 안전한 문자열 변환 및 공백 제거
+                o_word = str(r.get('original_word', '')).strip()
+                r_word = str(r.get('root_word', '')).strip()
+                
+                # 빈 문자열, None, null 문자열 모두 차단
+                if not o_word or o_word.lower() == 'none' or o_word.lower() == 'null': continue
+                if not r_word or r_word.lower() == 'none' or r_word.lower() == 'null': continue
+
+                key = (r_word, r.get('origin','혼'), r.get('pos','명사'))
+                if key not in temp_dict: temp_dict[key] = []
+                temp_dict[key].append(o_word)
+            
+            for (root, origin, pos), origs in temp_dict.items():
+                cnts = Counter(origs)
+                # 포맷팅 시에도 빈 값 한 번 더 체크
+                valid_items = [f"{w}({c})" for w, c in cnts.items() if w and w.strip()]
+                if not valid_items: continue
+                
+                fmt_orig = ", ".join(valid_items)
+                
+                proc.append({
+                    "delete_check": False,
+                    "count": f"{sum(cnts.values())}회",
+                    "original_word": fmt_orig,
+                    "root_word": root,
+                    "origin": om.get(origin, origin),
+                    "pos": pm.get(pos, pos)
+                })
+            
+            st.session_state.analysis_result = proc
+            st.session_state.step = 3
+            st.rerun()
+
     with tab1:
         file = st.file_uploader("파일 업로드", type=['pdf', 'png', 'jpg'])
         if file:
@@ -444,124 +485,45 @@ elif st.session_state.step == 2:
                 st.session_state.page_idx = 0
                 st.session_state.extracted_text = extract_text_unified(file_bytes, file.type, 0)
             
-            c_view, c_text = st.columns(2)
-            with c_view:
+            c1, c2 = st.columns(2)
+            with c1:
                 st.caption("미리보기")
                 img = get_page_image(st.session_state.file_bytes, st.session_state.file_type, st.session_state.page_idx)
                 if img: st.image(img, use_container_width=True)
-                
                 if "pdf" in st.session_state.file_type:
-                    b1, b2 = st.columns(2)
-                    if b1.button("◀ 이전"):
-                        st.session_state.page_idx = max(0, st.session_state.page_idx - 1)
-                        st.session_state.extracted_text = extract_text_unified(st.session_state.file_bytes, st.session_state.file_type, st.session_state.page_idx)
-                        st.rerun()
-                    if b2.button("다음 ▶"):
+                    if st.button("▶ 다음 페이지"):
                         st.session_state.page_idx += 1
                         st.session_state.extracted_text = extract_text_unified(st.session_state.file_bytes, st.session_state.file_type, st.session_state.page_idx)
                         st.rerun()
                     st.session_state.start_offset = st.number_input("시작 쪽수", value=st.session_state.start_offset)
-            
-            with c_text:
-                st.caption("텍스트 검수")
-                txt_input = st.text_area("에디터", value=st.session_state.extracted_text, height=500, label_visibility="collapsed")
+            with c2:
+                txt_input = st.text_area("에디터", value=st.session_state.extracted_text, height=500)
                 st.session_state.extracted_text = txt_input
-                
-                if st.button("🚀 분석 실행", type="primary", use_container_width=True, key="btn_run_file"):
-                    if not txt_input.strip():
-                        st.warning("⚠️ 분석할 텍스트가 비어있습니다. 파일을 확인해주세요.")
-                        st.stop()
-
-                    with st.spinner("AI 분석 중..."):
-                        s_data = get_sheet_data_fresh(st.session_state.mode_key)[1]
-                        send_img = st.session_state.file_bytes if len(txt_input) < 50 else None
-                        res = get_analysis_hybrid(txt_input, send_img, s_data, st.session_state.mode_key)
-                        
-                        proc = []
-                        temp_dict = {}
-                        om = {'고':'🔵 고', '한':'🟢 한', '외':'🔴 외', '혼':'🟣 혼'}
-                        pm = {'명사':'📦 명사', '동사':'🏃 동사', '형용사':'🎨 형용사', '부사':'⚡ 부사', '관형사':'🔍 관형사', '대명사':'👤 대명사'}
-                        
-                        for r in res:
-                            # [버그 수정] 빈 데이터(Empty String) 필터링 강화
-                            o_word = r.get('original_word', '').strip()
-                            r_word = r.get('root_word', '').strip()
-                            
-                            # 원본이나 원형이 비어있으면 건너뜀 (유령 데이터 방지)
-                            if not o_word or not r_word: continue
-
-                            key = (r_word, r.get('origin','혼'), r.get('pos','명사'))
-                            if key not in temp_dict: temp_dict[key] = []
-                            temp_dict[key].append(o_word)
-                            
-                        for (root, origin, pos), origs in temp_dict.items():
-                            cnts = Counter(origs)
-                            fmt_orig = ", ".join([f"{w}({c})" for w, c in cnts.items() if w]) # 빈 문자열 포맷 방지
-                            proc.append({
-                                "delete_check": False,
-                                "count": f"{sum(cnts.values())}회",
-                                "original_word": fmt_orig,
-                                "root_word": root,
-                                "origin": om.get(origin, origin),
-                                "pos": pm.get(pos, pos)
-                            })
-                        
-                        st.session_state.analysis_result = proc
-                        st.session_state.step = 3
-                        st.rerun()
+                if st.button("🚀 분석 실행", type="primary", use_container_width=True, key="run_file"):
+                    run_analysis_logic(txt_input, st.session_state.file_bytes)
 
     with tab2:
         direct_txt = st.text_area("텍스트 입력", height=400)
-        # [수정] (Direct) 삭제
-        if st.button("🚀 분석 실행", type="primary", key="btn_run_direct"):
+        if st.button("🚀 분석 실행", type="primary", key="run_direct"):
             st.session_state.extracted_text = direct_txt
-            if not direct_txt.strip():
-                st.warning("⚠️ 분석할 텍스트를 입력해주세요.")
-                st.stop()
-
-            with st.spinner("AI 분석 중..."):
-                s_data = get_sheet_data_fresh(st.session_state.mode_key)[1]
-                res = get_analysis_hybrid(direct_txt, None, s_data, st.session_state.mode_key)
-                
-                proc = []
-                temp_dict = {}
-                om = {'고':'🔵 고', '한':'🟢 한', '외':'🔴 외', '혼':'🟣 혼'}
-                pm = {'명사':'📦 명사', '동사':'🏃 동사', '형용사':'🎨 형용사', '부사':'⚡ 부사', '관형사':'🔍 관형사', '대명사':'👤 대명사'}
-                for r in res:
-                    o_word = r.get('original_word', '').strip()
-                    r_word = r.get('root_word', '').strip()
-                    if not o_word or not r_word: continue # 빈 데이터 차단
-
-                    key = (r_word, r.get('origin','혼'), r.get('pos','명사'))
-                    if key not in temp_dict: temp_dict[key] = []
-                    temp_dict[key].append(o_word)
-
-                for (root, origin, pos), origs in temp_dict.items():
-                    cnts = Counter(origs)
-                    fmt_orig = ", ".join([f"{w}({c})" for w, c in cnts.items() if w])
-                    proc.append({
-                        "delete_check": False,
-                        "count": f"{sum(cnts.values())}회",
-                        "original_word": fmt_orig,
-                        "root_word": root,
-                        "origin": om.get(origin, origin),
-                        "pos": pm.get(pos, pos)
-                    })
-                st.session_state.analysis_result = proc
-                st.session_state.step = 3
-                st.rerun()
+            run_analysis_logic(direct_txt)
 
 # ---------------------------------------------------------
-# STEP 3: 결과 확인 및 수정
+# STEP 3: 결과 확인 (디버깅 패널 + 오류 해결)
 # ---------------------------------------------------------
 elif st.session_state.step == 3:
     st.header("📊 분석 결과 확인")
     
-    # [기능 추가] 분석된 원문 텍스트 확인하기
-    with st.expander("📝 분석된 텍스트 원문 확인하기 (클릭)", expanded=False):
-        st.text_area("분석 대상 텍스트", value=st.session_state.extracted_text, height=200, disabled=True)
+    # [디버깅 패널] 관리자 모드일 때만 보임
+    if st.session_state.debug_mode:
+        with st.expander("🔴 [DEBUG] AI 응답 원본 확인", expanded=True):
+            st.info("AI가 반환한 Raw Data입니다. 데이터가 이상하면 여기를 확인하세요.")
+            st.code(st.session_state.get('last_raw_response', '데이터 없음'))
 
-    # [오류 해결] 버전 호환성 체크 (dialog 없으면 experimental_dialog 사용)
+    with st.expander("📝 원문 텍스트 보기 (클릭)", expanded=False):
+        st.text_area("분석 대상", value=st.session_state.extracted_text, height=200, disabled=True)
+
+    # [호환성 해결] st.dialog vs st.experimental_dialog
     if hasattr(st, "dialog"):
         dlg = st.dialog
     else:
@@ -624,74 +586,29 @@ elif st.session_state.step == 3:
                 st.rerun()
             else: st.toast("선택된 항목이 없습니다.")
 
-    def save_logic_common():
-        sheet = get_sheet_data_fresh(st.session_state.mode_key)[0]
-        logs = []
-        for _, row in edited.iterrows():
-            if not row['delete_check']:
-                logs.append([datetime.now().isoformat(), row['original_word'], row['root_word'], clean_val_for_save(row['origin']), clean_val_for_save(row['pos']), 'modify', 'result'])
-        send_data_with_retry(sheet, logs, True)
-        
-        valid = edited[edited['delete_check']==False].copy()
-        valid['n_cnt'] = valid['count'].apply(lambda x: int(re.sub(r'[^0-9]', '', str(x))) if re.search(r'\d', str(x)) else 1)
-        agg = valid.groupby(['root_word', 'origin', 'pos'], as_index=False).agg({'n_cnt': 'sum'})
-        
-        p_num = str(st.session_state.page_idx + st.session_state.start_offset)
-        temp_rows = []
-        for _, item in agg.iterrows():
-            val = f"{p_num}_{item['n_cnt']}" if item['n_cnt'] > 1 else p_num
-            temp_rows.append({'구분': clean_val_for_save(item['origin']), '자료': item['root_word'], '쪽수1': val})
-            
-        st.session_state.master_df = merge_master_data(st.session_state.master_df, pd.DataFrame(temp_rows))
-        save_backup_to_cloud(st.session_state.mode_key, st.session_state.master_df)
-
     with ac3:
-        is_pdf = st.session_state.file_type and "pdf" in st.session_state.file_type
-        total_p = 1
-        if is_pdf and FITZ_AVAILABLE:
-            try: total_p = len(fitz.open(stream=st.session_state.file_bytes, filetype="pdf"))
-            except: pass
-            
-        if is_pdf and st.session_state.page_idx < total_p - 1:
-            if st.button("💾 저장하고 다음 장 (▶)", type="primary", use_container_width=True):
-                save_logic_common()
-                st.session_state.page_idx += 1
-                st.session_state.extracted_text = extract_text_unified(st.session_state.file_bytes, st.session_state.file_type, st.session_state.page_idx)
-                st.session_state.analysis_result = []
-                st.session_state.step = 2
-                st.toast(f"저장 완료! {st.session_state.page_idx+1}페이지로 이동합니다.")
-                st.rerun()
-        else:
-            if st.button("💾 저장하기 (완료)", type="primary", use_container_width=True):
-                save_logic_common()
-                st.session_state.step = 4
-                st.rerun()
+        if st.button("💾 저장하기 (완료)", type="primary", use_container_width=True):
+            save_logic_common()
+            st.session_state.step = 4
+            st.rerun()
 
 # ---------------------------------------------------------
-# STEP 4: 완료 및 다운로드
+# STEP 4: 완료
 # ---------------------------------------------------------
 elif st.session_state.step == 4:
     st.balloons()
     st.header("✅ 완료되었습니다!")
     
     if st.session_state.master_df is not None:
-        fname = "KR 국어 정리.xlsx" if st.session_state.mode_key == "SOUTH" else "KP 국어 정리.xlsx"
-        
+        fname = "KR_Result.xlsx" if st.session_state.mode_key == "SOUTH" else "KP_Result.xlsx"
         buf = io.BytesIO()
         with pd.ExcelWriter(buf, engine='openpyxl') as w: 
             st.session_state.master_df.to_excel(w, index=False)
         
         c1, c2 = st.columns(2)
         with c1:
-            st.download_button(
-                label=f"📥 {fname} 다운로드",
-                data=buf.getvalue(),
-                file_name=fname,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
-                type="primary"
-            )
+            st.download_button("📥 다운로드", buf.getvalue(), fname, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True, type="primary")
         with c2:
-            if st.button("🔄 처음으로 돌아가기", use_container_width=True):
+            if st.button("🔄 처음으로", use_container_width=True):
                 st.session_state.clear()
                 st.rerun()
