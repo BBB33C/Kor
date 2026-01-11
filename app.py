@@ -14,7 +14,7 @@ from datetime import datetime
 from collections import Counter
 
 # =========================================================
-# [0] 기본 설정 및 라이브러리 체크
+# [0] 기본 설정 및 스타일 (슈퍼 버튼 적용)
 # =========================================================
 st.set_page_config(
     page_title="국어활동 AI 분석기 (Pro)", 
@@ -22,6 +22,47 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="collapsed"
 )
+
+# [CSS 해킹] 버튼을 카드처럼 만드는 매직 코드
+st.markdown("""
+    <style>
+        /* 1. 기본 텍스트 폰트 설정 */
+        .stTextArea textarea { 
+            font-family: 'Malgun Gothic', sans-serif !important; 
+            font-size: 16px !important; 
+            line-height: 1.6 !important; 
+        }
+        
+        /* 2. 슈퍼 버튼 (Big Tile Button) 스타일링 */
+        /* 시작 화면(Step 0)의 버튼들만 타겟팅하기 위해 특정 컨테이너 사용 권장되나, 
+           여기서는 직관성을 위해 모든 큰 버튼에 적용될 수 있는 스타일 정의 */
+        
+        div.stButton > button {
+            width: 100%;
+            border-radius: 12px;
+            transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
+        }
+
+        /* 3. 시작 화면의 '카드형 버튼' 전용 스타일 
+           (버튼 텍스트에 줄바꿈이 많은 경우를 감지하여 스타일 적용) */
+        button[data-testid="stBaseButton-secondary"] {
+            height: auto; 
+            padding-top: 20px;
+            padding-bottom: 20px;
+        }
+
+        /* 호버 효과: 버튼이 둥실 떠오름 */
+        div.stButton > button:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 8px 20px rgba(0,0,0,0.3);
+        }
+        
+        /* 4. 진행바 스타일 */
+        .progress-box { display: flex; justify-content: space-between; margin: 20px 0 40px 0; border-bottom: 1px solid #444; padding-bottom: 10px; }
+        .step-item { color: #666; font-size: 0.9rem; font-weight: 500; }
+        .step-active { color: #4CAF50; font-weight: 700; border-bottom: 3px solid #4CAF50; padding-bottom: 7px; }
+    </style>
+""", unsafe_allow_html=True)
 
 try:
     import pdfplumber
@@ -36,70 +77,7 @@ except ImportError:
     FITZ_AVAILABLE = False
 
 # =========================================================
-# [1] 디자인 & 스타일 (Option 2: 호버 인터랙션 + 차분한 컬러)
-# =========================================================
-st.markdown("""
-    <style>
-        /* 기본 폰트 및 스타일 */
-        .stTextArea textarea { font-family: 'Malgun Gothic', sans-serif !important; font-size: 16px !important; line-height: 1.6 !important; }
-        .stButton button { border-radius: 8px; font-weight: bold; transition: all 0.3s ease; }
-        
-        /* 2번 컨셉: 호버 인터랙션 카드 스타일 */
-        .card-container {
-            background-color: #262730;
-            border: 1px solid #444;
-            border-radius: 15px;
-            padding: 30px 20px;
-            text-align: center;
-            transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
-            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-            margin-bottom: 20px;
-            height: 250px;
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
-            align-items: center;
-        }
-        
-        .card-container:hover {
-            transform: translateY(-8px); /* 위로 둥실 떠오름 */
-            box-shadow: 0 15px 30px rgba(0,0,0,0.3);
-        }
-
-        /* 남한 카드 (네이비 블루) */
-        .card-south:hover {
-            border: 1.5px solid #1E3A8A; /* Navy */
-            box-shadow: 0 0 20px rgba(30, 58, 138, 0.4);
-        }
-        .icon-south { font-size: 3rem; margin-bottom: 15px; }
-        
-        /* 북한 카드 (버건디 레드) */
-        .card-north:hover {
-            border: 1.5px solid #881337; /* Burgundy */
-            box-shadow: 0 0 20px rgba(136, 19, 55, 0.4);
-        }
-        .icon-north { font-size: 3rem; margin-bottom: 15px; }
-
-        /* 디버그 카드 (그레이) */
-        .card-debug:hover {
-            border: 1.5px solid #666;
-            box-shadow: 0 0 20px rgba(100, 100, 100, 0.4);
-        }
-        .icon-debug { font-size: 3rem; margin-bottom: 15px; }
-
-        /* 타이틀 및 텍스트 */
-        .card-title { font-size: 1.3rem; font-weight: 700; color: #fff; margin-bottom: 10px; }
-        .card-desc { font-size: 0.9rem; color: #aaa; line-height: 1.4; }
-
-        /* 진행 상태바 */
-        .progress-box { display: flex; justify-content: space-between; margin: 20px 0 40px 0; border-bottom: 1px solid #444; padding-bottom: 10px; }
-        .step-item { color: #666; font-size: 0.9rem; font-weight: 500; }
-        .step-active { color: #4CAF50; font-weight: 700; border-bottom: 3px solid #4CAF50; padding-bottom: 7px; }
-    </style>
-""", unsafe_allow_html=True)
-
-# =========================================================
-# [2] API 및 유틸리티 설정
+# [1] API 및 유틸리티 설정
 # =========================================================
 try:
     if "GEMINI_API_KEY" in st.secrets:
@@ -158,7 +136,7 @@ def save_backup_to_cloud(mode_key, df):
     except: return False
 
 # =========================================================
-# [3] AI 엔진 & 텍스트 처리 (핵심 기능)
+# [2] AI 엔진 & 텍스트 처리 (핵심 기능)
 # =========================================================
 def generate_prompt_from_sheet(sheet_data):
     if not sheet_data: return ""
@@ -229,7 +207,7 @@ def get_analysis_hybrid(text, image_bytes, sheet_data, mode_key):
         return res
 
 # =========================================================
-# [4] 유틸리티: 파일 처리 및 데이터 병합
+# [3] 유틸리티: 파일 처리 및 데이터 병합
 # =========================================================
 def clean_val_for_save(v):
     if isinstance(v, str): 
@@ -297,7 +275,6 @@ def extract_text_unified(file_bytes, file_type, page_idx):
                 if page_idx < len(doc): raw_text = doc[page_idx].get_text()
             except: pass
         if (not raw_text or len(raw_text) < 10) and FITZ_AVAILABLE:
-             # OCR Fallback
              try:
                 doc = fitz.open(stream=file_bytes, filetype="pdf")
                 if page_idx < len(doc):
@@ -305,7 +282,6 @@ def extract_text_unified(file_bytes, file_type, page_idx):
                     raw_text = api_call_vision_ocr(pix.tobytes("png"))
              except: pass
 
-    # 꼬리말 제거 (GP9 패턴 적용)
     lines = raw_text.split('\n')
     cleaned = [l for l in lines if not re.search(r'\.indd|\d{4}-\d{2}-\d{2}|오후|오전', l)]
     return "\n".join(cleaned).strip()
@@ -318,7 +294,7 @@ def get_page_image(file_bytes, file_type, page_idx):
     return None
 
 # =========================================================
-# [5] 메인 루프 & 세션
+# [4] 메인 루프 & 세션
 # =========================================================
 if 'step' not in st.session_state: st.session_state.step = 0
 if 'mode_key' not in st.session_state: st.session_state.mode_key = None
@@ -342,54 +318,33 @@ if st.session_state.step > 0:
     st.markdown('</div>', unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# STEP 0: 시작 화면 (카드형 디자인)
+# STEP 0: 시작 화면 (슈퍼 버튼 디자인 적용)
 # ---------------------------------------------------------
 if st.session_state.step == 0:
-    st.markdown("<h1 style='text-align: center; margin-bottom: 10px;'>📚 국어활동 AI 분석기</h1>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align: center; color: #888; margin-bottom: 50px;'>원하는 언어 규범을 선택하여 분석을 시작하세요.</p>", unsafe_allow_html=True)
+    st.markdown("<h1 style='text-align: center; margin-bottom: 40px;'>📚 국어활동 AI 분석기</h1>", unsafe_allow_html=True)
     
+    # 3개의 컬럼에 커다란 버튼을 배치
     c1, c2, c3 = st.columns(3)
     
-    # 카드 1: 남한
     with c1:
-        st.markdown("""
-        <div class="card-container card-south">
-            <div class="icon-south">🏛️</div>
-            <div class="card-title">대한민국 표준어</div>
-            <div class="card-desc">국립국어원 표준 맞춤법 기준<br>두음법칙 적용</div>
-        </div>
-        """, unsafe_allow_html=True)
-        if st.button("표준어 모드 시작", use_container_width=True, type="primary"):
+        # [남한 버튼]: 높이와 여백을 CSS로 강제 적용받음
+        if st.button("🏛️\n\n대한민국 표준어\n\n(표준국어대사전 기준)", key="btn_south", use_container_width=True):
             st.session_state.mode_key = "SOUTH"
             st.session_state.step = 1
             st.toast("✅ 대한민국 학습 서버에 연결되었습니다.")
             time.sleep(0.5); st.rerun()
 
-    # 카드 2: 북한
     with c2:
-        st.markdown("""
-        <div class="card-container card-north">
-            <div class="icon-north">🏔️</div>
-            <div class="card-title">북한 문화어</div>
-            <div class="card-desc">북한 문화어 규범 기준<br>두음법칙 미적용</div>
-        </div>
-        """, unsafe_allow_html=True)
-        if st.button("문화어 모드 시작", use_container_width=True, type="primary"):
+        # [북한 버튼]
+        if st.button("🏔️\n\n북한 문화어\n\n(문화어 규범 기준)", key="btn_north", use_container_width=True):
             st.session_state.mode_key = "NORTH"
             st.session_state.step = 1
             st.toast("✅ 북한 학습 서버에 연결되었습니다.")
             time.sleep(0.5); st.rerun()
 
-    # 카드 3: 디버깅
     with c3:
-        st.markdown("""
-        <div class="card-container card-debug">
-            <div class="icon-debug">🛠️</div>
-            <div class="card-title">관리자 모드</div>
-            <div class="card-desc">시스템 로그 확인 및<br>긴급 오류 해결</div>
-        </div>
-        """, unsafe_allow_html=True)
-        if st.button("디버깅 모드 진입", use_container_width=True):
+        # [디버그 버튼]
+        if st.button("🛠️\n\n관리자 모드\n\n(시스템 로그 확인)", key="btn_debug", use_container_width=True):
             st.session_state.debug_mode = True
             st.info("로그 패널이 활성화되었습니다.")
 
