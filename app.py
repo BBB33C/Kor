@@ -74,7 +74,7 @@ else:
             .stTextArea textarea { font-family: 'Malgun Gothic', sans-serif !important; font-size: 16px !important; line-height: 1.6 !important; }
             .stButton button { border-radius: 8px; font-weight: bold; height: auto; }
             div.stRadio > div[role="radiogroup"] { display: flex; flex-direction: row; gap: 10px; }
-            .page-jump-box { background-color: #1e2129; padding: 10px; border-radius: 10px; border: 1px solid #3d4251; margin-bottom: 15px; }
+            .page-jump-box { background-color: #1e2129; padding: 15px; border-radius: 12px; border: 1px solid #3d4251; margin-bottom: 20px; }
         </style>
     """, unsafe_allow_html=True)
 
@@ -85,7 +85,7 @@ try:
 except ImportError:
     PLUMBER_AVAILABLE = False
 try:
-    import fitz 
+    import fitz # PyMuPDF
     FITZ_AVAILABLE = True
 except ImportError:
     FITZ_AVAILABLE = False
@@ -208,6 +208,7 @@ def save_logic_with_learning():
     final_results = pd.DataFrame(st.session_state.analysis_result)
     initial_draft = pd.DataFrame(st.session_state.initial_draft)
     
+    # 1. 교정 및 삭제 학습
     for _, draft_row in initial_draft.iterrows():
         orig = draft_row['원본']
         match = final_results[final_results['원본'] == orig]
@@ -228,6 +229,7 @@ def save_logic_with_learning():
                     draft_row['원형'], draft_row['분류']
                 ])
                 
+    # 2. 추가 학습
     draft_originals = initial_draft['원본'].tolist()
     for _, final_row in final_results.iterrows():
         if final_row['원본'] not in draft_originals and not final_row['삭제']:
@@ -240,10 +242,12 @@ def save_logic_with_learning():
             
     if learning_logs: send_data_with_retry(sheet, learning_logs, True)
     
+    # 마스터 데이터 업데이트 및 쪽수 계산
     valid = final_results[final_results['삭제']==False].copy()
     valid['n_cnt'] = valid['횟수'].apply(lambda x: int(re.sub(r'[^0-9]', '', str(x))) if re.search(r'\d', str(x)) else 1)
     agg = valid.groupby(['원형', '분류', '품사'], as_index=False).agg({'n_cnt': 'sum'})
     
+    # 시작 쪽수 반영 자동 계산 로직
     p_num = str(st.session_state.page_idx + st.session_state.start_offset)
     temp_rows = []
     for _, item in agg.iterrows():
@@ -254,9 +258,10 @@ def save_logic_with_learning():
     save_backup_to_cloud(st.session_state.mode_key, st.session_state.master_df)
 
 # =========================================================
-# [4] AI 분석 및 PDF 처리
+# [4] AI 분석 및 PDF 처리 (메타데이터 제거 및 탐색 로직)
 # =========================================================
 def clean_raw_text(text):
+    # 인디자인(.indd), 날짜, 불필요 파일 시스템 정보 제거
     text = re.sub(r'.*\.indd.*', '', text)
     text = re.sub(r'\d{4}-\d{2}-\d{2}', '', text)
     text = re.sub(r'(오전|오후)\s+\d{1,2}:\d{2}:\d{2}', '', text)
@@ -314,21 +319,21 @@ def generate_prompt_from_sheet(sheet_data):
     return "\n[사용자 학습 데이터]:\n" + "\n".join(rules) + "\n"
 
 def get_analysis_hybrid(text, image_bytes, sheet_data, mode_key):
+    # 인명/지명/동음이의어 정밀 분류 및 '하다' 규칙 제거 보존
     prompt = f"""
-    당신은 국어 형태소 분석 전문가입니다. 아래 지침에 따라 텍스트를 JSON으로 정밀 분석하십시오.
+    당신은 국어 분석 전문가입니다. 아래 지침에 따라 텍스트를 JSON으로 분석하십시오.
     {generate_prompt_from_sheet(sheet_data)}
     
-    [분석 원칙]
-    1. **특수문자 및 문장부호 제거**: 마침표, 쉼표, 괄호 등은 결과에서 제외하십시오.
-    2. **조사 및 어미 제외**: 조사(~은/는/이/가)와 어미(~다/요)는 출력하지 마십시오.
-    3. **의존 명사**: '것', '수' 등은 '명사'로 분류하십시오.
-    4. **동음이의어 정밀 처리**: 뜻이 갈리는 단어는 반드시 원형 뒤에 괄호로 뜻을 구분하십시오 (예: 배(과일), 배(선박)).
-    5. **개체명(인명/지명) 자동 분류**: 성함은 원형 뒤에 '(이름)', 지역 명칭은 '(지명)'을 표기하십시오 (예: 지혜(이름), 서울(지명)).
+    [분석 핵심 규칙]
+    1. **특수문자/조사/어미 제거**: 기호나 문장부호, 조사는 절대 포함하지 마세요.
+    2. **의존 명사**: '것', '수', '만큼' 등은 '명사' 품사로 분류하십시오.
+    3. **동음이의어 정밀 처리**: 문맥상 뜻이 갈리는 단어는 반드시 원형 뒤에 괄호로 뜻을 구분하십시오 (예: 배(과일), 배(선박)).
+    4. **개체명 인식 (인명/지명)**: 문맥상 성명은 원형 뒤에 '(이름)', 지역은 '(지명)'을 반드시 표기하십시오 (예: 지혜(이름), 서울(지명)).
     
-    [어종 판별]
+    [어종 판별 가이드]
     한자 기반 단어(학교, 분석, 지혜 등)는 반드시 '한'으로 분류하십시오. 순우리말만 '고'입니다.
     
-    [출력 양식: 한글 키 JSON 리스트]
+    [출력 양식: 반드시 한글 키 JSON 리스트]
     원본, 원형, 분류(고/한/외/혼), 품사(명사/동사/형용사/부사/관형사/대명사/감탄사)
     """
     raw = api_call_direct(prompt + f"\n[대상]:\n{text[:5000]}", image_bytes)
@@ -341,7 +346,7 @@ def get_analysis_hybrid(text, image_bytes, sheet_data, mode_key):
     except Exception as e: return [], f"JSON Error: {str(e)}\nRaw: {raw}"
 
 # =========================================================
-# [5] UI: 메인 루프
+# [5] UI: 메인 루프 (Wizard)
 # =========================================================
 
 with st.sidebar:
@@ -350,8 +355,9 @@ with st.sidebar:
         if st.button("🐞 디버깅 모드 끄기"): st.session_state.debug_mode = False; st.rerun()
     else:
         st.markdown("<br>"*5, unsafe_allow_html=True)
-        if st.button("🛠️ 관리자 모기"): st.session_state.debug_mode = True; st.rerun()
+        if st.button("🛠️ 관리자 모드 켜기"): st.session_state.debug_mode = True; st.rerun()
 
+# STEP 0: 시작 화면
 if st.session_state.step == 0:
     st.markdown("<h1 style='text-align: center; margin-bottom: 20px;'>📚 국어활동 AI 분석기</h1>", unsafe_allow_html=True)
     st.markdown("<p style='text-align: center; color: #888; margin-bottom: 50px;'>원하는 언어 규범을 선택하여 분석을 시작하세요.</p>", unsafe_allow_html=True)
@@ -366,6 +372,7 @@ if st.session_state.step == 0:
         if st.button("🏔️\n\n북한 문화어\n\n(문화어 규범 기준)\n\n[ 시작하기 ]", key="btn_north", use_container_width=True):
             st.session_state.mode_key = "NORTH"; st.session_state.step = 1; st.rerun()
 
+# STEP 1: 데이터 소스 선택 (Excel/PDF/이미지 통합 지원)
 elif st.session_state.step == 1:
     st.header("📂 데이터 소스 선택")
     col1, col2 = st.columns(2)
@@ -393,6 +400,7 @@ elif st.session_state.step == 1:
     st.markdown("---")
     if st.button("⬅️ 모드 다시 선택"): st.session_state.step = 0; st.rerun()
 
+# STEP 2: 자료 입력 (페이지 즉시 이동 및 저장 위치 안내 강화)
 elif st.session_state.step == 2:
     st.session_state.is_finished = False
     c_t, c_h = st.columns([8, 2])
@@ -432,6 +440,7 @@ elif st.session_state.step == 2:
     if input_method == "📄 파일 분석":
         st.session_state.current_tab_idx = 0
         file = st.file_uploader("분석할 파일 업로드 (PDF, PNG, JPG)", type=['pdf', 'png', 'jpg'])
+        
         current_fb = file.getvalue() if file else st.session_state.file_bytes
         current_ft = file.type if file else st.session_state.file_type
         
@@ -449,6 +458,7 @@ elif st.session_state.step == 2:
                 if st.session_state.file_type == "application/pdf":
                     st.write(f"📄 **PDF 분석 상태:** {st.session_state.page_idx + 1} / {st.session_state.total_pages} 페이지")
                     
+                    # [페이지 제어 및 즉시 이동 센터]
                     st.markdown('<div class="page-jump-box">', unsafe_allow_html=True)
                     j_col1, j_col2, j_col3 = st.columns([1, 1.5, 1])
                     with j_col1:
@@ -456,7 +466,8 @@ elif st.session_state.step == 2:
                             st.session_state.page_idx -= 1
                             st.session_state.extracted_text = extract_text_unified(st.session_state.file_bytes, st.session_state.file_type, st.session_state.page_idx); st.rerun()
                     with j_col2:
-                        target_p = st.number_input("이동할 페이지", min_value=1, max_value=st.session_state.total_pages, value=st.session_state.page_idx + 1, label_visibility="collapsed")
+                        # 숫자 직접 입력하여 페이지 점프
+                        target_p = st.number_input("페이지 이동", min_value=1, max_value=st.session_state.total_pages, value=st.session_state.page_idx + 1, label_visibility="collapsed")
                         if target_p != st.session_state.page_idx + 1:
                             st.session_state.page_idx = target_p - 1
                             st.session_state.extracted_text = extract_text_unified(st.session_state.file_bytes, st.session_state.file_type, st.session_state.page_idx); st.rerun()
@@ -466,9 +477,10 @@ elif st.session_state.step == 2:
                             st.session_state.extracted_text = extract_text_unified(st.session_state.file_bytes, st.session_state.file_type, st.session_state.page_idx); st.rerun()
                     st.markdown('</div>', unsafe_allow_html=True)
                     
+                    # 저장 위치 안내 문구 수정 적용
                     st.session_state.start_offset = st.number_input("시작 쪽수 설정 (PDF 1쪽의 도서 쪽수)", value=st.session_state.start_offset)
                     actual_save_page = st.session_state.page_idx + st.session_state.start_offset
-                    st.info(f"💾 **저장 위치 미리보기:** 현재 페이지 분석 시 엑셀의 **'{actual_save_page}쪽'** 열에 기록됩니다.")
+                    st.info(f"💾 **저장 위치 미리보기:** 현재 페이지 분석 시 엑셀의 **'{actual_save_page}쪽'**으로 기록됩니다.")
             
             with c2:
                 txt_in = st.text_area("에디터 (텍스트 정제 완료)", value=st.session_state.extracted_text, height=520)
@@ -480,6 +492,7 @@ elif st.session_state.step == 2:
         st.session_state.extracted_text = direct_t
         if st.button("🚀 분석 실행 (AI 호출)", type="primary", use_container_width=True): run_analysis_action(direct_t)
 
+# STEP 3: 결과 확인 (비교 학습 저장 로직 무삭제 보존)
 elif st.session_state.step == 3:
     ch, cb = st.columns([8, 2])
     with ch: st.header("📊 분석 결과 확인")
@@ -530,7 +543,7 @@ elif st.session_state.step == 3:
     else:
         st.success("✅ 모든 분석 데이터가 사용자님의 수정 사항과 비교 학습되어 마스터 데이터에 통합되었습니다!")
         actual_p = st.session_state.page_idx + st.session_state.start_offset
-        st.info(f"📍 현재 페이지 데이터는 마스터 엑셀의 **'{actual_p}쪽'** 열에 성공적으로 합쳐졌습니다.")
+        st.info(f"📍 현재 페이지 데이터는 마스터 엑셀의 **'{actual_p}쪽'**으로 성공적으로 합쳐졌습니다.")
         
         fname = f"국어활동_결과_{st.session_state.mode_key}_{datetime.now().strftime('%m%d_%H%M')}.xlsx"
         buf = io.BytesIO()
