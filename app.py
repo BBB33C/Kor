@@ -36,7 +36,7 @@ if 'extracted_text' not in st.session_state: st.session_state.extracted_text = "
 if 'debug_mode' not in st.session_state: st.session_state.debug_mode = False
 
 # =========================================================
-# [1] 디자인: CSS 매직 (진행바 스타일 제거됨)
+# [1] 디자인: CSS 매직
 # =========================================================
 if st.session_state.step == 0:
     st.markdown("""
@@ -50,8 +50,8 @@ if st.session_state.step == 0:
             /* 기본 폰트 */
             .stTextArea textarea { font-family: 'Malgun Gothic', sans-serif !important; }
             
-            /* 1. 버튼 공통 스타일 */
-            div.stButton > button {
+            /* 1. 메인 버튼 스타일 (화면 중앙 2개) */
+            div.block-container div[data-testid="column"] div.stButton > button {
                 width: 100%;
                 height: 320px;
                 background-color: #262730 !important;
@@ -66,15 +66,15 @@ if st.session_state.step == 0:
                 box-shadow: 0 4px 10px rgba(0,0,0,0.3) !important;
             }
             
-            /* 호버 시 떠오름 효과 */
-            div.stButton > button:hover {
+            /* 호버 효과 */
+            div.block-container div[data-testid="column"] div.stButton > button:hover {
                 transform: translateY(-8px);
                 background-color: #2b2c36 !important;
             }
         </style>
     """, unsafe_allow_html=True)
 else:
-    # [Step 1~4] 작업 단계용 스타일 (진행바 CSS 삭제로 깔끔해짐)
+    # [Step 1~4] 작업 화면용 스타일
     st.markdown("""
         <style>
             .stApp { background-color: #0e1117 !important; color: #ffffff !important; }
@@ -302,11 +302,11 @@ def get_page_image(file_bytes, file_type, page_idx):
     return None
 
 # =========================================================
-# [4] UI: 메인 루프 (진행바 제거됨)
+# [4] UI: 메인 루프
 # =========================================================
 
 # ---------------------------------------------------------
-# [SIDEBAR]: 관리자 모드 제어 (구석에 숨김)
+# [SIDEBAR]: 관리자 모드 제어 (홈 버튼 제거됨)
 # ---------------------------------------------------------
 with st.sidebar:
     st.markdown("### ⚙️ 설정")
@@ -316,13 +316,13 @@ with st.sidebar:
             st.session_state.debug_mode = False
             st.rerun()
     else:
-        st.markdown("<br>"*5, unsafe_allow_html=True) # 여백
+        st.markdown("<br>"*5, unsafe_allow_html=True)
         if st.button("🛠️ 관리자 모드 켜기", use_container_width=True):
             st.session_state.debug_mode = True
             st.rerun()
 
 # ---------------------------------------------------------
-# STEP 0: 시작 화면 (중앙 정렬 + 업그레이드된 색상)
+# STEP 0: 시작 화면 (중앙 정렬 + 색상 개선)
 # ---------------------------------------------------------
 if st.session_state.step == 0:
     st.markdown("<h1 style='text-align: center; margin-bottom: 20px;'>📚 국어활동 AI 분석기</h1>", unsafe_allow_html=True)
@@ -332,19 +332,17 @@ if st.session_state.step == 0:
     else:
         st.markdown("<p style='text-align: center; color: #888; margin-bottom: 50px;'>원하는 언어 규범을 선택하여 분석을 시작하세요.</p>", unsafe_allow_html=True)
     
-    # [중앙 정렬 레이아웃] [1, 4, 4, 1] 비율로 배치
+    # [중앙 정렬]
     _, c_south, c_north, _ = st.columns([1, 4, 4, 1])
     
     with c_south:
-        # [남한] 태극 블루 (Royal Blue #2979ff)
+        # [남한] Royal Blue
         st.markdown("""
         <style>
-            /* 남한 버튼 평소 스타일 */
             div[data-testid="column"]:nth-of-type(2) div.stButton > button {
                 border-color: rgba(41, 121, 255, 0.4) !important;
                 box-shadow: 0 0 10px rgba(41, 121, 255, 0.1) !important;
             }
-            /* 남한 버튼 호버 스타일 (강렬한 파랑) */
             div[data-testid="column"]:nth-of-type(2) div.stButton > button:hover {
                 border-color: #2979ff !important;
                 box-shadow: 0 0 35px rgba(41, 121, 255, 0.7) !important;
@@ -352,7 +350,6 @@ if st.session_state.step == 0:
             }
         </style>
         """, unsafe_allow_html=True)
-        
         label_south = "🏛️\n\n대한민국 표준어\n\n(표준국어대사전 기준)\n\n[ 시작하기 ]"
         if st.button(label_south, key="btn_south", use_container_width=True):
             st.session_state.mode_key = "SOUTH"
@@ -361,15 +358,13 @@ if st.session_state.step == 0:
             time.sleep(0.5); st.rerun()
 
     with c_north:
-        # [북한] 장미 레드 (Rose Red #ff1744)
+        # [북한] Rose Red
         st.markdown("""
         <style>
-            /* 북한 버튼 평소 스타일 */
             div[data-testid="column"]:nth-of-type(3) div.stButton > button {
                 border-color: rgba(255, 23, 68, 0.4) !important;
                 box-shadow: 0 0 10px rgba(255, 23, 68, 0.1) !important;
             }
-            /* 북한 버튼 호버 스타일 (강렬한 빨강) */
             div[data-testid="column"]:nth-of-type(3) div.stButton > button:hover {
                 border-color: #ff1744 !important;
                 box-shadow: 0 0 35px rgba(255, 23, 68, 0.7) !important;
@@ -377,7 +372,6 @@ if st.session_state.step == 0:
             }
         </style>
         """, unsafe_allow_html=True)
-        
         label_north = "🏔️\n\n북한 문화어\n\n(문화어 규범 기준)\n\n[ 시작하기 ]"
         if st.button(label_north, key="btn_north", use_container_width=True):
             st.session_state.mode_key = "NORTH"
@@ -426,13 +420,19 @@ elif st.session_state.step == 1:
     if st.button("⬅️ 모드 다시 선택"): st.session_state.step = 0; st.rerun()
 
 # ---------------------------------------------------------
-# STEP 2: 자료 입력
+# STEP 2: 자료 입력 (홈 버튼: 상단 우측 배치)
 # ---------------------------------------------------------
 elif st.session_state.step == 2:
-    if st.sidebar.button("🏠 처음으로"): st.session_state.clear(); st.rerun()
+    # 상단 레이아웃: [제목 영역 8] : [홈 버튼 영역 2]
+    c_title, c_home = st.columns([8, 2])
+    with c_title:
+        st.header("📝 분석 자료 입력")
+    with c_home:
+        # 우측 상단에 홈 버튼 배치
+        if st.button("🏠 처음으로 (초기화)", use_container_width=True):
+            st.session_state.clear()
+            st.rerun()
 
-    st.header("📝 분석 자료 입력")
-    
     tab1, tab2 = st.tabs(["📄 파일 분석", "✍️ 직접 입력"])
     
     with tab1:
