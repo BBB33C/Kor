@@ -258,7 +258,7 @@ def merge_master_data(old_df, new_df):
     result_df = result_df.sort_values(['sk', '자료']).drop('sk', axis=1)
     return result_df
 
-# [핵심 수정] 프롬프트 강화: 특수문자 제거, 조사/어미 제외 명시
+# [AI 분석 함수] 고정밀 필터링 + 한글 키 사용
 def get_analysis_hybrid(text, image_bytes, sheet_data, mode_key):
     prompt = f"""
     당신은 '{"대한민국 표준어" if mode_key=="SOUTH" else "북한 문화어"}' 형태소 분석 전문가입니다.
@@ -397,7 +397,7 @@ elif st.session_state.step == 2:
 
     tab1, tab2 = st.tabs(["📄 파일 분석", "✍️ 직접 입력"])
     
-    # [핵심 수정] 2. 파이썬 로직: 특수문자 및 조사/어미 이중 필터링
+    # [로직] 분석 실행 및 필터링
     def run_analysis_logic(txt, img=None):
         if not txt or not txt.strip():
             st.warning("⚠️ 분석할 텍스트가 없습니다. 내용을 확인해주세요.")
@@ -415,6 +415,7 @@ elif st.session_state.step == 2:
             pm = {'명사':'📦 명사', '동사':'🏃 동사', '형용사':'🎨 형용사', '부사':'⚡ 부사', '관형사':'🔍 관형사', '대명사':'👤 대명사', '감탄사':'❗ 감탄사'}
             
             for r in res:
+                # [데이터 정제]
                 o_word = str(r.get('원본') or r.get('original_word') or '').strip()
                 r_word = str(r.get('원형') or r.get('root_word') or '').strip()
                 origin_val = str(r.get('분류') or r.get('origin') or '혼').strip()
@@ -428,7 +429,7 @@ elif st.session_state.step == 2:
                 if not re.search(r'[가-힣a-zA-Z0-9]', o_word): continue
                 if not re.search(r'[가-힣a-zA-Z0-9]', r_word): continue
 
-                # 3. 조사/어미/문장부호 필터링 (AI가 실수로 보낸 경우)
+                # 3. 조사/어미/문장부호 필터링
                 if pos_val in ['조사', '어미', '문장부호', '특수문자', 'Punctuation', 'Josa', 'Eomi']: continue
 
                 key = (r_word, origin_val, pos_val)
@@ -489,10 +490,17 @@ elif st.session_state.step == 2:
             run_analysis_logic(direct_txt)
 
 # ---------------------------------------------------------
-# STEP 3: 결과 확인
+# STEP 3: 결과 확인 (뒤로가기 버튼 추가됨)
 # ---------------------------------------------------------
 elif st.session_state.step == 3:
-    st.header("📊 분석 결과 확인")
+    # 상단 레이아웃: 제목 + 뒤로가기 버튼
+    c_head, c_btn = st.columns([8, 2])
+    with c_head:
+        st.header("📊 분석 결과 확인")
+    with c_btn:
+        if st.button("⬅️ 입력창으로 돌아가기", use_container_width=True):
+            st.session_state.step = 2
+            st.rerun()
     
     if st.session_state.debug_mode:
         with st.expander("🔴 [DEBUG] AI 응답 원본 확인", expanded=True):
