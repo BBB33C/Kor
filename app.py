@@ -12,7 +12,7 @@ from datetime import datetime
 from collections import Counter
 
 # =========================================================
-# [0] 라이브러리 임포트 및 상태 체크 (GP9 원본 안전장치)
+# [0] 라이브러리 임포트 및 상태 체크 (GP9 원본)
 # =========================================================
 try:
     import pdfplumber
@@ -35,7 +35,7 @@ except ImportError:
 
 # 페이지 기본 설정
 st.set_page_config(
-    page_title="국어활동 AI 분석기 (Ultimate Fixed)", 
+    page_title="국어활동 AI 분석기 (Ultimate Robust)", 
     page_icon="📚", 
     layout="wide",
     initial_sidebar_state="expanded"
@@ -56,7 +56,7 @@ MODEL_NAME = "gemini-2.0-flash-exp"
 SHEET_NAME = "Korean_DB"
 TRUST_THRESHOLD = 3 
 
-# [CSS] 텍스트창 진한 회색(#262730) 배경 + 흰색 글씨 (눈 보호 모드)
+# [CSS] 텍스트창 진한 회색(#262730) + 흰색 글씨
 st.markdown("""
     <style>
         .stTextArea textarea { 
@@ -65,14 +65,15 @@ st.markdown("""
             font-family: 'Malgun Gothic', sans-serif !important; 
             background-color: #262730 !important; 
             color: #ffffff !important; 
-            border: 1px solid #4a4a4a !important; 
+            border: 1px solid #555 !important; 
             font-weight: 400 !important;
         }
         .stTextArea textarea:focus {
             border: 1px solid #ff4b4b !important;
         }
-        .stDataFrame { border: 1px solid #ddd; }
+        .stDataFrame { border: 1px solid #444; }
         .block-container { padding-top: 2rem; }
+        
         div[data-testid="stExpander"] details summary p {
             font-size: 1.05rem;
             font-weight: 600;
@@ -84,7 +85,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # =========================================================
-# [2] 구글 시트 & 백업 시스템 (GP9 원본 로직 완벽 복구)
+# [2] 구글 시트 & 백업 시스템 (GP9 원본)
 # =========================================================
 @st.cache_resource
 def get_google_sheet_client():
@@ -151,7 +152,9 @@ def save_backup_to_cloud(mode_key, df):
         data_to_upload = [df_str.columns.values.tolist()] + df_str.values.tolist()
         worksheet.update(data_to_upload)
         return True
-    except: return False
+    except Exception as e:
+        print(f"백업 실패: {e}") 
+        return False
 
 def load_backup_from_cloud(mode_key):
     client = get_google_sheet_client()
@@ -165,18 +168,18 @@ def load_backup_from_cloud(mode_key):
     except: return None
 
 # =========================================================
-# [3] AI 엔진 (1~7단계 로직 + GP9 OCR + '의미' 삭제)
+# [3] AI 엔진 (1~7단계 + GP9 OCR)
 # =========================================================
 def generate_prompt_from_sheet(sheet_data):
     if not sheet_data: return ""
     rules = []
     for row in sheet_data[-50:]:
         if row.get('action') == 'delete':
-            rules.append(f"- [삭제 규칙]: '{row.get('original_word')}'는 분석 결과에서 제외하세요.")
+            rules.append(f"- [삭제 규칙]: '{row.get('original_word')}' 제외")
         elif row.get('action') in ['add', 'modify']:
             rules.append(f"- [고정 규칙]: '{row.get('original_word')}' -> 원형:'{row.get('root_word')}', 분류:'{row.get('origin')}', 품사:'{row.get('pos')}'")
     if rules:
-        return "\n[🚨 최우선 사용자 학습 규칙]:\n" + "\n".join(rules) + "\n"
+        return "\n[🚨 사용자 학습 규칙]:\n" + "\n".join(rules) + "\n"
     return ""
 
 def api_call_direct(prompt, image_bytes=None):
@@ -240,7 +243,7 @@ def get_analysis_hybrid(text, image_bytes, sheet_data, mode_key):
     [JSON 예시]
     [
         {{"original_word": "배를", "root_word": "배", "origin": "고", "pos": "명사"}},
-        {{"original_word": "공부했다", "root_word": "공부", "origin": "한", "pos": "동사"}}
+        {{"original_word": "공부했다", "root_word": "공부", "origin": "한", "pos": "명사"}}
     ]
     """
     
@@ -271,36 +274,36 @@ def get_analysis_hybrid(text, image_bytes, sheet_data, mode_key):
                         e = res_text.rfind(']') + 1
                         if s != -1 and e != -1: all_results.extend(json.loads(res_text[s:e]))
                 except: pass
-            time.sleep(0.1)
+            time.sleep(0.1) 
         return all_results
 
 # =========================================================
-# [4] 파일 처리 및 텍스트 추출 (GP9 로직 + seek(0) 수정)
+# [4] 파일 처리 및 텍스트 추출 (GP9 로직 + 메모리 복제 수정)
 # =========================================================
 def extract_text_unified(file_obj, page_idx):
-    """GP9의 정밀 추출 로직 + 파일 포인터 리셋(seek 0) 추가"""
+    """GP9 추출 로직 + BytesIO 복제(파일 닫힘 방지)"""
     file_type = file_obj.type
     
-    # [핵심] 파일 포인터를 맨 앞으로 돌려놓음 (이게 없으면 빈 파일로 읽힘)
-    file_obj.seek(0)
+    # [핵심 수정] 파일 객체를 직접 쓰지 않고, 메모리에 복제본을 생성해 사용
+    # 이렇게 하면 라이브러리가 파일을 닫아도 원본 file_obj는 안전함
+    bytes_data = file_obj.getvalue()
     
     if "image" in file_type:
-        try: return api_call_vision_ocr(file_obj.getvalue())
+        try: return api_call_vision_ocr(bytes_data)
         except: return ""
         
     elif "pdf" in file_type:
         text = ""
-        # 1. pdfplumber 시도 (GP9의 영역 Crop 기능 포함)
+        # 1. pdfplumber 시도
         if PLUMBER_AVAILABLE:
             try:
-                # Plumber 사용 전에도 seek(0)
-                file_obj.seek(0)
-                with pdfplumber.open(file_obj) as pdf:
+                # 복제된 스트림 사용
+                with pdfplumber.open(io.BytesIO(bytes_data)) as pdf:
                     if page_idx < len(pdf.pages):
                         page = pdf.pages[page_idx]
                         width, height = page.width, page.height
                         try:
-                            # 상단 5%, 하단 10% 제외하고 크롭 (GP9 로직)
+                            # GP9 크롭 로직
                             crop_box = (0, height * 0.05, width, height * 0.9)
                             cropped = page.crop(crop_box)
                             text = cropped.extract_text()
@@ -308,22 +311,20 @@ def extract_text_unified(file_obj, page_idx):
                             text = page.extract_text()
             except: pass
         
-        # 2. Fitz 시도 (Plumber 실패 시)
+        # 2. Fitz 시도
         if not text and FITZ_AVAILABLE:
             try:
-                # Fitz 사용 전에도 seek(0)
-                file_obj.seek(0)
-                doc = fitz.open(stream=file_obj.read(), filetype="pdf")
+                # 복제된 스트림 사용
+                doc = fitz.open(stream=bytes_data, filetype="pdf")
                 if page_idx < len(doc):
                     text = doc[page_idx].get_text()
             except: pass
         
-        # 3. Vision OCR 시도 (텍스트가 너무 적을 때)
+        # 3. Vision OCR 시도
         if (not text or len(text.strip()) < 30) and FITZ_AVAILABLE:
             try:
-                # 다시 seek(0)
-                file_obj.seek(0)
-                doc = fitz.open(stream=file_obj.read(), filetype="pdf")
+                # 복제된 스트림 사용
+                doc = fitz.open(stream=bytes_data, filetype="pdf")
                 if page_idx < len(doc):
                     pix = doc[page_idx].get_pixmap(matrix=fitz.Matrix(2, 2))
                     img_bytes = pix.tobytes("png")
@@ -336,15 +337,14 @@ def extract_text_unified(file_obj, page_idx):
 def get_page_image_bytes(file_obj, page_idx):
     """뷰어용 이미지 생성"""
     file_type = file_obj.type
-    
-    # [핵심] 여기서도 seek(0) 필수
-    file_obj.seek(0)
+    # [핵심 수정] 여기서도 복제본 사용
+    bytes_data = file_obj.getvalue()
     
     if "image" in file_type:
-        return file_obj.getvalue()
+        return bytes_data
     elif "pdf" in file_type and FITZ_AVAILABLE:
         try:
-            doc = fitz.open(stream=file_obj.read(), filetype="pdf")
+            doc = fitz.open(stream=bytes_data, filetype="pdf")
             if 0 <= page_idx < len(doc):
                 pix = doc[page_idx].get_pixmap(matrix=fitz.Matrix(2.0, 2.0)) 
                 return pix.tobytes("png")
@@ -512,14 +512,14 @@ with st.sidebar:
 st.subheader("1. 분석 자료 입력")
 main_file = st.file_uploader("PDF/이미지 파일", type=['pdf', 'png', 'jpg'])
 
-# [오류 해결] AttributeError 방지 (id 대신 name+size)
 if main_file:
+    # [오류 해결] AttributeError 방지 (id 대신 name+size)
     fid = f"{main_file.name}_{main_file.size}"
     if st.session_state.file_hash != fid:
         st.session_state.file_hash = fid
         st.session_state.page_idx = 0
         st.session_state.analysis_result = []
-        # 파일이 변경되면 바로 텍스트 추출 실행
+        # 파일이 변경되면 즉시 텍스트 추출 실행
         st.session_state.editor_text_content = extract_text_unified(main_file, 0)
         st.rerun()
 
@@ -571,6 +571,7 @@ with col_v:
 
 with col_i:
     st.info("📝 분석 내용 (수정 가능)")
+    # [핵심] 입력창 고정
     txt_val = st.text_area("텍스트", value=st.session_state.editor_text_content, height=500, key="editor_area")
     if txt_val != st.session_state.editor_text_content:
         st.session_state.editor_text_content = txt_val
@@ -590,6 +591,7 @@ with col_i:
                 cnts = Counter([r.get('original_word', '미상') for r in res])
                 seen = set()
                 for r in res:
+                    # [오류 해결] KeyError 방지 .get() 사용
                     root = r.get('root_word', '')
                     ro = r.get('origin', '혼')
                     rp = r.get('pos', '명사')
