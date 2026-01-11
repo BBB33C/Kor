@@ -35,7 +35,7 @@ except ImportError:
 
 # 페이지 기본 설정
 st.set_page_config(
-    page_title="국어활동 AI 분석기 (Complete)", 
+    page_title="국어활동 AI 분석기 (Final Perfect)", 
     page_icon="📚", 
     layout="wide",
     initial_sidebar_state="expanded"
@@ -55,7 +55,6 @@ except:
 MODEL_NAME = "gemini-2.0-flash-exp"
 SHEET_NAME = "Korean_DB"
 
-# [CSS] 다크 모드 및 스타일
 st.markdown("""
     <style>
         .stTextArea textarea { 
@@ -88,7 +87,6 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# [디버깅] 로그 함수
 if 'debug_logs' not in st.session_state: st.session_state.debug_logs = []
 
 def log_debug(msg, type="info"):
@@ -97,7 +95,7 @@ def log_debug(msg, type="info"):
         st.session_state.debug_logs.append(f"<div class='debug-box {color_class}'>[{datetime.now().strftime('%H:%M:%S')}] {msg}</div>")
 
 # =========================================================
-# [2] 구글 시트 & 백업 시스템 (자동 백업 구현)
+# [2] 구글 시트 & 백업 시스템
 # =========================================================
 @st.cache_resource
 def get_google_sheet_client():
@@ -133,7 +131,6 @@ def send_data_with_retry(sheet_obj, data, is_multiple=False):
     return False
 
 def save_backup_to_cloud(mode_key, df):
-    """[자동 백업] 저장 시 자동으로 호출됨"""
     client = get_google_sheet_client()
     if not client or df is None or df.empty: return False
     try:
@@ -141,11 +138,8 @@ def save_backup_to_cloud(mode_key, df):
         ws = sh.worksheet(f"Backup_{'South' if mode_key == 'SOUTH' else 'North'}")
         ws.clear()
         ws.update([df.fillna("").astype(str).columns.tolist()] + df.fillna("").astype(str).values.tolist())
-        log_debug("☁️ 클라우드 자동 백업 완료", "success")
         return True
-    except: 
-        log_debug("백업 실패", "err")
-        return False
+    except: return False
 
 def load_backup_from_cloud(mode_key):
     client = get_google_sheet_client()
@@ -158,12 +152,11 @@ def load_backup_from_cloud(mode_key):
     except: return None
 
 # =========================================================
-# [3] AI 엔진 (스마트 분할 복구 + 횟수/괄호 구분)
+# [3] AI 엔진 (기능 보존: 문맥 분석 + 스마트 분할 + 괄호 구분)
 # =========================================================
 def generate_prompt_from_sheet(sheet_data):
     if not sheet_data: return ""
     rules = []
-    # [7단계] 최신 학습 내용(뒤에서 50개) 우선 반영
     for row in sheet_data[-50:]:
         if row.get('action') == 'delete': rules.append(f"- [삭제 규칙]: '{row.get('original_word')}'는 분석 결과에서 제외하세요.")
         elif row.get('action') in ['add', 'modify']: rules.append(f"- [고정 규칙]: '{row.get('original_word')}' -> 원형:'{row.get('root_word')}', 분류:'{row.get('origin')}', 품사:'{row.get('pos')}'")
@@ -195,10 +188,7 @@ def api_call_vision_ocr(image_bytes):
     return ""
 
 def split_text_smartly(text, chunk_size=1000):
-    """
-    [복구됨] 긴 텍스트를 문장 부호 기준으로 안전하게 자르는 함수.
-    단어가 중간에 잘리는 현상 방지.
-    """
+    """[복구] 긴 문장 안전 분할"""
     sentences = re.split(r'(?<=[.?!])\s+|\\n', text)
     chunks = []
     current_chunk = ""
@@ -221,7 +211,7 @@ def get_analysis_hybrid(text, image_bytes, sheet_data, mode_key):
     2. **형태소 분리**: 조사(은/는/이/가 등)와 어미 제거.
     3. **'하다' 용언 처리**: 문맥에 따라 동사/명사 판단.
     4. **품사 필터링**: 명사, 동사, 형용사, 부사, 관형사, 대명사만 남김.
-    5. **동음이의어 처리**: 뜻이 다르면 원형 뒤에 (의미)를 붙여 구분 가능 (예: 배(과일), 배(선박)).
+    5. **동음이의어 처리**: 뜻이 다르면 원형 뒤에 (의미)를 붙여 구분 (예: 배(과일), 배(선박)).
     6. **출력**: JSON 포맷 엄수.
 
     [JSON 예시]
@@ -232,7 +222,6 @@ def get_analysis_hybrid(text, image_bytes, sheet_data, mode_key):
         try: return json.loads(re.search(r'\[.*\]', api_call_direct(prompt + "\n(이미지 OCR 결과 참고)", image_bytes), re.DOTALL).group())
         except: return []
     else:
-        # [복구] 스마트 분할 적용하여 긴 글 처리
         chunks = split_text_smartly(text)
         res_list = []
         for chunk in chunks:
@@ -249,7 +238,7 @@ def get_analysis_hybrid(text, image_bytes, sheet_data, mode_key):
 # [4] 파일 처리 & 노이즈 제거 (꼬리말 제거 + BytesIO)
 # =========================================================
 def clean_noise_text(text):
-    """[기능] 파일 정보, 날짜, 시간 등 꼬리말 제거"""
+    """[기능] 꼬리말/메타데이터 제거"""
     if not text: return ""
     lines = text.split('\n')
     cleaned_lines = []
@@ -262,7 +251,6 @@ def clean_noise_text(text):
     return "\n".join(cleaned_lines).strip()
 
 def extract_text_unified(file_bytes, file_type, page_idx):
-    """BytesIO 복제 방식 (안정성)"""
     debug = st.session_state.get('debug_mode', False)
     if debug: log_debug(f"추출 시작: Page {page_idx}", "info")
 
@@ -270,7 +258,6 @@ def extract_text_unified(file_bytes, file_type, page_idx):
     
     if "image" in file_type:
         raw_text = api_call_vision_ocr(file_bytes)
-        
     elif "pdf" in file_type:
         if PLUMBER_AVAILABLE:
             try:
@@ -310,69 +297,60 @@ def get_page_image_bytes(file_bytes, file_type, page_idx):
     return None
 
 # =========================================================
-# [5] 데이터 저장 & 병합 로직 (덮어쓰기 버그 해결)
+# [5] 데이터 저장 & 병합 (덮어쓰기 방지 + 횟수 합산)
 # =========================================================
 def clean_val(v):
     if isinstance(v, str): return v.replace('🔵 ', '').replace('🟢 ', '').replace('🔴 ', '').replace('🟣 ', '').replace('📦 ', '').replace('🏃 ', '').replace('🎨 ', '').replace('⚡ ', '').replace('🔍 ', '').replace('👤 ', '')
     return v
 
 def calc_freq(row):
-    """쪽수 컬럼을 모두 확인하여 빈도수 계산"""
+    """쪽수 컬럼 기반 빈도수 합산"""
     total = 0
     for c in row.index:
         if str(c).startswith('쪽수'):
             v = str(row[c])
-            if '_' in v: 
+            if '_' in v: # "139_2" 형태 처리
                 try: total += int(v.split('_')[1])
                 except: total += 1
             elif v not in ['nan', '', 'None']: total += 1
     return total
 
 def merge_master_data(old_df, new_df):
-    """
-    [핵심 해결] 기존 데이터(old_df)와 새 데이터(new_df)를 스마트하게 병합
-    - 덮어쓰지 않고, 같은 단어면 '횟수'를 합산하고 '쪽수' 정보를 보존함.
-    """
+    """[해결] 엑셀 이어하기 시 데이터 덮어쓰기 방지 및 횟수/쪽수 병합"""
     if old_df is None or old_df.empty: return new_df
     
-    # 키 컬럼 기준 병합
     key_cols = ['자료', '구분']
-    
-    # 1. 일단 합침
+    # Outer join으로 합침
     merged = pd.merge(old_df, new_df, on=key_cols, how='outer', suffixes=('_old', '_new'))
     
-    # 2. 쪽수 컬럼 처리 (동적으로 확장)
     page_cols_old = [c for c in old_df.columns if c.startswith('쪽수')]
     page_cols_new = [c for c in new_df.columns if c.startswith('쪽수')]
     
-    # 새로운 마스터 DF 생성
     final_rows = []
-    
     for _, row in merged.iterrows():
-        new_row = {k: row[k] for k in key_cols} # 키값 복사
-        
-        # 쪽수 데이터 수집
+        new_row = {k: row[k] for k in key_cols}
         pages = []
-        # 기존 데이터 쪽수
+        
+        # 기존 데이터 쪽수 보존
         for c in page_cols_old:
-            val = row.get(f"{c}_old", row.get(c)) # merge로 이름이 바뀌었거나 그대로거나
+            val = row.get(f"{c}_old", row.get(c))
             if pd.notna(val) and str(val) != 'nan': pages.append(str(val))
-        # 새 데이터 쪽수
+            
+        # 새 데이터 쪽수 추가
         for c in page_cols_new:
             val = row.get(f"{c}_new", row.get(c))
             if pd.notna(val) and str(val) != 'nan': pages.append(str(val))
             
-        # 쪽수 컬럼 재배치
+        # 쪽수 컬럼 재할당
         for i, p in enumerate(pages):
             new_row[f"쪽수{i+1}"] = p
             
         final_rows.append(new_row)
         
     result_df = pd.DataFrame(final_rows)
-    # 빈도수 재계산
-    result_df['출연횟수'] = result_df.apply(calc_freq, axis=1)
+    result_df['출연횟수'] = result_df.apply(calc_freq, axis=1) # 횟수 재계산
     
-    # 정렬
+    # 정렬 (고, 순, 한, 외, 혼)
     sort_map = {'고':1, '순':1, '한':2, '외':3, '혼':4}
     result_df['sk'] = result_df['구분'].map(sort_map).fillna(5)
     result_df = result_df.sort_values(['sk', '자료']).drop('sk', axis=1)
@@ -380,7 +358,6 @@ def merge_master_data(old_df, new_df):
     return result_df
 
 def save_logic(edited_df, page_str, sheet_obj, context_text):
-    # 1. 학습 데이터(로그) 저장
     if sheet_obj:
         logs = []
         for _, row in edited_df.iterrows():
@@ -388,26 +365,21 @@ def save_logic(edited_df, page_str, sheet_obj, context_text):
                 logs.append([datetime.now().isoformat(), row['original_word'], row['root_word'], clean_val(row['origin']), clean_val(row['pos']), 'modify', context_text[:50]])
         if logs: send_data_with_retry(sheet_obj, logs, True)
 
-    # 2. 현재 분석 결과 집계
     valid = edited_df[edited_df['delete_check'] == False].copy()
-    valid['n_cnt'] = valid['count'].apply(lambda x: int(str(x).replace('회','').strip()) if '회' in str(x) else 1)
+    # [수정] 횟수 텍스트 파싱 강화 ("1회", "5" 모두 처리)
+    valid['n_cnt'] = valid['count'].apply(lambda x: int(re.sub(r'[^0-9]', '', str(x))) if re.search(r'\d', str(x)) else 1)
     
     agg = valid.groupby(['root_word', 'origin', 'pos'], as_index=False).agg({'n_cnt': 'sum'})
     
-    # 3. 임시 데이터프레임 생성
     temp_rows = []
     for _, item in agg.iterrows():
         root, origin, cnt = item['root_word'], clean_val(item['origin']), item['n_cnt']
+        # 쪽수 표시 형식: "139_2" (2회 이상) 또는 "139" (1회)
         val = f"{page_str}_{cnt}" if cnt > 1 else page_str
         temp_rows.append({'구분': origin, '자료': root, '쪽수1': val})
     
-    temp_df = pd.DataFrame(temp_rows)
-    
-    # 4. 마스터 데이터와 병합 (스마트 병합 함수 사용)
-    st.session_state.master_df = merge_master_data(st.session_state.master_df, temp_df)
-    
-    # 5. [자동 백업] 수행
-    save_backup_to_cloud(st.session_state.last_mode, st.session_state.master_df)
+    st.session_state.master_df = merge_master_data(st.session_state.master_df, pd.DataFrame(temp_rows))
+    save_backup_to_cloud(st.session_state.last_mode, st.session_state.master_df) # 자동 백업
     return True
 
 # =========================================================
@@ -419,7 +391,6 @@ if 'page_idx' not in st.session_state: st.session_state.page_idx = 0
 if 'file_hash' not in st.session_state: st.session_state.file_hash = None
 if 'file_bytes_cache' not in st.session_state: st.session_state.file_bytes_cache = None
 if 'start_page_offset' not in st.session_state: st.session_state.start_page_offset = 1
-# 텍스트 에디터 동기화 키
 if 'main_editor_area' not in st.session_state: st.session_state.main_editor_area = ""
 
 st.title("📝 국어활동 AI 분석기")
@@ -448,15 +419,15 @@ with st.sidebar:
         if st.button("병합하기"):
             try:
                 loaded = pd.read_excel(up_excel)
-                # [해결] 덮어쓰기 방지 -> 스마트 병합 함수 사용
+                # [해결] 스마트 병합 로직 적용 (덮어쓰기 방지)
                 if st.session_state.master_df is not None:
                     st.session_state.master_df = merge_master_data(st.session_state.master_df, loaded)
                 else:
                     st.session_state.master_df = loaded
-                st.success("병합 완료 (기존 데이터 보존됨)"); time.sleep(1); st.rerun()
+                st.success("안전하게 병합되었습니다."); time.sleep(1); st.rerun()
             except Exception as e: st.error(f"오류: {e}")
 
-    # [요청 반영] 복구 버튼만 남김
+    # [요청 반영] 불필요한 버튼 삭제, 복구만 남김
     if st.button("🔄 클라우드 복구"):
         r = load_backup_from_cloud(MODE_KEY)
         if r is not None: st.session_state.master_df = r; st.rerun()
@@ -466,15 +437,15 @@ with st.sidebar:
             o = st.text_input("원본"); r = st.text_input("원형")
             org = st.selectbox("분류", ["고","한","외","혼"]); p = st.selectbox("품사", ["명사","동사","형용사","부사","관형사","대명사"])
             if st.form_submit_button("추가"): 
-                # 1. 학습 데이터 전송
-                send_data_with_retry(sheet, [datetime.now().isoformat(), o, r, org, p, 'add', '수동'])
-                # 2. [해결] 현재 분석 결과 화면에 즉시 반영
-                st.session_state.analysis_result.append({
+                # [해결] 수동 추가 시 화면 테이블에 즉시 반영
+                new_entry = {
                     "delete_check": False, "count": "1회", "original_word": o,
-                    "root_word": r, "origin": f"🔵 {org}" if org=='고' else org, "pos": f"📦 {p}" if p=='명사' else p
-                })
-                st.toast("추가됨 (화면 반영 완료)")
-                st.rerun()
+                    "root_word": r, "origin": f"🔵 {org}" if org=='고' else org, 
+                    "pos": f"📦 {p}" if p=='명사' else p
+                }
+                st.session_state.analysis_result.append(new_entry)
+                send_data_with_retry(sheet, [datetime.now().isoformat(), o, r, org, p, 'add', '수동'])
+                st.toast("추가되었습니다."); st.rerun()
 
 st.subheader("1. 분석 자료 입력")
 main_file = st.file_uploader("PDF/이미지 파일", type=['pdf', 'png', 'jpg'])
@@ -536,7 +507,7 @@ with col_v:
                     st.session_state.main_editor_area = extract_text_unified(file_bytes, main_file.type, st.session_state.page_idx)
                     st.rerun()
             
-            # [기능 유지] 쪽수 계산 및 표시
+            # [복구] 쪽수 오프셋 및 표시
             st.session_state.start_page_offset = st.number_input("시작 쪽수(오프셋)", value=st.session_state.start_page_offset)
             page_str = str(st.session_state.page_idx + st.session_state.start_page_offset)
             st.caption(f"(현재 {st.session_state.page_idx+1}쪽 / 총 {total_pages}쪽) ➡️ 저장: {page_str}쪽")
@@ -555,37 +526,39 @@ with col_i:
         else:
             with st.spinner("분석 중..."):
                 s_img = img if (file_bytes and len(txt_val)<30) else None
-                # [해결] 스마트 분할 함수 사용 -> 긴 글 누락 방지
                 res = get_analysis_hybrid(txt_val, s_img, sheet_data, MODE_KEY)
                 
                 proc = []
                 om = {'고':'🔵 고', '한':'🟢 한', '외':'🔴 외', '혼':'🟣 혼'}
                 pm = {'명사':'📦 명사', '동사':'🏃 동사', '형용사':'🎨 형용사', '부사':'⚡ 부사', '관형사':'🔍 관형사', '대명사':'👤 대명사'}
                 
-                cnts = Counter([r.get('original_word', '미상') for r in res])
+                # [해결] 횟수 계산 시 (원형, 분류, 품사) 튜플을 키로 사용 -> 동음이의어(괄호) 구분
+                cnts = Counter([(r.get('root_word', ''), r.get('origin', '혼'), r.get('pos', '명사')) for r in res])
                 seen = set()
+                
                 for r in res:
                     root = r.get('root_word', '')
                     ro = r.get('origin', '혼')
                     rp = r.get('pos', '명사')
                     row = r.get('original_word', '미상')
-                    # 원형+분류+품사 조합으로 중복 체크 (동음이의어 구분)
-                    if (root, ro, rp) not in seen:
+                    
+                    key = (root, ro, rp)
+                    if key not in seen:
                         proc.append({
                             "delete_check": False,
-                            "count": f"{cnts[row]}회",
+                            "count": f"{cnts[key]}회", # 정확한 횟수 매핑
                             "original_word": row,
                             "root_word": root,
                             "origin": om.get(ro, ro),
                             "pos": pm.get(rp, rp)
                         })
-                        seen.add((root, ro, rp))
+                        seen.add(key)
                 st.session_state.analysis_result = proc
 
 if st.session_state.analysis_result:
     st.divider()
     st.subheader("2. 결과 확인")
-    # [해결] 데이터 에디터의 변경사항을 세션에 즉시 반영 (초기화 방지)
+    # [해결] key 바인딩으로 수정 상태 유지
     edited = st.data_editor(
         pd.DataFrame(st.session_state.analysis_result),
         column_config={
@@ -595,26 +568,23 @@ if st.session_state.analysis_result:
         },
         num_rows="dynamic",
         use_container_width=True,
-        key="data_editor_key" # 키 바인딩
+        key="editor_key"
     )
     
-    # 에디터 수정 시 세션 업데이트
+    # 수정된 데이터 즉시 세션 동기화
     if not edited.equals(pd.DataFrame(st.session_state.analysis_result)):
         st.session_state.analysis_result = edited.to_dict('records')
     
     c1, c2, c3 = st.columns(3)
     with c1:
         if st.button("⛔ 삭제"):
-            # 삭제는 체크된 항목을 제외하고 세션 업데이트
             dels = edited[edited['delete_check']==True]
             if not dels.empty and get_google_sheet_client():
                 l = [[datetime.now().isoformat(), r['original_word'], r['root_word'], "", "", 'delete', 'User'] for _, r in dels.iterrows()]
-                # 시트 전송은 별도지만, 화면 갱신은 즉시 수행
                 send_data_with_retry(get_google_sheet_client().open(SHEET_NAME).worksheet("South_Korea" if MODE_KEY=="SOUTH" else "North_Korea"), l, True)
-                
+            
             st.session_state.analysis_result = edited[edited['delete_check']==False].to_dict('records')
             st.rerun()
-            
     with c2:
         if st.button("💾 저장+이동 (▶)"):
             if save_logic(edited, page_str, get_google_sheet_client().open(SHEET_NAME).worksheet("South_Korea" if MODE_KEY=="SOUTH" else "North_Korea"), txt_val):
@@ -626,10 +596,8 @@ if st.session_state.analysis_result:
                     time.sleep(0.5); st.rerun()
     with c3:
         if st.button("💾 저장만"):
-            if save_logic(edited, page_str, get_google_sheet_client().open(SHEET_NAME).worksheet("South_Korea" if MODE_KEY=="SOUTH" else "North_Korea"), txt_val): 
-                st.success("저장 및 자동 백업 완료")
+            if save_logic(edited, page_str, get_google_sheet_client().open(SHEET_NAME).worksheet("South_Korea" if MODE_KEY=="SOUTH" else "North_Korea"), txt_val): st.success("저장 완료")
 
-# [9단계] 불필요한 하단 UI 삭제됨
 if st.session_state.master_df is not None:
     st.markdown("---")
     buf = io.BytesIO()
