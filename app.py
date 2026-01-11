@@ -17,7 +17,7 @@ from collections import Counter
 # [0] 기본 설정 및 상태 초기화
 # =========================================================
 st.set_page_config(
-    page_title="국어활동 AI 분석기 (Ghost)", 
+    page_title="국어활동 AI 분석기", 
     page_icon="📚", 
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -36,14 +36,14 @@ if 'extracted_text' not in st.session_state: st.session_state.extracted_text = "
 if 'debug_mode' not in st.session_state: st.session_state.debug_mode = False
 
 # =========================================================
-# [1] 디자인: 고스트 버튼 CSS 매직 (Step 0 전용)
+# [1] 디자인: 고스트 버튼 클릭 수정 버전 (Step 0)
 # =========================================================
 if st.session_state.step == 0:
     st.markdown("""
         <style>
-            /* 1. 디자인 카드 스타일 (HTML로 그려질 부분) */
+            /* 1. 디자인 카드 스타일 */
             .ghost-card {
-                height: 240px;
+                height: 220px;  /* 고정 높이 */
                 width: 100%;
                 border-radius: 20px;
                 padding: 30px 20px;
@@ -55,59 +55,69 @@ if st.session_state.step == 0:
                 align-items: center;
                 box-shadow: 0 10px 25px rgba(0,0,0,0.3);
                 transition: transform 0.3s ease;
-                margin-bottom: 20px;
+                margin-bottom: 0px; /* 마진 제거 */
+                
+                /* 중요: 카드가 클릭을 가로채지 않도록 설정 */
+                pointer-events: none; 
+                position: relative;
+                z-index: 1; /* 버튼보다 낮게 설정 */
             }
             
-            /* 카드 애니메이션 효과 */
-            .ghost-card:hover {
-                transform: translateY(-8px) scale(1.02);
-            }
-
             /* 색상 테마: 오션 블루 (남한) */
             .card-south {
                 background: linear-gradient(135deg, #1e3a8a 0%, #0ea5e9 100%);
-                border: 1px solid #7dd3fc;
+                border: 2px solid #7dd3fc;
             }
 
             /* 색상 테마: 로즈 와인 (북한) */
             .card-north {
                 background: linear-gradient(135deg, #881337 0%, #f43f5e 100%);
-                border: 1px solid #fda4af;
+                border: 2px solid #fda4af;
             }
 
             /* 색상 테마: 다크 글래스 (관리자) */
             .card-debug {
                 background: rgba(255, 255, 255, 0.05);
-                border: 1px solid #444;
+                border: 2px solid #555;
                 color: #aaa;
             }
-            .card-debug:hover {
-                background: rgba(255, 255, 255, 0.1);
-                color: #fff;
-                border: 1px solid #888;
-            }
 
-            .card-icon { font-size: 3rem; margin-bottom: 15px; }
-            .card-title { font-size: 1.5rem; font-weight: 700; margin-bottom: 10px; }
+            .card-icon { font-size: 3rem; margin-bottom: 10px; }
+            .card-title { font-size: 1.5rem; font-weight: 700; margin-bottom: 5px; }
             .card-desc { font-size: 1rem; opacity: 0.9; font-weight: 300; }
 
-            /* 2. 고스트 버튼 (투명 클릭 트랩) */
-            /* Streamlit 컬럼을 relative로 설정하여 절대 위치 기준점 잡기 */
-            div[data-testid="column"] {
-                position: relative;
-            }
-
-            /* 버튼을 카드 위로 덮어씌우고 투명하게 만듦 */
+            /* 2. 고스트 버튼 (투명 클릭 트랩) 수정 */
             div.stButton > button {
-                position: absolute !important;
-                top: 0 !important;
-                left: 0 !important;
                 width: 100% !important;
-                height: 240px !important; /* 카드 높이와 동일하게 */
-                opacity: 0 !important;    /* 완전 투명 */
-                z-index: 10 !important;   /* 카드보다 위에 배치 */
+                height: 220px !important; /* 카드 높이와 동일 */
+                
+                /* 위치 강제 조정: 카 위로 끌어올림 */
+                margin-top: -230px !important; 
+                
+                /* 디자인 제거 (투명화) */
+                background-color: transparent !important;
+                border: none !important;
+                color: transparent !important;
+                
+                /* 최상단 배치 및 클릭 활성화 */
+                position: relative !important;
+                z-index: 999 !important; /* 무조건 최상위 */
                 cursor: pointer !important;
             }
+
+            /* 버튼 호버 시 카드 효과 연동은 CSS로는 한계가 있어, 
+               버튼 자체에 투명도를 0으로 유지하되 클릭은 되게 함 */
+            div.stButton > button:hover {
+                background-color: transparent !important;
+                border: none !important;
+                color: transparent !important;
+            }
+            div.stButton > button:active {
+                background-color: transparent !important;
+            }
+            
+            /* 기본 텍스트 폰트 */
+            .stTextArea textarea { font-family: 'Malgun Gothic', sans-serif !important; }
         </style>
     """, unsafe_allow_html=True)
 else:
@@ -196,12 +206,11 @@ def save_backup_to_cloud(mode_key, df):
     except: return False
 
 # =========================================================
-# [3] AI 엔진 & 데이터 로직 (핵심)
+# [3] AI 엔진 & 데이터 로직
 # =========================================================
 def generate_prompt_from_sheet(sheet_data):
     if not sheet_data: return ""
     rules = []
-    # [Soft Filter] 차단(Ban)이 아닌 제외 권장(Advice)
     for row in sheet_data[-100:]:
         if row.get('action') == 'delete':
             rules.append(f"- [제외 권장]: '{row.get('original_word')}'는 과거 삭제 이력이 있습니다. 문맥상 불필요하면 제외하세요.")
@@ -281,7 +290,6 @@ def calc_freq(row):
     return total
 
 def merge_master_data(old_df, new_df):
-    """[스마트 병합] 덮어쓰기 없음, 쪽수 중복 제거, 횟수 보존"""
     if old_df is None or old_df.empty: return new_df
     key_cols = ['자료', '구분']
     merged = pd.merge(old_df, new_df, on=key_cols, how='outer', suffixes=('_old', '_new'))
@@ -347,10 +355,8 @@ def get_page_image(file_bytes, file_type, page_idx):
     return None
 
 # =========================================================
-# [4] UI: 메인 루프 (10단계 Wizard Flow)
+# [4] UI: 메인 루프
 # =========================================================
-
-# 진행바 (Step 1 이상일 때만)
 if st.session_state.step > 0:
     steps = ["1. 모드 선택", "2. 데이터 소스", "3. 자료 입력", "4. 결과 확인"]
     st.markdown('<div class="progress-box">', unsafe_allow_html=True)
@@ -362,7 +368,7 @@ if st.session_state.step > 0:
     st.markdown('</div>', unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# STEP 0: 시작 화면 (고스트 버튼 적용)
+# STEP 0: 시작 화면 (클릭 수정 완료)
 # ---------------------------------------------------------
 if st.session_state.step == 0:
     st.markdown("<h1 style='text-align: center; margin-bottom: 20px;'>📚 국어활동 AI 분석기</h1>", unsafe_allow_html=True)
@@ -371,7 +377,7 @@ if st.session_state.step == 0:
     c1, c2, c3 = st.columns(3)
     
     with c1:
-        # 1. 예쁜 카드 그리기 (HTML)
+        # 1. 디자인 카드 (클릭 통과)
         st.markdown("""
         <div class="ghost-card card-south">
             <div class="card-icon">🏛️</div>
@@ -379,7 +385,7 @@ if st.session_state.step == 0:
             <div class="card-desc">표준국어대사전 기준<br>두음법칙 적용</div>
         </div>
         """, unsafe_allow_html=True)
-        # 2. 투명 버튼 덮어쓰기
+        # 2. 투명 버튼 (클릭 전용, z-index 높음)
         if st.button("btn_south_hidden", key="btn_south"):
             st.session_state.mode_key = "SOUTH"
             st.session_state.step = 1
@@ -387,7 +393,6 @@ if st.session_state.step == 0:
             time.sleep(0.5); st.rerun()
 
     with c2:
-        # 1. 예쁜 카드 그리기 (HTML)
         st.markdown("""
         <div class="ghost-card card-north">
             <div class="card-icon">🏔️</div>
@@ -395,7 +400,6 @@ if st.session_state.step == 0:
             <div class="card-desc">북한 문화어 규범 기준<br>두음법칙 미적용</div>
         </div>
         """, unsafe_allow_html=True)
-        # 2. 투명 버튼 덮어쓰기
         if st.button("btn_north_hidden", key="btn_north"):
             st.session_state.mode_key = "NORTH"
             st.session_state.step = 1
@@ -403,7 +407,6 @@ if st.session_state.step == 0:
             time.sleep(0.5); st.rerun()
 
     with c3:
-        # 1. 예쁜 카드 그리기 (HTML)
         st.markdown("""
         <div class="ghost-card card-debug">
             <div class="card-icon">🛠️</div>
@@ -411,13 +414,12 @@ if st.session_state.step == 0:
             <div class="card-desc">시스템 로그 확인 및<br>긴급 오류 해결</div>
         </div>
         """, unsafe_allow_html=True)
-        # 2. 투명 버튼 덮어쓰기
         if st.button("btn_debug_hidden", key="btn_debug"):
             st.session_state.debug_mode = True
             st.info("로그 패널이 활성화되었습니다.")
 
 # ---------------------------------------------------------
-# STEP 1: 데이터 소스 선택
+# STEP 1: 데이터 소스
 # ---------------------------------------------------------
 elif st.session_state.step == 1:
     st.header("📂 데이터 소스 선택")
@@ -431,7 +433,7 @@ elif st.session_state.step == 1:
             if up_excel:
                 try:
                     loaded = pd.read_excel(up_excel)
-                    st.session_state.master_df = loaded # 병합 대기
+                    st.session_state.master_df = loaded
                     st.session_state.step = 2
                     st.toast("데이터 로드 완료! 저장 시 자동으로 합쳐집니다.")
                     time.sleep(0.5); st.rerun()
@@ -451,7 +453,7 @@ elif st.session_state.step == 1:
     if st.button("⬅️ 모드 다시 선택"): st.session_state.step = 0; st.rerun()
 
 # ---------------------------------------------------------
-# STEP 2: 자료 입력 (파일 vs 텍스트)
+# STEP 2: 자료 입력
 # ---------------------------------------------------------
 elif st.session_state.step == 2:
     if st.sidebar.button("🏠 처음으로 (초기화)"):
@@ -462,12 +464,10 @@ elif st.session_state.step == 2:
     
     tab1, tab2 = st.tabs(["📄 파일 분석 (PDF/이미지)", "✍️ 텍스트 직접 입력"])
     
-    # [Tab 1] 파일 분석
     with tab1:
         file = st.file_uploader("파일 업로드", type=['pdf', 'png', 'jpg'])
         if file:
             file_bytes = file.getvalue()
-            # 파일 변경 시 리셋
             if st.session_state.file_bytes != file_bytes:
                 st.session_state.file_bytes = file_bytes
                 st.session_state.file_type = file.type
@@ -475,8 +475,6 @@ elif st.session_state.step == 2:
                 st.session_state.extracted_text = extract_text_unified(file_bytes, file.type, 0)
             
             c_view, c_text = st.columns(2)
-            
-            # 왼쪽: 뷰어
             with c_view:
                 st.info("📷 원본 미리보기")
                 img = get_page_image(st.session_state.file_bytes, st.session_state.file_type, st.session_state.page_idx)
@@ -494,7 +492,6 @@ elif st.session_state.step == 2:
                         st.rerun()
                     st.session_state.start_offset = st.number_input("시작 쪽수 설정", value=st.session_state.start_offset)
             
-            # 오른쪽: 텍스트 검수
             with c_text:
                 st.info("✍️ 추출 텍스트 검수 (수정 가능)")
                 txt_input = st.text_area("에디터", value=st.session_state.extracted_text, height=500, label_visibility="collapsed")
@@ -506,7 +503,6 @@ elif st.session_state.step == 2:
                         send_img = st.session_state.file_bytes if len(txt_input) < 50 else None
                         res = get_analysis_hybrid(txt_input, send_img, s_data, st.session_state.mode_key)
                         
-                        # [후처리] 동음이의어 키 분리
                         proc = []
                         temp_dict = {}
                         om = {'고':'🔵 고', '한':'🟢 한', '외':'🔴 외', '혼':'🟣 혼'}
@@ -533,7 +529,6 @@ elif st.session_state.step == 2:
                         st.session_state.step = 3
                         st.rerun()
 
-    # [Tab 2] 직접 입력
     with tab2:
         direct_txt = st.text_area("분석할 텍스트를 입력하세요", height=400)
         if st.button("🚀 분석 실행 (Direct)", type="primary"):
@@ -542,7 +537,6 @@ elif st.session_state.step == 2:
                 s_data = get_sheet_data_fresh(st.session_state.mode_key)[1]
                 res = get_analysis_hybrid(direct_txt, None, s_data, st.session_state.mode_key)
                 
-                # [후처리] 동일 로직
                 proc = []
                 temp_dict = {}
                 om = {'고':'🔵 고', '한':'🟢 한', '외':'🔴 외', '혼':'🟣 혼'}
@@ -572,7 +566,6 @@ elif st.session_state.step == 2:
 elif st.session_state.step == 3:
     st.header("📊 분석 결과 확인")
     
-    # [모달] 수동 추가
     @st.experimental_dialog("➕ 단어 수동 추가")
     def add_manual_item():
         with st.form("add_form"):
@@ -597,7 +590,6 @@ elif st.session_state.step == 3:
                 send_data_with_retry(sheet, [datetime.now().isoformat(), o, r, org, p, 'add', '수동'])
                 st.rerun()
 
-    # 데이터 에디터
     df_res = pd.DataFrame(st.session_state.analysis_result)
     edited = st.data_editor(
         df_res,
@@ -617,7 +609,6 @@ elif st.session_state.step == 3:
     if not edited.equals(df_res):
         st.session_state.analysis_result = edited.to_dict('records')
 
-    # 액션 버튼
     ac1, ac2, ac3 = st.columns([1, 1, 2])
     with ac1:
         if st.button("➕ 단어 추가", use_container_width=True): add_manual_item()
@@ -632,17 +623,14 @@ elif st.session_state.step == 3:
                 st.rerun()
             else: st.toast("삭제할 항목을 선택해주세요.")
 
-    # 저장 공통 로직
     def save_logic_common():
         sheet = get_sheet_data_fresh(st.session_state.mode_key)[0]
-        # 1. 학습 데이터 전송
         logs = []
         for _, row in edited.iterrows():
             if not row['delete_check']:
                 logs.append([datetime.now().isoformat(), row['original_word'], row['root_word'], clean_val_for_save(row['origin']), clean_val_for_save(row['pos']), 'modify', 'result'])
         send_data_with_retry(sheet, logs, True)
         
-        # 2. 데이터 병합
         valid = edited[edited['delete_check']==False].copy()
         valid['n_cnt'] = valid['count'].apply(lambda x: int(re.sub(r'[^0-9]', '', str(x))) if re.search(r'\d', str(x)) else 1)
         agg = valid.groupby(['root_word', 'origin', 'pos'], as_index=False).agg({'n_cnt': 'sum'})
@@ -657,7 +645,6 @@ elif st.session_state.step == 3:
         save_backup_to_cloud(st.session_state.mode_key, st.session_state.master_df)
 
     with ac3:
-        # PDF이고 다음 장이 있을 때만 '저장 후 다음' 노출
         is_pdf = st.session_state.file_type and "pdf" in st.session_state.file_type
         total_p = 1
         if is_pdf and FITZ_AVAILABLE:
