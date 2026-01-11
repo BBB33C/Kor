@@ -36,6 +36,8 @@ if 'start_offset' not in st.session_state: st.session_state.start_offset = 1
 if 'extracted_text' not in st.session_state: st.session_state.extracted_text = ""
 if 'debug_mode' not in st.session_state: st.session_state.debug_mode = False
 if 'last_raw_response' not in st.session_state: st.session_state.last_raw_response = ""
+# [신규] 탭 상태 저장을 위한 변수 (0: 파일 분석, 1: 직접 입력)
+if 'current_tab_idx' not in st.session_state: st.session_state.current_tab_idx = 0 
 
 # =========================================================
 # [1] 디자인: CSS 매직
@@ -67,6 +69,12 @@ else:
             .stApp { background-color: #0e1117 !important; color: #ffffff !important; }
             .stTextArea textarea { font-family: 'Malgun Gothic', sans-serif !important; font-size: 16px !important; line-height: 1.6 !important; }
             .stButton button { border-radius: 8px; font-weight: bold; height: auto; }
+            /* 라디오 버튼을 탭처럼 보이게 꾸미기 */
+            div.stRadio > div[role="radiogroup"] {
+                display: flex;
+                flex-direction: row;
+                gap: 10px;
+            }
         </style>
     """, unsafe_allow_html=True)
 
@@ -395,8 +403,15 @@ elif st.session_state.step == 2:
         if st.button("🏠 처음으로\n(초기화)", use_container_width=True):
             st.session_state.clear(); st.rerun()
 
-    tab1, tab2 = st.tabs(["📄 파일 분석", "✍️ 직접 입력"])
-    
+    # [중요] 탭 상태 유지 (st.radio 사용)
+    input_method = st.radio(
+        "입력 방식 선택", 
+        ["📄 파일 분석", "✍️ 직접 입력"], 
+        horizontal=True,
+        index=st.session_state.current_tab_idx, # 저장된 탭 인덱스 사용
+        label_visibility="collapsed"
+    )
+
     # [로직] 분석 실행 및 필터링
     def run_analysis_logic(txt, img=None):
         if not txt or not txt.strip():
@@ -415,21 +430,15 @@ elif st.session_state.step == 2:
             pm = {'명사':'📦 명사', '동사':'🏃 동사', '형용사':'🎨 형용사', '부사':'⚡ 부사', '관형사':'🔍 관형사', '대명사':'👤 대명사', '감탄사':'❗ 감탄사'}
             
             for r in res:
-                # [데이터 정제]
                 o_word = str(r.get('원본') or r.get('original_word') or '').strip()
                 r_word = str(r.get('원형') or r.get('root_word') or '').strip()
                 origin_val = str(r.get('분류') or r.get('origin') or '혼').strip()
                 pos_val = str(r.get('품사') or r.get('pos') or '명사').strip()
                 
-                # 1. 빈 데이터 필터링
                 if not o_word or o_word.lower() == 'none': continue
                 if not r_word or r_word.lower() == 'none': continue
-                
-                # 2. 특수문자만 있는 경우 필터링 (한글/영어/숫자가 하나라도 없으면 제외)
                 if not re.search(r'[가-힣a-zA-Z0-9]', o_word): continue
                 if not re.search(r'[가-힣a-zA-Z0-9]', r_word): continue
-
-                # 3. 조사/어미/문장부호 필터링
                 if pos_val in ['조사', '어미', '문장부호', '특수문자', 'Punctuation', 'Josa', 'Eomi']: continue
 
                 key = (r_word, origin_val, pos_val)
@@ -456,7 +465,9 @@ elif st.session_state.step == 2:
             st.session_state.step = 3
             st.rerun()
 
-    with tab1:
+    # 탭 내용 표시
+    if input_method == "📄 파일 분석":
+        st.caption("PDF 또는 이미지 파일을 업로드하여 텍스트를 추출하고 분석합니다.")
         file = st.file_uploader("파일 업로드", type=['pdf', 'png', 'jpg'])
         if file:
             file_bytes = file.getvalue()
@@ -478,27 +489,34 @@ elif st.session_state.step == 2:
                         st.rerun()
                     st.session_state.start_offset = st.number_input("시작 쪽수", value=st.session_state.start_offset)
             with c2:
+                # [중요] 세션 스테이트의 텍스트를 value로 지정하여 내용 보존
                 txt_input = st.text_area("에디터", value=st.session_state.extracted_text, height=500)
-                st.session_state.extracted_text = txt_input
+                st.session_state.extracted_text = txt_input # 수정 사항 실시간 반영
+                
                 if st.button("🚀 분석 실행", type="primary", use_container_width=True, key="run_file"):
+                    st.session_state.current_tab_idx = 0 # 탭 위치 저장
                     run_analysis_logic(txt_input, st.session_state.file_bytes)
 
-    with tab2:
-        direct_txt = st.text_area("텍스트 입력", height=400)
+    elif input_method == "✍️ 직접 입력":
+        st.caption("분석할 텍스트를 직접 입력하거나 붙여넣으세요.")
+        # [중요] 세션 스테이트의 텍스트를 value로 지정하여 내용 보존
+        direct_txt = st.text_area("텍스트 입력", value=st.session_state.extracted_text, height=400)
+        st.session_state.extracted_text = direct_txt # 수정 사항 실시간 반영
+        
         if st.button("🚀 분석 실행", type="primary", key="run_direct"):
-            st.session_state.extracted_text = direct_txt
+            st.session_state.current_tab_idx = 1 # 탭 위치 저장
             run_analysis_logic(direct_txt)
 
 # ---------------------------------------------------------
 # STEP 3: 결과 확인 (뒤로가기 버튼 추가됨)
 # ---------------------------------------------------------
 elif st.session_state.step == 3:
-    # 상단 레이아웃: 제목 + 뒤로가기 버튼
     c_head, c_btn = st.columns([8, 2])
     with c_head:
         st.header("📊 분석 결과 확인")
     with c_btn:
-        if st.button("⬅️ 입력창으로 돌아가기", use_container_width=True):
+        # [추가] 뒤로가기 버튼 (입력 내용 유지됨)
+        if st.button("⬅️ 입력 수정하기", use_container_width=True):
             st.session_state.step = 2
             st.rerun()
     
