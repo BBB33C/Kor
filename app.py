@@ -36,88 +36,55 @@ if 'extracted_text' not in st.session_state: st.session_state.extracted_text = "
 if 'debug_mode' not in st.session_state: st.session_state.debug_mode = False
 
 # =========================================================
-# [1] 디자인: 고스트 버튼 클릭 수정 버전 (Step 0)
+# [1] 디자인: 그라데이션 카드 버튼 (CSS 강제 적용)
 # =========================================================
 if st.session_state.step == 0:
     st.markdown("""
         <style>
-            /* 1. 디자인 카드 스타일 */
-            .ghost-card {
-                height: 220px;  /* 고정 높이 */
-                width: 100%;
-                border-radius: 20px;
-                padding: 30px 20px;
-                text-align: center;
-                color: white;
-                display: flex;
-                flex-direction: column;
-                justify-content: center;
-                align-items: center;
-                box-shadow: 0 10px 25px rgba(0,0,0,0.3);
-                transition: transform 0.3s ease;
-                margin-bottom: 0px; /* 마진 제거 */
-                
-                /* 중요: 카드가 클릭을 가로채지 않도록 설정 */
-                pointer-events: none; 
-                position: relative;
-                z-index: 1; /* 버튼보다 낮게 설정 */
-            }
-            
-            /* 색상 테마: 오션 블루 (남한) */
-            .card-south {
-                background: linear-gradient(135deg, #1e3a8a 0%, #0ea5e9 100%);
-                border: 2px solid #7dd3fc;
-            }
-
-            /* 색상 테마: 로즈 와인 (북한) */
-            .card-north {
-                background: linear-gradient(135deg, #881337 0%, #f43f5e 100%);
-                border: 2px solid #fda4af;
-            }
-
-            /* 색상 테마: 다크 글래스 (관리자) */
-            .card-debug {
-                background: rgba(255, 255, 255, 0.05);
-                border: 2px solid #555;
-                color: #aaa;
-            }
-
-            .card-icon { font-size: 3rem; margin-bottom: 10px; }
-            .card-title { font-size: 1.5rem; font-weight: 700; margin-bottom: 5px; }
-            .card-desc { font-size: 1rem; opacity: 0.9; font-weight: 300; }
-
-            /* 2. 고스트 버튼 (투명 클릭 트랩) 수정 */
-            div.stButton > button {
-                width: 100% !important;
-                height: 220px !important; /* 카드 높이와 동일 */
-                
-                /* 위치 강제 조정: 카 위로 끌어올림 */
-                margin-top: -230px !important; 
-                
-                /* 디자인 제거 (투명화) */
-                background-color: transparent !important;
-                border: none !important;
-                color: transparent !important;
-                
-                /* 최상단 배치 및 클릭 활성화 */
-                position: relative !important;
-                z-index: 999 !important; /* 무조건 최상위 */
-                cursor: pointer !important;
-            }
-
-            /* 버튼 호버 시 카드 효과 연동은 CSS로는 한계가 있어, 
-               버튼 자체에 투명도를 0으로 유지하되 클릭은 되게 함 */
-            div.stButton > button:hover {
-                background-color: transparent !important;
-                border: none !important;
-                color: transparent !important;
-            }
-            div.stButton > button:active {
-                background-color: transparent !important;
-            }
-            
-            /* 기본 텍스트 폰트 */
+            /* 기본 폰트 */
             .stTextArea textarea { font-family: 'Malgun Gothic', sans-serif !important; }
+            
+            /* 1. 버튼을 카드처럼 변신시키기 */
+            div.stButton > button {
+                width: 100%;
+                height: 260px; /* 카드 높이 확보 */
+                border-radius: 20px !important;
+                border: 0px solid transparent !important;
+                color: white !important;
+                transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
+                box-shadow: 0 4px 15px rgba(0,0,0,0.3) !important;
+                font-size: 1.1rem !important;
+                font-weight: 500 !important;
+                white-space: pre-wrap; /* 줄바꿈 허용 */
+                line-height: 1.6 !important;
+                padding: 20px !important;
+            }
+            
+            /* 2. 호버 효과: 둥실 떠오르며 밝아짐 */
+            div.stButton > button:hover {
+                transform: translateY(-8px) scale(1.01);
+                box-shadow: 0 15px 35px rgba(0,0,0,0.5) !important;
+                filter: brightness(1.1);
+            }
+
+            /* 3. 색상 테마 적용 (CSS 선택자 순서 중요) */
+            
+            /* 첫 번째 컬럼: 대한민국 (오션 블루) */
+            div[data-testid="column"]:nth-of-type(1) div.stButton > button {
+                background: linear-gradient(145deg, #1e3a8a 0%, #0369a1 60%, #06b6d4 100%) !important;
+            }
+            
+            /* 두 번째 컬럼: 북한 (로즈 와인) */
+            div[data-testid="column"]:nth-of-type(2) div.stButton > button {
+                background: linear-gradient(145deg, #881337 0%, #be123c 60%, #fb7185 100%) !important;
+            }
+            
+            /* 세 번째 컬럼: 관리자 (다크 글래스) */
+            div[data-testid="column"]:nth-of-type(3) div.stButton > button {
+                background: linear-gradient(145deg, #1f2937 0%, #374151 100%) !important;
+                border: 1px solid #555 !important;
+                color: #ccc !important;
+            }
         </style>
     """, unsafe_allow_html=True)
 else:
@@ -368,7 +335,7 @@ if st.session_state.step > 0:
     st.markdown('</div>', unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# STEP 0: 시작 화면 (클릭 수정 완료)
+# STEP 0: 시작 화면 (안정적인 그라데이션 카드 버튼)
 # ---------------------------------------------------------
 if st.session_state.step == 0:
     st.markdown("<h1 style='text-align: center; margin-bottom: 20px;'>📚 국어활동 AI 분석기</h1>", unsafe_allow_html=True)
@@ -376,45 +343,29 @@ if st.session_state.step == 0:
     
     c1, c2, c3 = st.columns(3)
     
+    # [1] 대한민국 표준어 (오션 블루)
     with c1:
-        # 1. 디자인 카드 (클릭 통과)
-        st.markdown("""
-        <div class="ghost-card card-south">
-            <div class="card-icon">🏛️</div>
-            <div class="card-title">대한민국 표준어</div>
-            <div class="card-desc">표준국어대사전 기준<br>두음법칙 적용</div>
-        </div>
-        """, unsafe_allow_html=True)
-        # 2. 투명 버튼 (클릭 전용, z-index 높음)
-        if st.button("btn_south_hidden", key="btn_south"):
+        # 버튼 텍스트에 유니코드와 줄바꿈을 활용하여 '카드 안의 버튼'처럼 보이게 연출
+        label_south = "🏛️\n\n대한민국 표준어\n\n(표준국어대사전 기준)\n\n\n[ 표준어 모드 입장 ➜ ]"
+        if st.button(label_south, key="btn_south", use_container_width=True):
             st.session_state.mode_key = "SOUTH"
             st.session_state.step = 1
             st.toast("✅ 대한민국 학습 서버에 연결되었습니다.")
             time.sleep(0.5); st.rerun()
 
+    # [2] 북한 문화어 (로즈 와인)
     with c2:
-        st.markdown("""
-        <div class="ghost-card card-north">
-            <div class="card-icon">🏔️</div>
-            <div class="card-title">북한 문화어</div>
-            <div class="card-desc">북한 문화어 규범 기준<br>두음법칙 미적용</div>
-        </div>
-        """, unsafe_allow_html=True)
-        if st.button("btn_north_hidden", key="btn_north"):
+        label_north = "🏔️\n\n북한 문화어\n\n(문화어 규범 기준)\n\n\n[ 문화어 모드 입장 ➜ ]"
+        if st.button(label_north, key="btn_north", use_container_width=True):
             st.session_state.mode_key = "NORTH"
             st.session_state.step = 1
             st.toast("✅ 북한 학습 서버에 연결되었습니다.")
             time.sleep(0.5); st.rerun()
 
+    # [3] 관리자 모드 (다크 글래스)
     with c3:
-        st.markdown("""
-        <div class="ghost-card card-debug">
-            <div class="card-icon">🛠️</div>
-            <div class="card-title">관리자 모드</div>
-            <div class="card-desc">시스템 로그 확인 및<br>긴급 오류 해결</div>
-        </div>
-        """, unsafe_allow_html=True)
-        if st.button("btn_debug_hidden", key="btn_debug"):
+        label_debug = "🛠️\n\n관리자 모드\n\n(시스템 로그 확인)\n\n\n[ 로그 패널 열기 ]"
+        if st.button(label_debug, key="btn_debug", use_container_width=True):
             st.session_state.debug_mode = True
             st.info("로그 패널이 활성화되었습니다.")
 
