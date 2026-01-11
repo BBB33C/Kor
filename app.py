@@ -266,7 +266,7 @@ def merge_master_data(old_df, new_df):
     result_df = result_df.sort_values(['sk', '자료']).drop('sk', axis=1)
     return result_df
 
-# [AI 분석 함수] 어종 분류 및 필터링 대폭 강화
+# [AI 분석 함수] '하다' 규칙 삭제됨
 def get_analysis_hybrid(text, image_bytes, sheet_data, mode_key):
     prompt = f"""
     당신은 '{"대한민국 표준어" if mode_key=="SOUTH" else "북한 문화어"}' 형태소 분석 전문가입니다.
@@ -276,7 +276,6 @@ def get_analysis_hybrid(text, image_bytes, sheet_data, mode_key):
     1. **특수문자 및 문장부호 제거**: 마침표(.), 쉼표(,), 물음표(?), 느낌표(!), 괄호, 따옴표 등 모든 문장부호와 특수문자는 결과에 절대 포함하지 마세요.
     2. **조사 및 어미 제외**: '은/는/이/가/을/를' 등의 조사와 '-다/요/까' 등의 어미는 독립된 항목으로 출력하지 마세요.
     3. **의존 명사 포함**: '것', '수', '만큼', '따위' 등의 의존 명사는 '명사'로 분류하여 결과에 포함하세요.
-    4. **'하다' 동사 처리**: '명사+하다'(예: 사랑하다, 공부하다)는 '명사'(예: 사랑, 공부)로 분류하고 원형도 명사로 추출하세요.
     
     [어종(Origin) 분류 기준 (정확도 필수)]
     다음 기준에 따라 '분류'를 엄격하게 판단하세요. 단순히 한글로 써있다고 '고(고유어)'로 판단하면 안 됩니다.
