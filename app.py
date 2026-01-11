@@ -20,7 +20,7 @@ st.set_page_config(
     page_title="국어활동 AI 분석기", 
     page_icon="📚", 
     layout="wide",
-    initial_sidebar_state="collapsed" # 사이드바 숨김(구석에 존재)
+    initial_sidebar_state="collapsed" # 사이드바 기본 숨김
 )
 
 # 세션 상태 초기화
@@ -48,7 +48,7 @@ if st.session_state.step == 0:
             /* Streamlit의 메인 영역 버튼만 타겟팅 */
             div.block-container div[data-testid="column"] div.stButton > button {
                 width: 100%;
-                height: 280px; /* 버튼 크기 */
+                height: 320px; /* 버튼 크기 대폭 확대 */
                 background-color: #262730 !important;
                 border: 2px solid rgba(255,255,255,0.1) !important;
                 border-radius: 20px !important;
@@ -57,7 +57,7 @@ if st.session_state.step == 0:
                 box-shadow: 0 4px 6px rgba(0,0,0,0.3) !important;
                 
                 /* 텍스트 스타일 */
-                font-size: 1.3rem !important;
+                font-size: 1.5rem !important; /* 글자 크기도 확대 */
                 font-weight: 700 !important;
                 white-space: pre-wrap;
                 line-height: 1.6 !important;
@@ -74,14 +74,14 @@ if st.session_state.step == 0:
             /* [왼쪽 컬럼] -> Cyan Blue Glow */
             div[data-testid="column"]:nth-of-type(1) div.stButton > button:hover {
                 border-color: #00ccff !important;
-                box-shadow: 0 0 25px rgba(0, 204, 255, 0.5) !important;
+                box-shadow: 0 0 30px rgba(0, 204, 255, 0.6) !important;
                 color: #00ccff !important;
             }
 
             /* [오른쪽 컬럼] -> Neon Red Glow */
             div[data-testid="column"]:nth-of-type(2) div.stButton > button:hover {
                 border-color: #ff3366 !important;
-                box-shadow: 0 0 25px rgba(255, 51, 102, 0.5) !important;
+                box-shadow: 0 0 30px rgba(255, 51, 102, 0.6) !important;
                 color: #ff3366 !important;
             }
         </style>
@@ -328,12 +328,12 @@ with st.sidebar:
     st.markdown("### ⚙️ 설정")
     if st.session_state.debug_mode:
         st.success("🐞 디버깅 모드 ON")
-        if st.button("디버깅 모드 끄기"):
+        if st.button("디버깅 모드 끄기", use_container_width=True):
             st.session_state.debug_mode = False
             st.rerun()
     else:
-        st.markdown("<br><br><br><br><br>", unsafe_allow_html=True) # 아래쪽으로 밀기
-        if st.button("🛠️ 관리자 모드 켜기"):
+        st.markdown("<br>"*5, unsafe_allow_html=True) # 여백
+        if st.button("🛠️ 관리자 모드 켜기", use_container_width=True):
             st.session_state.debug_mode = True
             st.rerun()
 
@@ -360,11 +360,11 @@ if st.session_state.step == 0:
     else:
         st.markdown("<p style='text-align: center; color: #888; margin-bottom: 50px;'>원하는 언어 규범을 선택하여 분석을 시작하세요.</p>", unsafe_allow_html=True)
     
-    # 2개의 컬럼만 사용 (집중도 UP)
+    # 2개의 컬럼만 사용 (집중도 UP & 버튼 크기 확대)
     c1, c2 = st.columns(2)
     
     with c1:
-        label_south = "🏛️\n\n대한민국 표준어\n\n(표준국어대사전 기준)"
+        label_south = "🏛️\n\n대한민국 표준어\n\n(표준국어대사전 기준)\n\n[ 시작하기 ]"
         if st.button(label_south, key="btn_south", use_container_width=True):
             st.session_state.mode_key = "SOUTH"
             st.session_state.step = 1
@@ -372,7 +372,7 @@ if st.session_state.step == 0:
             time.sleep(0.5); st.rerun()
 
     with c2:
-        label_north = "🏔️\n\n북한 문화어\n\n(문화어 규범 기준)"
+        label_north = "🏔️\n\n북한 문화어\n\n(문화어 규범 기준)\n\n[ 시작하기 ]"
         if st.button(label_north, key="btn_north", use_container_width=True):
             st.session_state.mode_key = "NORTH"
             st.session_state.step = 1
