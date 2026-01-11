@@ -13,7 +13,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
 from collections import Counter
 import traceback
-from PIL import Image # 이미지 검증 및 재인코딩용 추가
+from PIL import Image # 이미지 검증 및 재인코딩용 필수 라이브러리
 
 # =========================================================
 # [0] 기본 설정 및 상태 초기화
@@ -95,7 +95,7 @@ except ImportError:
     FITZ_AVAILABLE = False
 
 # =========================================================
-# [2] 구글 시트 연동 및 API 유틸리티
+# [2] 구글 시트 및 API 유틸리티
 # =========================================================
 try:
     if "GEMINI_API_KEY" in st.secrets:
@@ -154,7 +154,7 @@ def save_backup_to_cloud(mode_key, df):
     except: return False
 
 # =========================================================
-# [3] 데이터 가공 및 비교 학습 엔진
+# [3] 데이터 병합 및 비교 학습 엔진
 # =========================================================
 def clean_val_for_save(v):
     if isinstance(v, str): 
@@ -212,6 +212,7 @@ def save_logic_with_learning():
     final_results = pd.DataFrame(st.session_state.analysis_result)
     initial_draft = pd.DataFrame(st.session_state.initial_draft)
     
+    # 1. 교정 및 삭제 학습
     for _, draft_row in initial_draft.iterrows():
         orig = draft_row['원본']
         match = final_results[final_results['원본'] == orig]
@@ -232,6 +233,7 @@ def save_logic_with_learning():
                     draft_row['원형'], draft_row['분류']
                 ])
                 
+    # 2. 추가 학습
     draft_originals = initial_draft['원본'].tolist()
     for _, final_row in final_results.iterrows():
         if final_row['원본'] not in draft_originals and not final_row['삭제']:
@@ -244,10 +246,12 @@ def save_logic_with_learning():
             
     if learning_logs: send_data_with_retry(sheet, learning_logs, True)
     
+    # 마스터 데이터 업데이트 및 쪽수 계산
     valid = final_results[final_results['삭제']==False].copy()
     valid['n_cnt'] = valid['횟수'].apply(lambda x: int(re.sub(r'[^0-9]', '', str(x))) if re.search(r'\d', str(x)) else 1)
     agg = valid.groupby(['원형', '분류', '품사'], as_index=False).agg({'n_cnt': 'sum'})
     
+    # 시작 쪽수 반영 자동 계산 로직
     p_num = str(st.session_state.page_idx + st.session_state.start_offset)
     temp_rows = []
     for _, item in agg.iterrows():
@@ -269,22 +273,26 @@ def clean_raw_text(text):
     return '\n'.join(lines)
 
 def process_image_for_api(image_bytes):
-    """[해결책 적용] 이미지를 PIL로 열어 최적화 인코딩 수행"""
+    """[해결책 적용] 이미지를 PIL로 명시적 처리하여 Error 400 해결"""
+    if not image_bytes: return None
     try:
+        # 바이트 스트림을 파일 객체로 변환
         img = Image.open(io.BytesIO(image_bytes))
-        # RGB 모드로 변환 (알파 채널 문제 방지)
+        
+        # RGB 모드로 통일 (알파 채널 제거)
         if img.mode in ("RGBA", "P"):
             img = img.convert("RGB")
         
-        # 해상도가 너무 높으면 조정 (Memory Error 방지)
-        if max(img.size) > 2000:
-            img.thumbnail((2000, 2000), Image.Resampling.LANCZOS)
+        # 해상도 제한 (Gemini API 안정성용)
+        if max(img.size) > 2500:
+            img.thumbnail((2500, 2500), Image.Resampling.LANCZOS)
             
         buffer = io.BytesIO()
         img.save(buffer, format="PNG", optimize=True)
         return buffer.getvalue()
     except Exception as e:
-        st.error(f"이미지 전처리 오류: {str(e)}")
+        # 이미지 처리 실패 시 로그만 남기고 텍스트 분석은 계속 진행할 수 있게 None 반환
+        st.session_state.debug_log += f"이미지 전처리 경고: {str(e)}\n"
         return None
 
 def api_call_direct(prompt, image_bytes=None):
@@ -310,8 +318,8 @@ def api_call_direct(prompt, image_bytes=None):
 def extract_text_unified(file_bytes, file_type, page_idx):
     raw_text = ""
     if "image" in file_type: 
-        # 이미지의 경우 멀티모달 분석을 위해 텍스트 추출 시도
-        raw_text, _ = api_call_direct("이 이미지 속의 텍스트를 모두 추출하세요. 줄바꿈 유지.", file_bytes)
+        # 이미지의 경우 텍스트 추출
+        raw_text, _ = api_call_direct("이 이미지 속의 한글 텍스트를 모두 추출하세요. 줄바꿈 유지.", file_bytes)
         raw_text = raw_text or ""
     elif "pdf" in file_type:
         if PLUMBER_AVAILABLE:
@@ -334,7 +342,8 @@ def get_page_image(file_bytes, file_type, page_idx):
         try:
             doc = fitz.open(stream=file_bytes, filetype="pdf")
             if page_idx < len(doc): 
-                pix = doc[page_idx].get_pixmap(matrix=fitz.Matrix(2, 2))
+                # 렌더링 배율 최적화
+                pix = doc[page_idx].get_pixmap(matrix=fitz.Matrix(2.5, 2.5))
                 return pix.tobytes("png")
         except: pass
     return None
@@ -348,34 +357,35 @@ def generate_prompt_from_sheet(sheet_data):
         elif action in ['modify', 'add']: rules.append(f"- '{orig}' 분석 결과는 원형:'{root}', 분류:'{origin}', 품사:'{pos}'가 정답.")
     return "\n[사용자 학습 데이터]:\n" + "\n".join(rules) + "\n"
 
-# [핵심] 통합 분석 로직 (PDF/이미지/직접 입력 로직 통일 및 디버깅 강화)
+# [핵심] 통합 분석 로직 (PDF/이미지/직접 입력 로직 통일)
 def run_analysis_action(txt, img_bytes=None):
     if not txt.strip(): st.warning("분석할 내용이 없습니다."); return
     
-    st.session_state.debug_log = f"[{datetime.now().strftime('%H:%M:%S')}] 분석 시작... 텍스트 길이: {len(txt)}\n"
+    st.session_state.debug_log = f"[{datetime.now().strftime('%H:%M:%S')}] 분석 파이프라인 진입... 텍스트 길이: {len(txt)}\n"
     
     with st.spinner("AI 분석 중..."):
         s_data = get_sheet_data_fresh(st.session_state.mode_key)[1]
         
         prompt = f"""
-        당신은 국어 형태소 분석 전문가입니다. 아래 지침에 따라 텍스트를 JSON 리스트로 분석하십시오.
+        당신은 국어 형태소 분석 전문가입니다. 아래 지침에 따라 텍스트를 JSON 리스트로 정밀 분석하십시오.
         {generate_prompt_from_sheet(s_data)}
         
         [분석 핵심 규칙]
-        1. **특수문자/조사/어미 제거**: 기호나 문장부호, 조사는 절대 포함하지 마세요.
-        2. **숫자 및 영어 제외**: 아라비아 숫자(0-9)나 영문자(A-Z, a-z)가 포함된 단어는 무조건 분석 결과에서 제외하십시오. 한글로 표기된 숫자만 포함 가능합니다.
+        1. **특수문자/조사/어미 제거**: 기호나 문장부호, 조사는 절대 결과에 포함하지 마십시오.
+        2. **숫자 및 영어 제외**: 아라비아 숫자(0-9)나 영문자(A-Z, a-z)가 포함된 단어는 무조건 제외하십시오. (한글 숫자만 가능)
         3. **의존 명사**: '것', '수', '만큼' 등은 '명사' 품사로 분류하십시오.
-        4. **동음이의어 정밀 처리**: 뜻이 갈리는 단어는 반드시 원형 뒤에 괄호로 뜻을 구분하십시오 (예: 배(과일), 배(선박)).
-        5. **개체명 인식 (인명/지명)**: 성함은 원형 뒤에 '(이름)', 지역 명칭은 '(지명)'을 표기하십시오 (예: 지혜(이름), 서울(지명)).
+        4. **동음이의어**: 문맥상 뜻이 갈리는 단어는 원형 뒤에 괄호로 뜻을 구분하십시오. (예: 배(과일), 배(선박))
+        5. **개체명 인식 (인명/지명)**: 성함은 원형 뒤에 '(이름)', 지역 명칭은 '(지명)'을 표기하십시오. (예: 지혜(이름), 서울(지명))
         
         [어종 판별]
-        한자 기반 단어(학교, 분석, 지혜 등)는 반드시 '한'으로 분류하십시오. 순우리말만 '고'입니다.
+        한자 기반 단어(학교, 분석 등)는 '한'으로, 순우리말은 '고', 서구 유래어는 '외'로 분류하십시오.
         
-        [출력 양식: 반드시 한글 키 JSON 리스트]
+        [출력 양식: 한글 키 JSON 리스트]
         원본, 원형, 분류(고/한/외/혼), 품사(명사/동사/형용사/부사/관형사/대명사/감탄사)
         """
         
-        raw, status = api_call_direct(prompt + f"\n[대상]:\n{txt[:5000]}", img_bytes)
+        # 분석 실행
+        raw, status = api_call_direct(prompt + f"\n[분석 대상]:\n{txt[:5000]}", img_bytes)
         st.session_state.last_raw_response = raw or status
         st.session_state.debug_log += f"API 상태: {status}\nAI 응답 길이: {len(raw) if raw else 0}\n"
         
@@ -384,6 +394,7 @@ def run_analysis_action(txt, img_bytes=None):
             return
 
         try:
+            # JSON 클리닝 및 추출
             clean_json = raw.replace("```json", "").replace("```", "").strip()
             match = re.search(r'\[.*\]', clean_json, re.DOTALL)
             if not match:
@@ -401,7 +412,7 @@ def run_analysis_action(txt, img_bytes=None):
                 o, root = str(r.get('원본') or '').strip(), str(r.get('원형') or '').strip()
                 orig_v, pos_v = str(r.get('분류') or '혼').strip(), str(r.get('품사') or '명사').strip()
                 
-                # 강력 필터링
+                # 강력 필터링 (숫자/영어 제외)
                 if re.search(r'[0-9a-zA-Z]', o) or re.search(r'[0-9a-zA-Z]', root): continue
                 if not o or not root: continue
 
@@ -420,11 +431,11 @@ def run_analysis_action(txt, img_bytes=None):
                 })
             
             st.session_state.analysis_result = proc
-            st.session_state.debug_log += "분석 완료 및 결과 저장됨.\n"
+            st.session_state.debug_log += "데이터 병합 및 결과 생성 완료.\n"
             st.session_state.step = 3; st.rerun()
             
         except Exception as e:
-            st.error(f"데이터 파싱 중 오류: {str(e)}")
+            st.error(f"데이터 파싱 오류: {str(e)}")
             st.session_state.debug_log += f"오류 발생: {traceback.format_exc()}\n"
 
 # =========================================================
@@ -439,9 +450,7 @@ with st.sidebar:
         st.markdown("<br>"*5, unsafe_allow_html=True)
         if st.button("🛠️ 관리자 모드 켜기"): st.session_state.debug_mode = True; st.rerun()
 
-# ---------------------------------------------------------
 # STEP 0: 시작 화면
-# ---------------------------------------------------------
 if st.session_state.step == 0:
     st.markdown("<h1 style='text-align: center; margin-bottom: 20px;'>📚 국어활동 AI 분석기</h1>", unsafe_allow_html=True)
     st.markdown("<p style='text-align: center; color: #888; margin-bottom: 50px;'>원하는 언어 규범을 선택하여 분석을 시작하세요.</p>", unsafe_allow_html=True)
@@ -454,9 +463,7 @@ if st.session_state.step == 0:
         if st.button("🏔️\n\n북한 문화어\n\n(문화어 규범 기준)\n\n[ 시작하기 ]", key="btn_north", use_container_width=True):
             st.session_state.mode_key = "NORTH"; st.session_state.step = 1; st.rerun()
 
-# ---------------------------------------------------------
 # STEP 1: 데이터 소스 선택
-# ---------------------------------------------------------
 elif st.session_state.step == 1:
     st.header("📂 데이터 소스 선택")
     col1, col2 = st.columns(2)
@@ -477,9 +484,7 @@ elif st.session_state.step == 1:
     st.markdown("---")
     if st.button("⬅️ 모드 다시 선택"): st.session_state.step = 0; st.rerun()
 
-# ---------------------------------------------------------
 # STEP 2: 자료 입력
-# ---------------------------------------------------------
 elif st.session_state.step == 2:
     st.session_state.is_finished = False
     c_t, c_h = st.columns([8, 2])
@@ -510,7 +515,7 @@ elif st.session_state.step == 2:
             
             c1, c2 = st.columns(2)
             with c1:
-                # PDF/이미지 미리보기
+                # PDF/이미지 미리보기 (강화된 로직 적용)
                 img = get_page_image(st.session_state.file_bytes, st.session_state.file_type, st.session_state.page_idx)
                 if img: st.image(img, use_container_width=True)
                 
@@ -538,6 +543,7 @@ elif st.session_state.step == 2:
                 txt_in = st.text_area("에디터 (추출 텍스트)", value=st.session_state.extracted_text, height=520)
                 st.session_state.extracted_text = txt_in
                 if st.button("🚀 분석 실행", type="primary", use_container_width=True): 
+                    # 통합 분석 액션 호출
                     run_analysis_action(txt_in, st.session_state.file_bytes)
     else:
         st.session_state.current_tab_idx = 1
@@ -546,15 +552,14 @@ elif st.session_state.step == 2:
         if st.button("🚀 분석 실행", type="primary", use_container_width=True): 
             run_analysis_action(direct_t)
 
-# ---------------------------------------------------------
 # STEP 3: 결과 확인
-# ---------------------------------------------------------
 elif st.session_state.step == 3:
     ch, cb = st.columns([8, 2])
     with ch: st.header("📊 분석 결과 확인")
     with cb:
         if st.button("⬅️ 입력 수정하기", use_container_width=True): st.session_state.step = 2; st.rerun()
     
+    # [정밀 디버깅 모드]
     if st.session_state.debug_mode:
         with st.expander("🛠️ [정밀 디버깅] 분석 프로세스 로그", expanded=True):
             st.markdown(f"<div class='debug-box'>{st.session_state.debug_log}</div>", unsafe_allow_html=True)
@@ -600,7 +605,7 @@ elif st.session_state.step == 3:
             if st.button("💾 저장하기 (완료)", type="primary", use_container_width=True):
                 save_logic_with_learning(); st.session_state.is_finished = True; st.balloons(); st.rerun()
     else:
-        st.success("✅ 모든 분석 데이터가 사용자님의 수정 사항과 비교 학습되어 마스터 데이터에 통합되었습니다!")
+        st.success("✅ 모든 분석 데이터가 성공적으로 마스터 데이터에 통합되었습니다!")
         actual_p = st.session_state.page_idx + st.session_state.start_offset
         st.info(f"📍 현재 페이지 데이터는 마스터 엑셀의 **'{actual_p}쪽'**으로 성공적으로 합쳐졌습니다.")
         
