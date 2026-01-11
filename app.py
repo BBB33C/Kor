@@ -17,7 +17,7 @@ from collections import Counter
 # [0] 기본 설정 및 상태 초기화
 # =========================================================
 st.set_page_config(
-    page_title="국어활동 AI 분석기 (Master)", 
+    page_title="국어활동 AI 분석기 (Final)", 
     page_icon="📚", 
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -36,10 +36,10 @@ if 'extracted_text' not in st.session_state: st.session_state.extracted_text = "
 if 'debug_mode' not in st.session_state: st.session_state.debug_mode = False
 
 # =========================================================
-# [1] 디자인: CSS 매직 (그라데이션 & 빅 타일 버튼)
+# [1] 디자인: CSS 매직 (그라데이션 & 빅 타일 버튼 - !important 적용)
 # =========================================================
 if st.session_state.step == 0:
-    # [Step 0 전용] 화려한 그라데이션 버튼 스타일
+    # [Step 0 전용] 화려한 그라데이션 버튼 스타일 (색상 강제 적용)
     st.markdown("""
         <style>
             /* 기본 폰트 */
@@ -48,45 +48,45 @@ if st.session_state.step == 0:
             /* 버튼 공통: 크기 키우기 및 텍스트 설정 */
             div.stButton > button {
                 width: 100%;
-                height: 220px;  /* 버튼 높이 확대 */
-                border: none;
-                border-radius: 20px;
+                height: 220px;
+                border: none !important;
+                border-radius: 20px !important;
                 color: white !important;
                 transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
-                box-shadow: 0 4px 15px rgba(0,0,0,0.2);
-                font-size: 1.2rem;
-                font-weight: 600;
+                box-shadow: 0 4px 15px rgba(0,0,0,0.2) !important;
+                font-size: 1.2rem !important;
+                font-weight: 600 !important;
                 white-space: pre-wrap; /* 줄바꿈 허용 */
             }
             
             /* 호버 효과: 둥실 떠오름 */
             div.stButton > button:hover {
                 transform: translateY(-8px) scale(1.02);
-                box-shadow: 0 15px 30px rgba(0,0,0,0.4);
+                box-shadow: 0 15px 30px rgba(0,0,0,0.4) !important;
             }
 
-            /* [컬럼 1: 대한민국] - 오션 블루 & 민트 */
+            /* [컬럼 1: 대한민국] - 오션 블루 & 민트 (강제 적용) */
             div[data-testid="column"]:nth-of-type(1) div.stButton > button {
-                background: linear-gradient(135deg, #1e3a8a 0%, #0284c7 60%, #06b6d4 100%);
-                border: 1px solid #38bdf8;
+                background: linear-gradient(135deg, #1e3a8a 0%, #0284c7 60%, #06b6d4 100%) !important;
+                border: 2px solid #38bdf8 !important;
             }
 
-            /* [컬럼 2: 북한] - 로즈 와인 & 코랄 */
+            /* [컬럼 2: 북한] - 로즈 와인 & 코랄 (강제 적용) */
             div[data-testid="column"]:nth-of-type(2) div.stButton > button {
-                background: linear-gradient(135deg, #881337 0%, #be123c 60%, #fb7185 100%);
-                border: 1px solid #fda4af;
+                background: linear-gradient(135deg, #881337 0%, #be123c 60%, #fb7185 100%) !important;
+                border: 2px solid #fda4af !important;
             }
 
-            /* [컬럼 3: 관리자] - 다크 글래스 (은신 모드) */
+            /* [컬럼 3: 관리자] - 다크 글래스 (강제 적용) */
             div[data-testid="column"]:nth-of-type(3) div.stButton > button {
-                background: rgba(255, 255, 255, 0.05); /* 투명도 */
-                border: 1px solid #444;
-                color: #aaa !important; /* 텍스트 회색 */
+                background: linear-gradient(135deg, #1f2937 0%, #374151 50%, #4b5563 100%) !important;
+                border: 2px solid #6b7280 !important;
+                color: #e5e7eb !important;
+                opacity: 0.9;
             }
             div[data-testid="column"]:nth-of-type(3) div.stButton > button:hover {
-                border: 1px solid #888;
-                background: rgba(255, 255, 255, 0.1);
-                color: #fff !important;
+                opacity: 1.0;
+                background: linear-gradient(135deg, #374151 0%, #4b5563 50%, #6b7280 100%) !important;
             }
         </style>
     """, unsafe_allow_html=True)
