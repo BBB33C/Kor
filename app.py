@@ -155,7 +155,7 @@ def save_backup_to_cloud(mode_key, df):
     except: return False
 
 # =========================================================
-# [3] 데이터 병합 및 비교 학습 엔진
+# [3] 데이터 병합 및 비교 학습 엔진 (로직 무삭제 보존)
 # =========================================================
 def clean_val_for_save(v):
     if isinstance(v, str): 
@@ -213,7 +213,6 @@ def save_logic_with_learning():
     final_results = pd.DataFrame(st.session_state.analysis_result)
     initial_draft = pd.DataFrame(st.session_state.initial_draft)
     
-    # 1. 교정 및 삭제 학습
     for _, draft_row in initial_draft.iterrows():
         orig = draft_row['원본']
         match = final_results[final_results['원본'] == orig]
@@ -234,7 +233,6 @@ def save_logic_with_learning():
                     draft_row['원형'], draft_row['분류']
                 ])
                 
-    # 2. 추가 학습
     draft_originals = initial_draft['원본'].tolist()
     for _, final_row in final_results.iterrows():
         if final_row['원본'] not in draft_originals and not final_row['삭제']:
@@ -353,7 +351,7 @@ def run_analysis_action(txt, img_bytes=None):
     st.session_state.debug_log = f"[{datetime.now().strftime('%H:%M:%S')}] 분석 시작... 텍스트 길이: {len(txt)}\n"
     with st.spinner("AI 분석 엔진 가동 중..."):
         s_data = get_sheet_data_fresh(st.session_state.mode_key)[1]
-        # [사용자 요청 반영] 의존 명사를 조사와 동일하게 제외하도록 프롬프트 강화
+        # [의존 명사 제외] 프롬프트 최강 지침
         prompt = f"""
         당신은 국어 형태소 분석 전문가입니다. 아래 지침에 따라 텍스트를 JSON 리스트로 정밀 분석하십시오.
         {generate_prompt_from_sheet(s_data)}
@@ -383,10 +381,9 @@ def run_analysis_action(txt, img_bytes=None):
             for r in res:
                 o, root = str(r.get('원본') or '').strip(), str(r.get('원형') or '').strip()
                 orig_v, pos_v = str(r.get('분류') or '혼').strip(), str(r.get('품사') or '명사').strip()
-                # 필터링 강화: 숫자/영어 제외 및 품사 검증
+                # 후처리 필터링 강화
                 if re.search(r'[0-9a-zA-Z]', o) or re.search(r'[0-9a-zA-Z]', root): continue
                 if not o or not root: continue
-                # AI가 잘못 추출한 조사/어미/의존명사 다시 한번 필터링
                 if pos_v in ['조사', '어미', '의존명사', '의존 명사']: continue
                 
                 draft_items.append({'원본': o, '원형': root, '분류': orig_v, '품사': pos_v})
@@ -477,7 +474,6 @@ elif st.session_state.step == 2:
             
             c1, c2 = st.columns(2)
             with c1:
-                # PDF 이미지 렌더링 (Error 방지 로직 적용)
                 img = get_page_image(st.session_state.file_bytes, st.session_state.file_type, st.session_state.page_idx)
                 if img: st.image(img, use_container_width=True)
                 if st.session_state.file_type == "application/pdf":
@@ -514,14 +510,14 @@ elif st.session_state.step == 2:
         if st.button("🚀 분석 실행", type="primary", use_container_width=True): 
             run_analysis_action(direct_t)
 
-# STEP 3: 결과 확인 (토스트 알림 및 스크롤 보호 버전)
+# STEP 3: 결과 확인
 elif st.session_state.step == 3:
     ch, cb = st.columns([8, 2])
     with ch: st.header("📊 분석 결과 확인")
     with cb:
         if st.button("⬅️ 입력 수정하기", use_container_width=True): st.session_state.step = 2; st.rerun()
     
-    # 상단 2단 배치 (이미지/원문)
+    # 상단 2단 배치
     top_left, top_right = st.columns([1, 1])
     with top_left:
         st.subheader("🖼️ 원문 이미지")
@@ -534,7 +530,7 @@ elif st.session_state.step == 3:
 
     st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
 
-    # 하단 분석 결과 편집 (안내 문구 추가)
+    # 하단 분석 결과 편집
     st.markdown("### 📋 분석 결과 편집 <span class='guide-text'>(※ 연속 수정 시 동작 간에 작은 텀을 주시면 더욱 안전하게 저장됩니다)</span>", unsafe_allow_html=True)
     
     if st.session_state.debug_mode:
@@ -543,9 +539,9 @@ elif st.session_state.step == 3:
             raw_data = st.session_state.get('last_raw_response', '')
             if raw_data and isinstance(raw_data, str): st.code(raw_data, language="json")
 
-    # 데이터 에디터 고정 렌더링
     df_res = pd.DataFrame(st.session_state.analysis_result)
     if not df_res.empty:
+        # [스크롤 튕김 방지] 고유 키 관리
         edited = st.data_editor(
             df_res,
             column_config={
@@ -554,30 +550,28 @@ elif st.session_state.step == 3:
                 "분류": st.column_config.SelectboxColumn("분류", options=["🔵 고", "🟢 한", "🔴 외", "🟣 혼"]),
                 "품사": st.column_config.SelectboxColumn("품사", options=["📦 명사", "🏃 동사", "🎨 형용사", "⚡ 부사", "🔍 관형사", "👤 대명사", "고유명사", "❗ 감탄사"])
             },
-            use_container_width=True, num_rows="dynamic", key="step3_editor_v6_scroll_fixed"
+            use_container_width=True, num_rows="dynamic", key="step3_editor_scroll_v7"
         )
         
-        # [핵심] 수정 작업 감지 및 토스트 알림 연동
+        # 수정 감지 및 토스트 알림
         if not edited.equals(df_res):
             diff_mask = (edited != df_res).any(axis=1)
             edited_rows = edited[diff_mask]
             original_rows = df_res[diff_mask]
-            
-            # 삭제 컬럼 외의 내용이 변경된 경우만 강제 텀 및 알림
             other_cols = [c for c in df_res.columns if c != "삭제"]
+            
             if not edited_rows[other_cols].equals(original_rows[other_cols]):
                 st.session_state.analysis_result = edited.to_dict('records')
-                # 브라우저 전체 스크롤을 보호하는 토스트 방식
                 st.toast("🔄 데이터 동기화 중... 잠시만 기다려주세요.", icon="⏳")
                 time.sleep(2.0)
                 st.rerun()
             else:
-                # 삭제 체크박스 토글은 스크롤 보존을 위해 rerun을 생략하고 세션만 업데이트
+                # 삭제 체크 시에는 rerun을 하지 않고 세션만 조용히 업데이트 (스크롤 보존 핵심)
                 st.session_state.analysis_result = edited.to_dict('records')
     else:
         st.warning("분석된 결과 단어가 없습니다.")
 
-    # 다이얼로그 전용 토스트 알림
+    # 다이얼로그
     dlg_func = st.dialog if hasattr(st, "dialog") else st.experimental_dialog
     @dlg_func("➕ 단어 직접 추가")
     def add_manual():
@@ -602,17 +596,18 @@ elif st.session_state.step == 3:
             if st.button("➕ 단어 추가", use_container_width=True): add_manual()
         with b2:
             if st.button("⛔ 선택 삭제", use_container_width=True):
-                # [사용자 요청 반영] 삭제 버튼 클릭 시에도 토스트 알림과 지연 부여
                 st.session_state.analysis_result = [r for r in st.session_state.analysis_result if not r.get('삭제', False)]
                 st.toast("🗑️ 삭제된 데이터를 정리하고 동기화 중입니다.", icon="⏳")
                 time.sleep(2.2)
                 st.rerun()
         with b_save_only:
+            # [사용자 요청 반영] 현재 페이지만 저장 시 다운로드 바로 활성화
             if st.button("💾 현재 페이지만 저장", use_container_width=True):
-                with st.status("데이터 저장 중..."):
+                with st.status("현재 데이터 통합 및 저장 중..."):
                     save_logic_with_learning()
-                    st.success("✅ 저장 완료!")
-                    time.sleep(1)
+                    st.session_state.is_finished = True # 저장 후 다운로드 영역으로 전환
+                    st.success("✅ 현재 페이지 저장이 완료되었습니다!")
+                    time.sleep(1.2)
                     st.rerun()
         with b_save_next:
             if st.button("🚀 저장하고 다음 쪽 가기", type="primary", use_container_width=True):
@@ -630,12 +625,13 @@ elif st.session_state.step == 3:
                         st.session_state.is_finished = True
                         st.balloons(); st.rerun()
     else:
-        st.success("✅ 모든 페이지 분석 데이터가 통합 저장되었습니다!")
+        # 다운로드 및 단계 이동 영역
+        st.success("✅ 모든 분석 데이터가 통합 저장되었습니다!")
         fname = f"Result_{st.session_state.mode_key}_{datetime.now().strftime('%m%d_%H%M')}.xlsx"
         buf = io.BytesIO()
         with pd.ExcelWriter(buf, engine='openpyxl') as w: st.session_state.master_df.to_excel(w, index=False)
         c1, c2 = st.columns(2)
         with c1: st.download_button(label=f"📥 {fname} 다운로드", data=buf.getvalue(), file_name=fname, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True, type="primary")
         with c2:
-            if st.button("🔄 처음 단계로 이동", use_container_width=True):
+            if st.button("🔄 처음 단계로 이동 (새 분석)", use_container_width=True):
                 st.session_state.step = 2; st.session_state.is_finished = False; st.rerun()
