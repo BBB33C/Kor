@@ -77,9 +77,10 @@ if st.session_state.step in [0, 1.5]:
     st.markdown("""
         <style>
             .stApp { background-color: #0e1117 !important; color: #ffffff !important; }
-            /* [Revert] 그라데이션 제거 -> 깔끔한 다크 카드 스타일로 복귀 */
+            /* 버튼 스타일: 단색 다크 그레이, 그라데이션 제거 */
             div.block-container div[data-testid="column"] div.stButton > button {
                 width: 100%; height: 280px;
+                background-image: none !important;
                 background-color: #262730 !important;
                 border: 2px solid rgba(255,255,255,0.1) !important;
                 border-radius: 20px !important;
@@ -97,31 +98,32 @@ if st.session_state.step in [0, 1.5]:
         </style>
     """, unsafe_allow_html=True)
 elif st.session_state.step == 1:
-    # [Design Fix] 이어하기/새로하기 상자 높이 통일 및 그라데이션 제거
+    # [Design Fix] 상자 높이 320px 강제 고정 및 중앙 정렬
     st.markdown("""
         <style>
             .stApp { background-color: #0e1117 !important; color: #ffffff !important; }
             
-            /* 컨테이너(상자) 높이 강제 통일 */
+            /* 컨테이너(테두리 박스) 높이 강제 통일 */
             div[data-testid="stVerticalBlockBorderWrapper"] > div {
-                min-height: 250px !important;
+                height: 320px !important;  /* 고정 높이 할당 */
+                min-height: 320px !important;
                 display: flex; 
                 flex-direction: column; 
-                justify-content: center;
+                justify-content: center; /* 내용물 수직 중앙 정렬 */
             }
             
-            /* 새로 시작하기 버튼 스타일 (그라데이션 제거, 깔끔하게) */
+            /* 버튼 스타일 (그라데이션 완전 제거) */
             div.stButton > button {
                 width: 100%;
-                background-color: #2979ff !important;
+                background-image: none !important;
+                background-color: #2979ff !important; /* 단색 블루 */
                 color: white !important;
                 border: none !important;
                 border-radius: 10px;
                 height: 50px; font-size: 1.1rem; font-weight: bold;
             }
             div.stButton > button:hover {
-                background-color: #2b2c36 !important;
-                border: 1px solid #2979ff !important;
+                background-color: #1e3c72 !important; /* 호버 시 약간 어둡게 */
             }
         </style>
     """, unsafe_allow_html=True)
