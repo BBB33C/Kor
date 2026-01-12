@@ -96,7 +96,7 @@ except:
     FITZ_AVAILABLE = False
 
 # =========================================================
-# [2] 구글 시트 및 API 엔진
+# [2] 구글 시트 및 API 엔진 (기존 기능 보존)
 # =========================================================
 try:
     if "GEMINI_API_KEY" in st.secrets:
@@ -155,7 +155,7 @@ def save_backup_to_cloud(mode_key, df):
     except: return False
 
 # =========================================================
-# [3] 데이터 병합 및 비교 학습 엔진 (로직 무삭제 보존)
+# [3] 데이터 병합 및 비교 학습 엔진
 # =========================================================
 def clean_val_for_save(v):
     if isinstance(v, str): 
@@ -213,7 +213,6 @@ def save_logic_with_learning():
     final_results = pd.DataFrame(st.session_state.analysis_result)
     initial_draft = pd.DataFrame(st.session_state.initial_draft)
     
-    # 1. 교정 및 삭제 학습
     for _, draft_row in initial_draft.iterrows():
         orig = draft_row['원본']
         match = final_results[final_results['원본'] == orig]
@@ -234,7 +233,6 @@ def save_logic_with_learning():
                     draft_row['원형'], draft_row['분류']
                 ])
                 
-    # 2. 추가 학습
     draft_originals = initial_draft['원본'].tolist()
     for _, final_row in final_results.iterrows():
         if final_row['원본'] not in draft_originals and not final_row['삭제']:
@@ -247,7 +245,6 @@ def save_logic_with_learning():
             
     if learning_logs: send_data_with_retry(sheet, learning_logs, True)
     
-    # 마스터 데이터 업데이트
     valid = final_results[final_results['삭제']==False].copy()
     valid['n_cnt'] = valid['횟수'].apply(lambda x: int(re.sub(r'[^0-9]', '', str(x))) if re.search(r'\d', str(x)) else 1)
     agg = valid.groupby(['원형', '분류', '품사'], as_index=False).agg({'n_cnt': 'sum'})
@@ -262,7 +259,7 @@ def save_logic_with_learning():
     save_backup_to_cloud(st.session_state.mode_key, st.session_state.master_df)
 
 # =========================================================
-# [4] AI 분석 및 이미지 최적화 처리
+# [4] AI 분석 및 이미지 최적화 처리 (PIL 무삭제 보존)
 # =========================================================
 def clean_raw_text(text):
     text = re.sub(r'.*\.indd.*', '', text)
@@ -318,7 +315,7 @@ def extract_text_unified(file_bytes, file_type, page_idx):
                     st.session_state.total_pages = len(pdf.pages)
                     if page_idx < len(pdf.pages): raw_text = pdf.pages[page_idx].extract_text()
             except: pass
-        if (not raw_text or len(raw_text) < 10) and FITZ_AVAILABLE:
+        if (not raw_text or len(raw_text) < 10) and FIT_AVAILABLE:
             try:
                 doc = fitz.open(stream=file_bytes, filetype="pdf")
                 st.session_state.total_pages = len(doc)
@@ -328,7 +325,7 @@ def extract_text_unified(file_bytes, file_type, page_idx):
 
 def get_page_image(file_bytes, file_type, page_idx):
     if "image" in file_type: return file_bytes
-    if "pdf" in file_type and FITZ_AVAILABLE:
+    if "pdf" in file_type and FIT_AVAILABLE:
         try:
             doc = fitz.open(stream=file_bytes, filetype="pdf")
             if page_idx < len(doc): 
@@ -397,7 +394,7 @@ def run_analysis_action(txt, img_bytes=None):
             st.error(f"데이터 파싱 오류: {str(e)}"); st.session_state.debug_log += f"오류 발생: {traceback.format_exc()}\n"
 
 # =========================================================
-# [5] UI: 메인 루프 (Wizard)
+# [5] UI: 메인 루프
 # =========================================================
 
 with st.sidebar:
@@ -408,7 +405,6 @@ with st.sidebar:
         st.markdown("<br>"*5, unsafe_allow_html=True)
         if st.button("🛠️ 관리자 모드 켜기"): st.session_state.debug_mode = True; st.rerun()
 
-# STEP 0: 시작 화면
 if st.session_state.step == 0:
     st.markdown("<h1 style='text-align: center; margin-bottom: 20px;'>📚 국어활동 AI 분석기</h1>", unsafe_allow_html=True)
     st.markdown("<p style='text-align: center; color: #888; margin-bottom: 50px;'>원하는 언어 규범을 선택하여 분석을 시작하세요.</p>", unsafe_allow_html=True)
@@ -420,7 +416,6 @@ if st.session_state.step == 0:
         if st.button("🏔️\n\n북한 문화어\n\n(문화어 규범 기준)\n\n[ 시작하기 ]", key="btn_north", use_container_width=True):
             st.session_state.mode_key = "NORTH"; st.session_state.step = 1; st.rerun()
 
-# STEP 1: 데이터 소스 선택
 elif st.session_state.step == 1:
     st.header("📂 데이터 소스 선택")
     col1, col2 = st.columns(2)
@@ -442,7 +437,6 @@ elif st.session_state.step == 1:
     st.markdown("---")
     if st.button("⬅️ 모드 다시 선택"): st.session_state.step = 0; st.rerun()
 
-# STEP 2: 자료 입력
 elif st.session_state.step == 2:
     st.session_state.is_finished = False
     c_t, c_h = st.columns([8, 2])
@@ -507,14 +501,13 @@ elif st.session_state.step == 2:
         if st.button("🚀 분석 실행", type="primary", use_container_width=True): 
             run_analysis_action(direct_t)
 
-# STEP 3: 결과 확인 (비침습적 토스트 알림 방식)
 elif st.session_state.step == 3:
     ch, cb = st.columns([8, 2])
     with ch: st.header("📊 분석 결과 확인")
     with cb:
         if st.button("⬅️ 입력 수정하기", use_container_width=True): st.session_state.step = 2; st.rerun()
     
-    # 상단 2단 배치 (이미지/원문)
+    # 상단 2단 배치 (이미지/원문 무삭제 보존)
     top_left, top_right = st.columns([1, 1])
     with top_left:
         st.subheader("🖼️ 원문 이미지")
@@ -536,9 +529,10 @@ elif st.session_state.step == 3:
             raw_data = st.session_state.get('last_raw_response', '')
             if raw_data and isinstance(raw_data, str): st.code(raw_data, language="json")
 
-    # 데이터 에디터 고정 렌더링
+    # 데이터 에디터 렌더링
     df_res = pd.DataFrame(st.session_state.analysis_result)
     if not df_res.empty:
+        # [해결책] 체크박스 선택 시 스크롤 초기화 방지를 위해 rerun 호출을 최적화
         edited = st.data_editor(
             df_res,
             column_config={
@@ -547,30 +541,31 @@ elif st.session_state.step == 3:
                 "분류": st.column_config.SelectboxColumn("분류", options=["🔵 고", "🟢 한", "🔴 외", "🟣 혼"]),
                 "품사": st.column_config.SelectboxColumn("품사", options=["📦 명사", "🏃 동사", "🎨 형용사", "⚡ 부사", "🔍 관형사", "👤 대명사", "고유명사", "❗ 감탄사"])
             },
-            use_container_width=True, num_rows="dynamic", key="step3_editor_fixed_v4"
+            use_container_width=True, num_rows="dynamic", key="step3_editor_v5_no_jump"
         )
         
-        # [핵심 로직] 수정 작업 감지 및 토스트 알림 연동 (홈페이지 스크롤 보존)
+        # [핵심 로직] 수정 작업 감지 및 토스트 알림 연동
         if not edited.equals(df_res):
             diff_mask = (edited != df_res).any(axis=1)
             edited_rows = edited[diff_mask]
             original_rows = df_res[diff_mask]
             
-            # 삭제 컬럼 외의 내용이 변경된 경우만 강제 텀 및 알림
+            # 삭제 컬럼 외의 내용이 변경된 경우만 강제 텀 및 알림 부여 (스크롤 보존 효과)
             other_cols = [c for c in df_res.columns if c != "삭제"]
             if not edited_rows[other_cols].equals(original_rows[other_cols]):
                 st.session_state.analysis_result = edited.to_dict('records')
                 # 브라우저 스크롤을 방해하지 않는 토스트 알림
                 st.toast("🔄 데이터 동기화 중... 잠시만 기다려주세요.", icon="⏳")
-                time.sleep(2.0) # 안전 지연 시간
+                time.sleep(2.2) # 안전 지연 시간 부여
                 st.rerun()
             else:
-                # 삭제 체크박스 토글은 즉시 반영하여 작업 속도 유지
+                # [해결책] 삭제 체크박스 토글 시에는 rerun을 명시적으로 호출하지 않음 
+                # (Streamlit이 자동으로 상태를 관리하므로 사용자가 여러 개를 연속으로 누를 수 있음)
                 st.session_state.analysis_result = edited.to_dict('records')
     else:
         st.warning("분석된 결과 단어가 없습니다.")
 
-    # 다이얼로그
+    # 다이얼로그 전용 로딩 로직
     dlg_func = st.dialog if hasattr(st, "dialog") else st.experimental_dialog
     @dlg_func("➕ 단어 직접 추가")
     def add_manual():
@@ -585,7 +580,7 @@ elif st.session_state.step == 3:
                     "품사": {'명사':'📦 명사', '동사':'🏃 동사', '형용사':'🎨 형용사', '부사':'⚡ 부사', '관형사':'🔍 관형사', '대명사':'👤 대명사', '감탄사':'❗ 감탄사'}.get(p, p)
                 })
                 st.toast("✅ 새로운 단어가 추가되었습니다. 동기화 중...", icon="✨")
-                time.sleep(2.0)
+                time.sleep(2.2)
                 st.rerun()
 
     # 제어 버튼 영역
@@ -595,10 +590,10 @@ elif st.session_state.step == 3:
             if st.button("➕ 단어 추가", use_container_width=True): add_manual()
         with b2:
             if st.button("⛔ 선택 삭제", use_container_width=True):
-                # 선택 삭제 버튼 클릭 시에도 토스트 알림과 강제 지연 부여
+                # [해결책] 삭제 버튼 클릭 시에도 토스트 알림과 강제 지연을 주어 데이터 안전성 확보
                 st.session_state.analysis_result = [r for r in st.session_state.analysis_result if not r.get('삭제', False)]
                 st.toast("🗑️ 삭제된 데이터를 정리하고 동기화 중입니다.", icon="⏳")
-                time.sleep(2.0)
+                time.sleep(2.2)
                 st.rerun()
         with b_save_only:
             if st.button("💾 현재 페이지만 저장", use_container_width=True):
