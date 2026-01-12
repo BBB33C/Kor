@@ -98,7 +98,7 @@ except:
     FITZ_AVAILABLE = False
 
 # =========================================================
-# [2] 구글 시트 및 API 엔진 (학습 기능 보존)
+# [2] 구글 시트 및 API 엔진
 # =========================================================
 try:
     if "GEMINI_API_KEY" in st.secrets:
@@ -157,7 +157,7 @@ def save_backup_to_cloud(mode_key, df):
     except: return False
 
 # =========================================================
-# [3] 데이터 병합 및 비교 학습 엔진 (로직 무삭제)
+# [3] 데이터 병합 및 비교 학습 엔진 (로직 무삭제 보존)
 # =========================================================
 def clean_val_for_save(v):
     if isinstance(v, str): 
@@ -265,7 +265,7 @@ def save_logic_with_learning():
     save_backup_to_cloud(st.session_state.mode_key, st.session_state.master_df)
 
 # =========================================================
-# [4] AI 분석 및 이미지 최적화 처리 (PIL 무삭제)
+# [4] AI 분석 및 이미지 최적화 처리 (PIL 무삭제 보존)
 # =========================================================
 def clean_raw_text(text):
     text = re.sub(r'.*\.indd.*', '', text)
@@ -345,6 +345,7 @@ def get_page_image(file_bytes, file_type, page_idx):
 def generate_prompt_from_sheet(sheet_data):
     if not sheet_data: return ""
     rules = []
+    # 정확도 향상을 위한 과거 교정 데이터 참조
     for row in sheet_data[-300:]: 
         orig, root, origin, pos, action = row.get('original_word',''), row.get('root_word',''), row.get('origin',''), row.get('pos',''), row.get('action','')
         if action == 'delete': rules.append(f"- '{orig}'는 절대로 분석하지 말고 제외할 것.")
@@ -357,6 +358,7 @@ def run_analysis_action(txt, img_bytes=None):
     
     with st.spinner("AI가 국어학적 관점에서 정밀 분석 중입니다..."):
         s_data = get_sheet_data_fresh(st.session_state.mode_key)[1]
+        # [의존 명사 제외] 강력 프롬프트 지침 복원
         prompt = f"""
         당신은 국립국어원 표준국어대사전 및 한국어 문법 지식에 정통한 언어 분석 전문가입니다.
         제공된 텍스트에서 명사, 동사, 형용사 등의 실질 형태소를 추출하고 아래 지침을 엄격히 준수하십시오.
@@ -399,7 +401,7 @@ def run_analysis_action(txt, img_bytes=None):
             for r in res:
                 o, root = str(r.get('원본') or '').strip(), str(r.get('원형') or '').strip()
                 orig_v, pos_v = str(r.get('분류') or '혼').strip(), str(r.get('품사') or '명사').strip()
-                
+                # [후처리 필터링] 숫자, 영어, 조사, 어미, 의존명사 차단
                 if re.search(r'[0-9a-zA-Z]', o) or re.search(r'[0-9a-zA-Z]', root): continue
                 if not o or not root: continue
                 if pos_v in ['조사', '어미', '의존명사', '의존 명사', '수사']: continue
@@ -424,6 +426,7 @@ def run_analysis_action(txt, img_bytes=None):
 # [5] UI: 메인 루프 (Wizard)
 # =========================================================
 
+# 사이드바 설정 (무삭제 보존)
 with st.sidebar:
     st.markdown("### ⚙️ 시스템 설정")
     if st.session_state.debug_mode:
@@ -432,24 +435,22 @@ with st.sidebar:
         st.markdown("<br>"*5, unsafe_allow_html=True)
         if st.button("🛠️ 관리자 모드 켜기"): st.session_state.debug_mode = True; st.rerun()
 
-# STEP 0: 시작 화면
+# STEP 0: 시작 화면 (시작하기 버튼 먹통 해결)
 if st.session_state.step == 0:
-    # 세션 완전 초기화 로직 (처음 단계로 이동 시 사용)
-    for key in list(st.session_state.keys()):
-        if key not in ['debug_mode']: # 설정값 제외하고 모두 삭제
-            del st.session_state[key]
-    # 필수 변수 즉시 재설정
-    if 'step' not in st.session_state: st.session_state.step = 0
-    
     st.markdown("<h1 style='text-align: center; margin-bottom: 20px;'>📚 국어활동 AI 분석기</h1>", unsafe_allow_html=True)
     st.markdown("<p style='text-align: center; color: #888; margin-bottom: 50px;'>원하는 언어 규범을 선택하여 분석을 시작하세요.</p>", unsafe_allow_html=True)
-    _, c_south, c_north, _ = st.columns([1, 4, 4, 1])
+    
+    c_left, c_south, c_north, c_right = st.columns([1, 4, 4, 1])
     with c_south:
         if st.button("🏛️\n\n대한민국 표준어\n\n(표준국어대사전 기준)\n\n[ 시작하기 ]", key="btn_south", use_container_width=True):
-            st.session_state.mode_key = "SOUTH"; st.session_state.step = 1; st.rerun()
+            st.session_state.mode_key = "SOUTH"
+            st.session_state.step = 1 # 단계 전환 확실히 명시
+            st.rerun()
     with c_north:
         if st.button("🏔️\n\n북한 문화어\n\n(문화어 규범 기준)\n\n[ 시작하기 ]", key="btn_north", use_container_width=True):
-            st.session_state.mode_key = "NORTH"; st.session_state.step = 1; st.rerun()
+            st.session_state.mode_key = "NORTH"
+            st.session_state.step = 1 # 단계 전환 확실히 명시
+            st.rerun()
 
 # STEP 1: 데이터 소스 선택
 elif st.session_state.step == 1:
@@ -479,7 +480,9 @@ elif st.session_state.step == 2:
     c_t, c_h = st.columns([8, 2])
     with c_t: st.header("📝 분석 자료 입력")
     with c_h:
-        if st.button("🏠 처음으로"): st.session_state.step = 0; st.rerun()
+        if st.button("🏠 처음으로"): 
+            st.session_state.step = 0
+            st.rerun()
 
     with st.expander("⚙️ 분석 환경 설정 (페이지 쪽수 설정)", expanded=True):
         st.session_state.start_offset = st.number_input("도서 1쪽의 실제 숫자 (시작 쪽수 설정)", value=st.session_state.start_offset)
@@ -543,7 +546,7 @@ elif st.session_state.step == 3:
     ch, cb = st.columns([8, 2])
     with ch: 
         st.header(f"📊 분석 결과 확인")
-        # 저장 위치 실시간 안내 문구 추가
+        # 실시간 저장 위치 안내 문구
         st.markdown(f"<p style='color: #2979ff; font-size: 0.95rem; margin-top:-15px;'>📍 현재 작업 내용은 마스터 엑셀의 <b>'{actual_p}쪽'</b>으로 저장될 예정입니다.</p>", unsafe_allow_html=True)
     with cb:
         if st.button("⬅️ 입력 수정하기", use_container_width=True): st.session_state.step = 2; st.rerun()
@@ -592,6 +595,7 @@ elif st.session_state.step == 3:
                 time.sleep(2.0)
                 st.rerun()
             else:
+                # 삭제 체크 시에는 rerun을 하지 않고 세션만 업데이트 (스크롤 보존)
                 st.session_state.analysis_result = edited.to_dict('records')
     else:
         st.warning("분석된 결과 단어가 없습니다.")
@@ -613,6 +617,7 @@ elif st.session_state.step == 3:
                 time.sleep(2.0)
                 st.rerun()
 
+    # 제어 버튼 영역
     if not st.session_state.is_finished:
         b1, b2, b_save_only, b_save_next = st.columns([1, 1, 1.5, 2])
         with b1:
@@ -624,13 +629,13 @@ elif st.session_state.step == 3:
                 time.sleep(2.2)
                 st.rerun()
         with b_save_only:
-            # [사용자 요청] 저장만 하기 클릭 시 -> 다운로드, 처음으로, 다음쪽으로 3종 버튼 활성화
+            # [사용자 요청] 저장만 하기 클릭 시 -> 엑셀 다운로드, 다음쪽 가기 2종 활성화
             if st.button("💾 현재 페이지만 저장", use_container_width=True):
                 with st.status("데이터 통합 및 학습 로직 가동 중..."):
                     save_logic_with_learning()
                     st.session_state.is_finished = True 
                     st.success("✅ 저장이 완료되었습니다. 아래에서 작업을 선택하세요.")
-                    time.sleep(1.2)
+                    time.sleep(1.0)
                     st.rerun()
         with b_save_next:
             if st.button("🚀 저장하고 다음 쪽 가기", type="primary", use_container_width=True):
@@ -648,7 +653,7 @@ elif st.session_state.step == 3:
                         st.session_state.is_finished = True
                         st.balloons(); st.rerun()
     else:
-        # [해결책] 저장 완료 후 3개 버튼 UI (Navigation Fixed)
+        # [해결책] 저장 완료 후 2개 버튼 UI (다운로드, 다음쪽으로)
         st.success("✅ 페이지 분석 데이터가 마스터 데이터에 성공적으로 통합되었습니다!")
         actual_p = st.session_state.page_idx + st.session_state.start_offset
         st.info(f"📍 '{actual_p}쪽' 작업 결과가 성공적으로 반영되었습니다.")
@@ -657,15 +662,11 @@ elif st.session_state.step == 3:
         buf = io.BytesIO()
         with pd.ExcelWriter(buf, engine='openpyxl') as w: st.session_state.master_df.to_excel(w, index=False)
         
-        c_down, c_reset, c_next = st.columns([1, 1, 1])
+        c_down, c_next = st.columns([1, 1])
         with c_down:
             st.download_button(label=f"📥 엑셀 다운로드", data=buf.getvalue(), file_name=fname, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True, type="primary")
-        with c_reset:
-            # 완전한 초기 화면(step=0)으로의 강제 이동 구현
-            if st.button("🏛️ 처음 단계로 이동", use_container_width=True):
-                st.session_state.step = 0 
-                st.rerun()
         with c_next:
+            # 다음 쪽이 있을 때만 버튼 활성화
             can_go_next = st.session_state.file_type == "application/pdf" and st.session_state.page_idx < st.session_state.total_pages - 1
             if st.button("➡️ 다음 쪽으로 이동", use_container_width=True, disabled=not can_go_next):
                 st.session_state.page_idx += 1
