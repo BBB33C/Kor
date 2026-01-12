@@ -44,7 +44,7 @@ if 'current_tab_idx' not in st.session_state: st.session_state.current_tab_idx =
 if 'is_finished' not in st.session_state: st.session_state.is_finished = False
 
 # =========================================================
-# [1] 디자인: CSS 매직 (흐릿한 로딩 오버레이 추가)
+# [1] 디자인: CSS 매직 (플로팅 오버레이 시스템 추가)
 # =========================================================
 if st.session_state.step == 0:
     st.markdown("""
@@ -81,32 +81,25 @@ else:
             button:disabled { opacity: 0.5 !important; cursor: not-allowed !important; }
             .section-divider { border-bottom: 2px solid #3d4251; margin: 25px 0; }
             
-            /* [해결책] 흐릿한 동기화 로딩 스타일 */
-            .sync-overlay { 
-                position: relative; 
-                width: 100%; 
-                min-height: 300px;
+            /* [해결책] 표 위에 나타나는 반투명 오버레이 로딩 스타일 */
+            .table-container { position: relative; width: 100%; }
+            .sync-overlay-v2 { 
+                position: absolute; 
+                top: 0; left: 0; width: 100%; height: 100%;
+                background-color: rgba(14, 17, 23, 0.7); /* 반투명 배경 */
                 display: flex;
                 align-items: center;
                 justify-content: center;
+                z-index: 9999;
+                border-radius: 10px;
+                backdrop-filter: blur(4px); /* 배경 흐릿하게 */
             }
-            .blur-bg {
-                filter: blur(8px) grayscale(50%);
-                opacity: 0.4;
-                width: 100%;
-                pointer-events: none;
-            }
-            .loading-text-box {
-                position: absolute;
-                top: 50%;
-                left: 50%;
-                transform: translate(-50%, -50%);
-                z-index: 99;
-                background-color: rgba(30, 33, 41, 0.9);
-                padding: 30px 60px;
-                border-radius: 20px;
+            .loading-modal {
+                background-color: #1e2129;
+                padding: 30px 50px;
+                border-radius: 15px;
                 border: 2px solid #2979ff;
-                box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+                box-shadow: 0 15px 40px rgba(0,0,0,0.8);
                 text-align: center;
             }
         </style>
@@ -125,7 +118,7 @@ except:
     FITZ_AVAILABLE = False
 
 # =========================================================
-# [2] 구글 시트 및 API 유틸리티
+# [2] 구글 시트 및 API 엔진
 # =========================================================
 try:
     if "GEMINI_API_KEY" in st.secrets:
@@ -184,7 +177,7 @@ def save_backup_to_cloud(mode_key, df):
     except: return False
 
 # =========================================================
-# [3] 데이터 병합 및 비교 학습 엔진
+# [3] 데이터 가공 및 비교 학습 엔진 (로직 무삭제 보존)
 # =========================================================
 def clean_val_for_save(v):
     if isinstance(v, str): 
@@ -242,7 +235,6 @@ def save_logic_with_learning():
     final_results = pd.DataFrame(st.session_state.analysis_result)
     initial_draft = pd.DataFrame(st.session_state.initial_draft)
     
-    # 1. 교정 및 삭제 학습
     for _, draft_row in initial_draft.iterrows():
         orig = draft_row['원본']
         match = final_results[final_results['원본'] == orig]
@@ -263,7 +255,6 @@ def save_logic_with_learning():
                     draft_row['원형'], draft_row['분류']
                 ])
                 
-    # 2. 추가 학습
     draft_originals = initial_draft['원본'].tolist()
     for _, final_row in final_results.iterrows():
         if final_row['원본'] not in draft_originals and not final_row['삭제']:
@@ -276,7 +267,6 @@ def save_logic_with_learning():
             
     if learning_logs: send_data_with_retry(sheet, learning_logs, True)
     
-    # 마스터 데이터 업데이트
     valid = final_results[final_results['삭제']==False].copy()
     valid['n_cnt'] = valid['횟수'].apply(lambda x: int(re.sub(r'[^0-9]', '', str(x))) if re.search(r'\d', str(x)) else 1)
     agg = valid.groupby(['원형', '분류', '품사'], as_index=False).agg({'n_cnt': 'sum'})
@@ -291,7 +281,7 @@ def save_logic_with_learning():
     save_backup_to_cloud(st.session_state.mode_key, st.session_state.master_df)
 
 # =========================================================
-# [4] AI 분석 및 이미지 최적화 처리 (PIL을 사용한 안정성 확보)
+# [4] AI 분석 및 이미지 최적화 처리 (Stability 강화)
 # =========================================================
 def clean_raw_text(text):
     text = re.sub(r'.*\.indd.*', '', text)
@@ -302,7 +292,6 @@ def clean_raw_text(text):
     return '\n'.join(lines)
 
 def process_image_for_api(image_bytes):
-    """이미지를 명시적으로 PIL PNG로 변환하여 에러 방지"""
     if not image_bytes: return None
     try:
         img_io = io.BytesIO(image_bytes)
@@ -395,9 +384,7 @@ def run_analysis_action(txt, img_bytes=None):
         4. **동음이의어**: 문맥상 뜻이 갈리는 단어는 원형 뒤에 괄호로 뜻을 구분하십시오.
         5. **개체명 인식 (인명/지명)**: 성함은 원형 뒤에 '(이름)', 지역 명칭은 '(지명)'을 표기하십시오.
         
-        [어종 판별]
-        한자 기반 단어(학교, 분석 등)는 '한'으로, 순우리말은 '고', 서구 유래어는 '외'로 분류하십시오.
-        
+        [어종 판별] 한자 기반 단어는 '한'으로, 순우리말은 '고', 서구 유래어는 '외'로 분류하십시오.
         [출력 양식: 반드시 한글 키 JSON 리스트]
         원본, 원형, 분류(고/한/외/혼), 품사(명사/동사/형용사/부사/관형사/대명사/감탄사)
         """
@@ -407,14 +394,12 @@ def run_analysis_action(txt, img_bytes=None):
         st.session_state.debug_log += f"API 상태: {status}\nAI 응답 길이: {len(raw) if raw else 0}\n"
         
         if not raw:
-            st.error(f"AI 응답을 받지 못했습니다. 상태: {status}")
-            return
+            st.error(f"AI 응답을 받지 못했습니다. 상태: {status}"); return
 
         try:
             clean_json = raw.replace("```json", "").replace("```", "").strip()
             match = re.search(r'\[.*\]', clean_json, re.DOTALL)
-            if not match:
-                st.error("JSON 형식을 찾을 수 없습니다."); return
+            if not match: st.error("JSON 형식을 찾을 수 없습니다."); return
                 
             res = json.loads(match.group())
             st.session_state.debug_log += f"추출된 단어 개수: {len(res)}\n"
@@ -427,10 +412,8 @@ def run_analysis_action(txt, img_bytes=None):
             for r in res:
                 o, root = str(r.get('원본') or '').strip(), str(r.get('원형') or '').strip()
                 orig_v, pos_v = str(r.get('분류') or '혼').strip(), str(r.get('품사') or '명사').strip()
-                
                 if re.search(r'[0-9a-zA-Z]', o) or re.search(r'[0-9a-zA-Z]', root): continue
                 if not o or not root: continue
-
                 draft_items.append({'원본': o, '원형': root, '분류': orig_v, '품사': pos_v})
                 key = (root, orig_v, pos_v)
                 if key not in temp_dict: temp_dict[key] = []
@@ -450,8 +433,7 @@ def run_analysis_action(txt, img_bytes=None):
             st.session_state.step = 3; st.rerun()
             
         except Exception as e:
-            st.error(f"데이터 파싱 오류: {str(e)}")
-            st.session_state.debug_log += f"오류 발생: {traceback.format_exc()}\n"
+            st.error(f"데이터 파싱 오류: {str(e)}"); st.session_state.debug_log += f"오류 발생: {traceback.format_exc()}\n"
 
 # =========================================================
 # [5] UI: 메인 루프 (Wizard)
@@ -469,7 +451,6 @@ with st.sidebar:
 if st.session_state.step == 0:
     st.markdown("<h1 style='text-align: center; margin-bottom: 20px;'>📚 국어활동 AI 분석기</h1>", unsafe_allow_html=True)
     st.markdown("<p style='text-align: center; color: #888; margin-bottom: 50px;'>원하는 언어 규범을 선택하여 분석을 시작하세요.</p>", unsafe_allow_html=True)
-    
     _, c_south, c_north, _ = st.columns([1, 4, 4, 1])
     with c_south:
         if st.button("🏛️\n\n대한민국 표준어\n\n(표준국어대사전 기준)\n\n[ 시작하기 ]", key="btn_south", use_container_width=True):
@@ -531,7 +512,6 @@ elif st.session_state.step == 2:
             with c1:
                 img = get_page_image(st.session_state.file_bytes, st.session_state.file_type, st.session_state.page_idx)
                 if img: st.image(img, use_container_width=True)
-                
                 if st.session_state.file_type == "application/pdf":
                     st.markdown('<div class="control-card">', unsafe_allow_html=True)
                     st.markdown(f"<span class='status-badge'>📄 PDF 상태: {st.session_state.page_idx + 1} / {st.session_state.total_pages} 페이지</span>", unsafe_allow_html=True)
@@ -566,7 +546,7 @@ elif st.session_state.step == 2:
         if st.button("🚀 분석 실행", type="primary", use_container_width=True): 
             run_analysis_action(direct_t)
 
-# STEP 3: 결과 확인 (흐릿한 오버레이 로딩 적용)
+# STEP 3: 결과 확인 (오버레이 로딩 시스템 탑재)
 elif st.session_state.step == 3:
     ch, cb = st.columns([8, 2])
     with ch: st.header("📊 분석 결과 확인")
@@ -594,14 +574,14 @@ elif st.session_state.step == 3:
             raw_data = st.session_state.get('last_raw_response', '')
             if raw_data and isinstance(raw_data, str): st.code(raw_data, language="json")
 
-    # [수정] 수정 작업 감지 및 흐릿한 오버레이 로딩 연동
+    # [수정] 오버레이 로딩 시스템 연동
     df_res = pd.DataFrame(st.session_state.analysis_result)
     if not df_res.empty:
-        editor_placeholder = st.empty()
+        # 오버레이 처리를 위한 컨테이너 생성
+        table_container = st.empty()
         
-        # [해결책] 흐릿한 로딩 효과 구현을 위한 렌더링 분기
-        # 'is_syncing'이라는 임시 플래그를 사용하여 흐릿한 상태 표시 (실제로는 sleep 처리)
-        edited = editor_placeholder.data_editor(
+        # 1. 실제 데이터 에디터 렌더링
+        edited = table_container.data_editor(
             df_res,
             column_config={
                 "삭제": st.column_config.CheckboxColumn("삭제"),
@@ -612,35 +592,35 @@ elif st.session_state.step == 3:
             use_container_width=True, num_rows="dynamic", key="step3_editor"
         )
         
-        # 차이 비교 (삭제 컬럼 체크는 로딩 무시)
+        # 2. 수정 작업 감지 로직
         if not edited.equals(df_res):
             diff_mask = (edited != df_res).any(axis=1)
             edited_rows = edited[diff_mask]
             original_rows = df_res[diff_mask]
             
-            # 삭제 컬럼 외의 변경 확인
+            # 삭제 컬럼 외의 변경이 있는지 확인
             other_cols = [c for c in df_res.columns if c != "삭제"]
             if not edited_rows[other_cols].equals(original_rows[other_cols]):
-                # 텍스트/분류 수정 발생 -> 흐릿하게 가리고 로딩창 표시
-                with editor_placeholder.container():
+                # [해결책] 표를 그대로 둔 채 흐릿한 오버레이 창 덧씌우기
+                with table_container.container():
                     st.markdown("""
-                        <div class="sync-overlay">
-                            <div class="loading-text-box">
-                                <h3 style='color: #2979ff;'>🔄 데이터 동기화 및 검증 중...</h3>
-                                <p style='color: white;'>안전하게 저장하고 있습니다. 잠시만 기다려주세요.</p>
+                        <div class="sync-overlay-v2">
+                            <div class="loading-modal">
+                                <h3 style='color: #2979ff; margin-bottom: 10px;'>🔄 데이터 동기화 및 검증 중...</h3>
+                                <p style='color: white; font-size: 1.1rem;'>작업 내용을 안전하게 저장하고 있습니다.<br>잠시만 기다려주세요.</p>
                             </div>
                         </div>
                     """, unsafe_allow_html=True)
-                    # 실제 표를 흐릿하게 렌더링 (CSS 클래스 blur-bg 적용된 더미 표)
-                    st.markdown(f'<div class="blur-bg">', unsafe_allow_html=True)
-                    st.table(edited.head(10)) # 흐릿한 배경용 일부 데이터 표시
+                    # 배경용으로 흐릿하게 처리된 표 강제 렌더링 (블러 효과 CSS 적용)
+                    st.markdown('<div class="blur-bg">', unsafe_allow_html=True)
+                    st.table(edited.head(15)) # 위치 유지를 위해 상단 일부만 렌더링
                     st.markdown('</div>', unsafe_allow_html=True)
                 
-                time.sleep(2.5)
+                time.sleep(2.5) # 강제 텀 부여
                 st.session_state.analysis_result = edited.to_dict('records')
                 st.rerun()
             else:
-                # 삭제 체크만 발생 -> 로딩 없이 반영
+                # 삭제 체크만 한 경우: 로딩 없이 세션만 조용히 업데이트 (연속 체크 가능)
                 st.session_state.analysis_result = edited.to_dict('records')
 
     dlg_func = st.dialog if hasattr(st, "dialog") else st.experimental_dialog
@@ -651,7 +631,7 @@ elif st.session_state.step == 3:
             org = st.selectbox("어종 분류", ["고","한","외","혼"]); p = st.selectbox("품사", ["명사","동사","형용사","부사","관형사","대명사","고유명사","감탄사"])
             cnt = st.number_input("출연 횟수", 1, 100, 1)
             if st.form_submit_button("추가 완료"):
-                # 추가 버튼 클릭 시에도 흐릿한 로딩 효과 부여
+                # 추가 버튼 클릭 시 오버레이 효과를 위해 rerun 전 지연
                 with st.spinner("➕ 새로운 단어를 목록에 추가하고 동기화 중..."):
                     st.session_state.analysis_result.append({
                         "삭제": False, "횟수": f"{cnt}회", "원본": f"{o}(수동)", "원형": r, 
@@ -668,18 +648,10 @@ elif st.session_state.step == 3:
             if st.button("➕ 단어 추가", use_container_width=True): add_manual()
         with b2:
             if st.button("⛔ 선택 삭제", use_container_width=True):
-                # [해결책] 삭제 버튼 클릭 시에도 동기화 로딩 창 표시
-                with st.container():
-                    st.markdown("""
-                        <div class="sync-overlay">
-                            <div class="loading-text-box">
-                                <h3 style='color: #ff4b4b;'>🗑️ 데이터 동기화 및 정리 중...</h3>
-                                <p style='color: white;'>삭제된 단어를 목록에서 제외하고 있습니다.</p>
-                            </div>
-                        </div>
-                    """, unsafe_allow_html=True)
-                    time.sleep(2.5)
+                # [해결책] 선택 삭제 버튼 클릭 시에도 동기화 오버레이 표시
+                with st.spinner("🗑️ 삭제된 데이터를 정리하고 동기화 중..."):
                     st.session_state.analysis_result = [r for r in st.session_state.analysis_result if not r.get('삭제', False)]
+                    time.sleep(2.5)
                     st.rerun()
         with b_save_only:
             if st.button("💾 현재 페이지만 저장", use_container_width=True):
@@ -704,7 +676,7 @@ elif st.session_state.step == 3:
                         st.session_state.is_finished = True
                         st.balloons(); st.rerun()
     else:
-        st.success("✅ 모든 페이지 분석 데이터가 통합 저장되었습니다!")
+        st.success("✅ 모든 분석 데이터가 통합 저장되었습니다!")
         fname = f"Result_{st.session_state.mode_key}_{datetime.now().strftime('%m%d_%H%M')}.xlsx"
         buf = io.BytesIO()
         with pd.ExcelWriter(buf, engine='openpyxl') as w: st.session_state.master_df.to_excel(w, index=False)
