@@ -85,17 +85,20 @@ else:
         </style>
     """, unsafe_allow_html=True)
 
-# 라이브러리 로드 확인 (NameError 방지 전역 배치)
+# 라이브러리 로드 확인 (전역 변수로 관리하여 NameError 방지)
+PLUMBER_AVAILABLE = False
+FITZ_AVAILABLE = False
 try:
     import pdfplumber
     PLUMBER_AVAILABLE = True
 except:
-    PLUMBER_AVAILABLE = False
+    pass
+
 try:
     import fitz 
     FITZ_AVAILABLE = True
 except:
-    FITZ_AVAILABLE = False
+    pass
 
 # =========================================================
 # [2] 구글 시트 및 API 엔진 (기존 기능 무삭제 보존)
@@ -311,17 +314,17 @@ def api_call_direct(prompt, image_bytes=None):
 
 def extract_text_unified(file_bytes, file_type, page_idx):
     raw_text = ""
-    if "image" in file_type: 
+    if file_type and "image" in file_type: 
         raw_text, _ = api_call_direct("이 이미지 속의 텍스트를 모두 추출하세요. 줄바꿈 유지.", file_bytes)
         raw_text = raw_text or ""
-    elif "pdf" in file_type:
+    elif file_type and "pdf" in file_type:
         if PLUMBER_AVAILABLE:
             try:
                 with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
                     st.session_state.total_pages = len(pdf.pages)
                     if page_idx < len(pdf.pages): raw_text = pdf.pages[page_idx].extract_text()
             except: pass
-        if (not raw_text or len(raw_text) < 10) and FITZ_AVAILABLE:
+        if (not raw_text or len(raw_text) < 10) and FIT_AVAILABLE:
             try:
                 doc = fitz.open(stream=file_bytes, filetype="pdf")
                 st.session_state.total_pages = len(doc)
@@ -330,15 +333,20 @@ def extract_text_unified(file_bytes, file_type, page_idx):
     return clean_raw_text(raw_text)
 
 def get_page_image(file_bytes, file_type, page_idx):
-    if "image" in file_type: return file_bytes
-    if "pdf" in file_type and FITZ_AVAILABLE:
+    """TypeError 및 NameError 방지를 위한 로직 강화"""
+    if not file_bytes or not file_type: return None
+    
+    if "image" in file_type: 
+        return file_bytes
+    
+    if "pdf" in file_type and FIT_AVAILABLE:
         try:
             doc = fitz.open(stream=file_bytes, filetype="pdf")
             if page_idx < len(doc): 
                 pix = doc[page_idx].get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
                 return pix.tobytes("png")
         except Exception as e:
-            st.error(f"이미지 렌더링 오류: {str(e)}")
+            if st.session_state.debug_mode: st.error(f"이미지 렌더링 오류: {str(e)}")
             return None
     return None
 
@@ -446,7 +454,7 @@ with st.sidebar:
         st.markdown("<br>"*5, unsafe_allow_html=True)
         if st.button("🛠️ 관리자 모드 켜기"): st.session_state.debug_mode = True; st.rerun()
 
-# STEP 0: 시작 화면 (충돌 해결)
+# STEP 0: 시작 화면
 if st.session_state.step == 0:
     st.markdown("<h1 style='text-align: center; margin-bottom: 20px;'>📚 국어활동 AI 분석기</h1>", unsafe_allow_html=True)
     st.markdown("<p style='text-align: center; color: #888; margin-bottom: 50px;'>원하는 언어 규범을 선택하여 분석을 시작하세요.</p>", unsafe_allow_html=True)
@@ -474,9 +482,11 @@ elif st.session_state.step == 1:
             if up_excel:
                 with st.status("데이터 불러오는 중..."):
                     try:
-                        st.session_state.master_df = pd.read_excel(up_excel)
+                        # 엑셀 로드 안정성 강화
+                        st.session_state.master_df = pd.read_excel(up_excel, engine='openpyxl')
                         st.session_state.step = 2; st.rerun()
-                    except: st.error("엑셀 파일 형식이 올바르지 않습니다.")
+                    except Exception as e: 
+                        st.error(f"엑셀 파일 형식이 올바르지 않거나 손상되었습니다. (오류: {str(e)})")
     with col2:
         with st.container(border=True):
             st.subheader("🆕 새로 시작하기")
@@ -519,7 +529,7 @@ elif st.session_state.step == 2:
                 img = get_page_image(st.session_state.file_bytes, st.session_state.file_type, st.session_state.page_idx)
                 if img: st.image(img, use_container_width=True)
                 # 빈 칸 제거 컨트롤 박스 밀착
-                if st.session_state.file_type == "application/pdf":
+                if st.session_state.file_type and "pdf" in st.session_state.file_type:
                     st.markdown(f"<div style='margin-top:-10px; margin-bottom:10px;'><span class='status-badge'>📄 PDF 상태: {st.session_state.page_idx + 1} / {st.session_state.total_pages} 페이지</span></div>", unsafe_allow_html=True)
                     
                     j_col1, j_col2, j_col3 = st.columns([1, 1, 1])
@@ -551,7 +561,7 @@ elif st.session_state.step == 2:
         if st.button("🚀 분석 실행", type="primary", use_container_width=True): 
             run_analysis_action(direct_t)
 
-# STEP 3: 결과 확인 (Semantics & Location Guide 통합)
+# STEP 3: 결과 확인
 elif st.session_state.step == 3:
     actual_p = st.session_state.page_idx + st.session_state.start_offset
     ch, cb = st.columns([8, 2])
@@ -594,7 +604,7 @@ elif st.session_state.step == 3:
                 "분류": st.column_config.SelectboxColumn("분류", options=["🔵 고", "🟢 한", "🔴 외", "🟣 혼"]),
                 "품사": st.column_config.SelectboxColumn("품사", options=["📦 명사", "🏃 동사", "🎨 형용사", "⚡ 부사", "🔍 관형사", "👤 대명사", "고유명사", "❗ 감탄사"])
             },
-            use_container_width=True, num_rows="dynamic", key="step3_editor_semantic_scroll"
+            use_container_width=True, num_rows="dynamic", key="step3_editor_precision_scroll_final"
         )
         
         if not edited.equals(df_res):
@@ -609,7 +619,6 @@ elif st.session_state.step == 3:
                 time.sleep(2.0)
                 st.rerun()
             else:
-                # 삭제 체크 시 조용히 업데이트
                 st.session_state.analysis_result = edited.to_dict('records')
     else:
         st.warning("분석된 결과 단어가 없습니다. 고유명사 및 실질 형태소 추출 여부를 확인하세요.")
@@ -654,7 +663,7 @@ elif st.session_state.step == 3:
             if st.button("🚀 저장하고 다음 쪽 가기", type="primary", use_container_width=True):
                 with st.status("데이터 통합 및 다음 쪽 준비 중..."):
                     save_logic_with_learning()
-                    if st.session_state.file_type == "application/pdf" and st.session_state.page_idx < st.session_state.total_pages - 1:
+                    if st.session_state.file_type and "pdf" in st.session_state.file_type and st.session_state.page_idx < st.session_state.total_pages - 1:
                         st.session_state.page_idx += 1
                         st.session_state.extracted_text = extract_text_unified(st.session_state.file_bytes, st.session_state.file_type, st.session_state.page_idx)
                         st.session_state.analysis_result = []
@@ -666,7 +675,7 @@ elif st.session_state.step == 3:
                         st.session_state.is_finished = True
                         st.balloons(); st.rerun()
     else:
-        # [해결책] 저장 완료 후 2개 버튼 UI (다운로드, 다음쪽으로)
+        # 저장 완료 후 2개 버튼 UI (다운로드, 다음쪽으로)
         st.success("✅ 페이지 분석 데이터가 마스터 데이터에 성공적으로 통합되었습니다!")
         st.info(f"📍 '{actual_p}쪽' 작업 결과가 엑셀 파일에 반영되었습니다.")
         
@@ -679,7 +688,7 @@ elif st.session_state.step == 3:
             st.download_button(label=f"📥 엑셀 다운로드", data=buf.getvalue(), file_name=fname, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True, type="primary")
         with c_next:
             # 다음 쪽이 있을 때만 버튼 활성화
-            can_go_next = st.session_state.file_type == "application/pdf" and st.session_state.page_idx < st.session_state.total_pages - 1
+            can_go_next = st.session_state.file_type and "pdf" in st.session_state.file_type and st.session_state.page_idx < st.session_state.total_pages - 1
             if st.button("➡️ 다음 쪽으로 이동", use_container_width=True, disabled=not can_go_next):
                 st.session_state.page_idx += 1
                 st.session_state.extracted_text = extract_text_unified(st.session_state.file_bytes, st.session_state.file_type, st.session_state.page_idx)
