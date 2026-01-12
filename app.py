@@ -59,12 +59,8 @@ if 'last_raw_response' not in st.session_state: st.session_state.last_raw_respon
 if 'debug_log' not in st.session_state: st.session_state.debug_log = ""
 if 'is_finished' not in st.session_state: st.session_state.is_finished = False
 
-# [New] 입력 데이터만 초기화하는 안전 함수 (엑셀 파일 보호)
+# [New] 입력 데이터만 초기화하는 안전 함수
 def reset_input_buffer():
-    """
-    모드 변경 시 입력된 파일, 텍스트, 분석 결과만 초기화합니다.
-    주의: master_df(엑셀 파일)와 mode_key(언어 규범)는 절대 초기화하지 않습니다.
-    """
     st.session_state.file_bytes = None
     st.session_state.file_type = None
     st.session_state.extracted_text = ""
@@ -73,7 +69,6 @@ def reset_input_buffer():
     st.session_state.page_idx = 0
     st.session_state.total_pages = 1
     st.session_state.is_finished = False
-    # master_df는 건드리지 않음
 
 # =========================================================
 # [1] 디자인: CSS 매직
@@ -138,9 +133,22 @@ def get_google_sheet_client():
         return gspread.authorize(creds)
     except: return None
 
-def get_sheet_data_fresh(mode_key):
+# [Update] 읽기 전용 캐싱 함수 (속도 향상 및 전체 데이터 로드)
+@st.cache_data(show_spinner=False)
+def fetch_all_rules_from_db(mode_key):
     client = get_google_sheet_client()
-    if not client: return None, []
+    if not client: return []
+    target = "South_Korea" if mode_key == "SOUTH" else "North_Korea"
+    try:
+        sh = client.open(SHEET_NAME)
+        ws = sh.worksheet(target)
+        return ws.get_all_records()
+    except: return []
+
+# 쓰기 전용 함수 (캐시 사용 안 함, 워크시트 객체 반환)
+def get_sheet_object_for_write(mode_key):
+    client = get_google_sheet_client()
+    if not client: return None
     target = "South_Korea" if mode_key == "SOUTH" else "North_Korea"
     try:
         sh = client.open(SHEET_NAME)
@@ -148,8 +156,8 @@ def get_sheet_data_fresh(mode_key):
         except: 
             ws = sh.add_worksheet(title=target, rows=1000, cols=20)
             ws.append_row(["timestamp", "original_word", "root_word", "origin", "pos", "action", "context", "initial_root", "initial_origin"])
-        return ws, ws.get_all_records()
-    except: return None, []
+        return ws
+    except: return None
 
 def send_data_with_retry(sheet_obj, data, is_multiple=False):
     if not sheet_obj: return False
@@ -226,18 +234,17 @@ def merge_master_data(old_df, new_df):
     result_df['sk'] = result_df['구분'].map(sort_map).fillna(5)
     result_df = result_df.sort_values(['sk', '자료']).drop('sk', axis=1)
     result_df = result_df.reindex(columns=final_cols)
-    
     result_df = result_df.fillna("")
-    
     return result_df
 
 def save_logic_with_learning():
-    sheet, _ = get_sheet_data_fresh(st.session_state.mode_key)
+    sheet = get_sheet_object_for_write(st.session_state.mode_key)
     now = datetime.now().isoformat()
     learning_logs = []
     final_results = pd.DataFrame(st.session_state.analysis_result)
     initial_draft = pd.DataFrame(st.session_state.initial_draft)
     
+    # 1. 수정/삭제 학습
     for _, draft_row in initial_draft.iterrows():
         orig = draft_row['원본']
         match = final_results[final_results['원본'] == orig]
@@ -247,11 +254,17 @@ def save_logic_with_learning():
             final_row = match.iloc[0]
             if (draft_row['원형'] != final_row['원형'] or clean_val_for_save(draft_row['분류']) != clean_val_for_save(final_row['분류']) or clean_val_for_save(draft_row['품사']) != clean_val_for_save(final_row['품사'])):
                 learning_logs.append([now, orig, final_row['원형'], clean_val_for_save(final_row['분류']), clean_val_for_save(final_row['품사']), 'modify', 'Engine-Compare', draft_row['원형'], draft_row['분류']])
+    
+    # 2. 추가 학습
     draft_originals = initial_draft['원본'].tolist()
     for _, final_row in final_results.iterrows():
         if final_row['원본'] not in draft_originals and not final_row['삭제']:
             learning_logs.append([now, final_row['원본'], final_row['원형'], clean_val_for_save(final_row['분류']), clean_val_for_save(final_row['품사']), 'add', 'Engine-New', '', ''])
-    if learning_logs: send_data_with_retry(sheet, learning_logs, True)
+    
+    if learning_logs: 
+        send_data_with_retry(sheet, learning_logs, True)
+        # [Update] 저장 시 캐시 비우기 (새로운 규칙 반영)
+        fetch_all_rules_from_db.clear()
     
     valid = final_results[final_results['삭제']==False].copy()
     valid['n_cnt'] = valid['횟수'].apply(lambda x: int(re.sub(r'[^0-9]', '', str(x))) if re.search(r'\d', str(x)) else 1)
@@ -342,7 +355,6 @@ def get_page_image(file_bytes, file_type, page_idx):
         try:
             doc = fitz.open(stream=file_bytes, filetype="pdf")
             if page_idx < len(doc): 
-                # PDF 화질 4배
                 pix = doc[page_idx].get_pixmap(matrix=fitz.Matrix(4.0, 4.0))
                 return pix.tobytes("png")
         except: return None
@@ -350,18 +362,35 @@ def get_page_image(file_bytes, file_type, page_idx):
 
 def generate_prompt_from_sheet(sheet_data):
     if not sheet_data: return ""
+    
+    # [Update] 중복 제거 및 최신 규칙 압축 (Dictionary Deduplication)
+    rule_dict = {}
+    for row in sheet_data:
+        orig = str(row.get('original_word', '')).strip()
+        if not orig: continue
+        # 같은 단어가 나오면 최신 값으로 덮어씀 (자연스럽게 최신 규칙 유지)
+        rule_dict[orig] = row
+
     rules = []
-    for row in sheet_data[-400:]: 
-        orig, root, origin, pos, action = row.get('original_word',''), row.get('root_word',''), row.get('origin',''), row.get('pos',''), row.get('action','')
-        if action == 'delete': rules.append(f"- '{orig}'는 추출 제외.")
-        elif action in ['modify', 'add']: rules.append(f"- '{orig}' 정답: 원형:'{root}', 어종:'{origin}', 품사:'{pos}'.")
+    for orig, row in rule_dict.items():
+        action = row.get('action', '')
+        root = row.get('root_word', '')
+        origin = row.get('origin', '')
+        pos = row.get('pos', '')
+        
+        if action == 'delete':
+            rules.append(f"- '{orig}'는 추출 제외.")
+        elif action in ['modify', 'add']:
+            rules.append(f"- '{orig}' 정답: 원형:'{root}', 어종:'{origin}', 품사:'{pos}'.")
+            
     return "\n[사용자 교정 데이터 (최우선 준수)]:\n" + "\n".join(rules) + "\n"
 
 def run_analysis_action(txt, img_bytes=None):
     if not txt.strip(): st.warning("분석할 내용이 없습니다."); return
     
     with st.spinner("AI가 국어학적 관점에서 정밀 분석 중입니다..."):
-        s_data = get_sheet_data_fresh(st.session_state.mode_key)[1]
+        # [Update] 캐시된 전체 데이터 로드
+        s_data = fetch_all_rules_from_db(st.session_state.mode_key)
         
         prompt = f"""
         당신은 국어학 및 시맨틱 텍스트 분석 전문가입니다. 
@@ -401,7 +430,6 @@ def run_analysis_action(txt, img_bytes=None):
         
         try:
             if not raw: raise Exception("API 응답이 비어있습니다.")
-            
             clean_json = raw.replace("```json", "").replace("```", "").strip()
             match = re.search(r'\[.*\]', clean_json, re.DOTALL)
             
@@ -598,7 +626,6 @@ elif st.session_state.step == 2:
         if effective_file:
             c1, c2 = st.columns(2)
             with c1:
-                # [Fix] 이미지 렌더링 에러 방지 (UnidentifiedImageError)
                 try:
                     if "image" in str(st.session_state.file_type):
                         st.image(st.session_state.file_bytes, use_container_width=True, caption="이미지 원본")
