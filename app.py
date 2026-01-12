@@ -196,11 +196,27 @@ def merge_master_data(old_df, new_df):
         unique_pages = sorted(list(set(pages)))
         for i, p in enumerate(unique_pages): new_row[f"쪽수{i+1}"] = p
         final_rows.append(new_row)
+        
     result_df = pd.DataFrame(final_rows)
     result_df['출연횟수'] = result_df.apply(calc_freq, axis=1)
+    
+    # [Update] 엑셀 열 순서 재배치: '출연횟수'를 쪽수 앞쪽으로 이동
+    fixed_cols = ['구분', '자료', '출연횟수']
+    page_cols = sorted([c for c in result_df.columns if c.startswith('쪽수')], key=lambda x: int(re.sub(r'[^0-9]', '', x)) if re.search(r'\d', x) else 9999)
+    final_cols = fixed_cols + page_cols
+    
+    # 누락된 열 방지 (혹시 모를 추가 열)
+    remaining_cols = [c for c in result_df.columns if c not in final_cols and c != 'sk']
+    final_cols = final_cols + remaining_cols
+    
+    # 정렬을 위한 임시 컬럼 생성
     sort_map = {'고':1, '순':1, '한':2, '외':3, '혼':4}
     result_df['sk'] = result_df['구분'].map(sort_map).fillna(5)
     result_df = result_df.sort_values(['sk', '자료']).drop('sk', axis=1)
+    
+    # 컬럼 순서 적용
+    result_df = result_df.reindex(columns=final_cols)
+    
     return result_df
 
 def save_logic_with_learning():
@@ -209,6 +225,7 @@ def save_logic_with_learning():
     learning_logs = []
     final_results = pd.DataFrame(st.session_state.analysis_result)
     initial_draft = pd.DataFrame(st.session_state.initial_draft)
+    
     for _, draft_row in initial_draft.iterrows():
         orig = draft_row['원본']
         match = final_results[final_results['원본'] == orig]
@@ -223,6 +240,7 @@ def save_logic_with_learning():
         if final_row['원본'] not in draft_originals and not final_row['삭제']:
             learning_logs.append([now, final_row['원본'], final_row['원형'], clean_val_for_save(final_row['분류']), clean_val_for_save(final_row['품사']), 'add', 'Engine-New', '', ''])
     if learning_logs: send_data_with_retry(sheet, learning_logs, True)
+    
     valid = final_results[final_results['삭제']==False].copy()
     valid['n_cnt'] = valid['횟수'].apply(lambda x: int(re.sub(r'[^0-9]', '', str(x))) if re.search(r'\d', str(x)) else 1)
     agg = valid.groupby(['원형', '분류', '품사'], as_index=False).agg({'n_cnt': 'sum'})
@@ -251,7 +269,8 @@ def process_image_for_api(image_bytes):
         img_io = io.BytesIO(image_bytes)
         img = Image.open(img_io)
         if img.mode != "RGB": img = img.convert("RGB")
-        if max(img.size) > 2000: img.thumbnail((2000, 2000), Image.Resampling.LANCZOS)
+        # [Update] 이미지 해상도 보존 (2000 -> 3000으로 상향 조정)
+        if max(img.size) > 3000: img.thumbnail((3000, 3000), Image.Resampling.LANCZOS)
         output = io.BytesIO()
         img.save(output, format="PNG")
         return output.getvalue()
@@ -316,7 +335,8 @@ def get_page_image(file_bytes, file_type, page_idx):
         try:
             doc = fitz.open(stream=file_bytes, filetype="pdf")
             if page_idx < len(doc): 
-                pix = doc[page_idx].get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
+                # [Update] PDF 이미지 변환 해상도 2배 -> 4배 상향 (정확도 개선)
+                pix = doc[page_idx].get_pixmap(matrix=fitz.Matrix(4.0, 4.0))
                 return pix.tobytes("png")
         except: return None
     return None
@@ -336,35 +356,37 @@ def run_analysis_action(txt, img_bytes=None):
     with st.spinner("AI가 국어학적 관점에서 정밀 분석 중입니다..."):
         s_data = get_sheet_data_fresh(st.session_state.mode_key)[1]
         
+        # [Update] Chain of Thought(CoT) 방식 프롬프트: '읽기'와 '분석' 분리
         prompt = f"""
-        당신은 국어학 및 시맨틱 텍스트 분석 전문가입니다. 아래 지침을 엄격히 준수하십시오.
+        당신은 국어학 및 시맨틱 텍스트 분석 전문가입니다. 
+        
+        [수행 절차]
+        1. 먼저 이미지나 텍스트에 있는 단어들을 빠짐없이 읽어내십시오.
+        2. 그 다음, 아래 규칙을 적용하여 분류하십시오.
+        
         {generate_prompt_from_sheet(s_data)}
         
-        [1. 고유명사(Named Entity) 식별 - 최우선]
-        - **인명(이름)**: 사람 이름으로 판단되면 원형 뒤에 반드시 '(이름)'을 표기. (예: 홍길동(이름))
-        - **지명(장소)**: 국가, 도시, 지역 명칭은 원형 뒤에 반드시 '(지명)'을 표기. (예: 서울(지명), 한라산(지명))
+        [1. 고유명사(Named Entity) 식별]
+        - **인명(이름)**: 사람 이름 뒤에 '(이름)' 표기. (예: 홍길동(이름))
+        - **지명(장소)**: 지역 명칭 뒤에 '(지명)' 표기. (예: 서울(지명))
         
-        [2. 동음이의어(Homonym) 의미 구분]
-        - 단어의 형태가 같으나 뜻이 다른 경우, 문맥상 의미를 괄호에 표기하여 구별.
-        - 예: '배(과일)', '배(선박)', '배(신체)', '눈(기상)', '눈(신체)'.
+        [2. 동음이의어(Homonym) 구분]
+        - 문맥상 의미를 괄호에 표기. (예: 배(과일), 배(선박))
         
-        [3. 용언(동사/형용사) 기본형 표기 규칙 - 필수]
-        - 동사와 형용사의 '원형'은 어간만 추출하지 말고, 반드시 어미 '다'를 붙여 사전 등재형(기본형)으로 출력하십시오.
-        - 예: '발휘했다' -> '발휘'(X) -> '발휘하다'(O)
-        - 예: '만나기로' -> '만나'(X) -> '만나다'(O)
-        - 예: '들어갔다' -> '들어가'(X) -> '들어가다'(O)
-        - 예: '행복한' -> '행복하'(X) -> '행복하다'(O)
+        [3. 용언(동사/형용사) 기본형]
+        - 반드시 어미 '다'를 붙일 것. (예: 했다 -> 하다, 예쁜 -> 예쁘다)
         
-        [4. 제외 대상 (필터링)]
-        - 조사, 어미, 수사.
-        - **의존 명사**: 것, 수, 데, 바, 만큼, 지, 리, 개, 명, 번, 쪽, 등 등은 무조건 제외.
-        - 숫자(0-9), 로마자(A-Z), 특수기호.
+        [4. 제외 대상]
+        - 조사, 어미, 수사, 숫자, 특수기호.
+        - **의존 명사**: 것, 수, 데, 바, 만큼, 지, 등, 뿐, 따름 등 제외.
         
-        [5. 어종 분류]
-        - 고(순우리말), 한(한자어), 외(외래어), 혼(혼종어).
+        [5. 어종] 고(순우리말), 한(한자어), 외(외래어), 혼(혼종어).
         
-        [출력 양식: 한글 키 JSON 리스트]
-        원본, 원형, 분류(고/한/외/혼), 품사(명사/동사/형용사/부사/관형사/대명사/감탄사)
+        [출력 양식: JSON 리스트]
+        [
+          {{"원본": "단어1", "원형": "기본형1", "분류": "고/한/외/혼", "품사": "명사/동사/..."}},
+          ...
+        ]
         """
         
         raw, status = api_call_direct(prompt + f"\n\n[분석 대상]:\n{txt[:5000]}", img_bytes)
@@ -376,12 +398,13 @@ def run_analysis_action(txt, img_bytes=None):
             clean_json = raw.replace("```json", "").replace("```", "").strip()
             match = re.search(r'\[.*\]', clean_json, re.DOTALL)
             
-            # [Fix] JSON 파싱 로직 강화 (NoneType 오류 방지)
             if match:
                 res = json.loads(match.group())
             else:
                 try: res = json.loads(clean_json)
-                except: res = [] # 파싱 실패 시 빈 리스트로 처리하여 UI 오류 방지
+                except: 
+                    st.warning("분석 결과가 없습니다. (텍스트가 너무 짧거나 인식되지 않음)")
+                    res = []
 
             proc = []; temp_dict = {}
             om = {'고':'🔵 고', '한':'🟢 한', '외':'🔴 외', '혼':'🟣 혼'}
@@ -410,7 +433,7 @@ def run_analysis_action(txt, img_bytes=None):
             st.session_state.analysis_result = proc; st.session_state.step = 3; st.rerun()
             
         except Exception as e:
-            st.error(f"파싱 오류: {str(e)}")
+            st.error(f"오류가 발생했습니다: {str(e)}")
             st.session_state.debug_log = f"Error: {str(e)}\nRaw Response:\n{raw}"
 
 # =========================================================
@@ -516,9 +539,9 @@ elif st.session_state.step == 2:
                         st.session_state.extracted_text = extract_text_unified(st.session_state.file_bytes, "application/pdf", st.session_state.page_idx)
                         st.rerun()
                 
-                # [Fix] PDF 페이지 이동 로직 (Enter 입력 시 즉시 이동)
                 with j2: 
                     target_p = st.number_input("이동", 1, st.session_state.total_pages, st.session_state.page_idx+1, label_visibility="collapsed")
+                    # [Fix] 페이지 이동 로직 명확화
                     if target_p != st.session_state.page_idx + 1:
                         st.session_state.page_idx = target_p - 1
                         st.session_state.extracted_text = extract_text_unified(st.session_state.file_bytes, "application/pdf", st.session_state.page_idx)
@@ -556,7 +579,6 @@ elif st.session_state.step == 2:
 
     elif st.session_state.input_type == "DIRECT":
         st.session_state.extracted_text = st.text_area("분석할 텍스트를 입력하세요", value=st.session_state.extracted_text, height=450)
-        # [Fix] 직접 입력 시 img_bytes=None 명시 (오류 원천 차단)
         if st.button("🚀 분석 실행", type="primary", use_container_width=True): run_analysis_action(st.session_state.extracted_text, None)
 
 # STEP 3: 결과 확인
@@ -592,7 +614,6 @@ elif st.session_state.step == 3:
     st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
     st.markdown("### 📋 분석 결과 편집 <span class='guide-text'>(※ 연속 수정 시 동작 간에 작은 텀을 주시면 안전합니다)</span>", unsafe_allow_html=True)
     
-    # [Fix] 분석 결과가 없을 때 안내 메시지 출력 (테이블 증발 방지)
     df_res = pd.DataFrame(st.session_state.analysis_result)
     if not df_res.empty:
         edited = st.data_editor(df_res, column_config={
