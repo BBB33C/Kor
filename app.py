@@ -45,7 +45,7 @@ if 'is_finished' not in st.session_state: st.session_state.is_finished = False
 if 'sync_trigger' not in st.session_state: st.session_state.sync_trigger = False # 로딩 오버레이 트리거
 
 # =========================================================
-# [1] 디자인: CSS 매직 (고정 레이어 오버레이 시스템)
+# [1] 디자인: CSS 매직 (콤팩트 오버레이 시스템)
 # =========================================================
 if st.session_state.step == 0:
     st.markdown("""
@@ -82,24 +82,25 @@ else:
             button:disabled { opacity: 0.5 !important; cursor: not-allowed !important; }
             .section-divider { border-bottom: 2px solid #3d4251; margin: 25px 0; }
             
-            /* 표 위에 고정되는 절대 위치 오버레이 */
+            /* [해결책] 스크롤 흔들림 방지 및 콤팩트 오버레이 */
             .fixed-sync-overlay { 
                 position: fixed; 
                 top: 0; left: 0; width: 100vw; height: 100vh;
-                background-color: rgba(0, 0, 0, 0.6);
+                background-color: rgba(0, 0, 0, 0.5); /* 투명도 조정 */
                 display: flex;
                 align-items: center;
                 justify-content: center;
                 z-index: 999999;
                 backdrop-filter: blur(2px);
             }
-            .loading-box-v3 {
+            .loading-box-compact {
                 background-color: #1e2129;
-                padding: 40px 60px;
-                border-radius: 15px;
+                padding: 20px 40px; /* 크기 축소 */
+                border-radius: 12px;
                 border: 2px solid #2979ff;
                 text-align: center;
-                box-shadow: 0 20px 50px rgba(0,0,0,1);
+                box-shadow: 0 10px 40px rgba(0,0,0,1);
+                min-width: 300px;
             }
         </style>
     """, unsafe_allow_html=True)
@@ -382,7 +383,7 @@ def run_analysis_action(txt, img_bytes=None):
         4. **동음이의어**: 문맥상 뜻이 갈리는 단어는 원형 뒤에 괄호로 뜻을 구분하십시오.
         5. **개체명 인식 (인명/지명)**: 성함은 원형 뒤에 '(이름)', 지역 명칭은 '(지명)'을 표기하십시오.
         [어종 판별] 한자 기반 단어는 '한'으로, 순우리말은 '고', 서구 유래어는 '외'로 분류하십시오.
-        [출력 양식: 한글 키 JSON 리스트]
+        [출력 양식: 반드시 한글 키 JSON 리스트]
         원본, 원형, 분류(고/한/외/혼), 품사(명사/동사/형용사/부사/관형사/대명사/감탄사)
         """
         raw, status = api_call_direct(prompt + f"\n[분석 대상]:\n{txt[:5000]}", img_bytes)
@@ -528,24 +529,23 @@ elif st.session_state.step == 2:
         if st.button("🚀 분석 실행", type="primary", use_container_width=True): 
             run_analysis_action(direct_t)
 
-# STEP 3: 결과 확인 (비파괴적 로딩 오버레이 레이아웃)
+# STEP 3: 결과 확인 (비파괴적 플로팅 오버레이 시스템)
 elif st.session_state.step == 3:
     ch, cb = st.columns([8, 2])
     with ch: st.header("📊 분석 결과 확인")
     with cb:
         if st.button("⬅️ 입력 수정하기", use_container_width=True): st.session_state.step = 2; st.rerun()
     
-    # [수정] 수정 발생 시 화면을 덮는 오버레이 로직
+    # [해결책] 고정 위치의 콤팩트 오버레이 로딩창
     if st.session_state.sync_trigger:
         st.markdown("""
             <div class="fixed-sync-overlay">
-                <div class="loading-box-v3">
-                    <h2 style='color: #2979ff; margin-bottom: 20px;'>🔄 데이터 동기화 및 검증 중</h2>
-                    <p style='color: white; font-size: 1.2rem;'>작업 내용을 표 위에 안전하게 반영하고 있습니다.<br>잠시만 기다려주세요.</p>
+                <div class="loading-box-compact">
+                    <h3 style='color: #2979ff; margin-bottom: 10px;'>🔄 데이터 동기화 중</h3>
+                    <p style='color: white; margin-bottom: 0;'>작업 내용을 안전하게 반영하고 있습니다.<br>잠시만 기다려주세요.</p>
                 </div>
             </div>
         """, unsafe_allow_html=True)
-        # 로직 처리 후 트리거 해제 및 rerun (버튼/에디터 로직 하단에 위치)
 
     # 상단 2단 배치 (이미지/원문)
     top_left, top_right = st.columns([1, 1])
@@ -568,10 +568,10 @@ elif st.session_state.step == 3:
             raw_data = st.session_state.get('last_raw_response', '')
             if raw_data and isinstance(raw_data, str): st.code(raw_data, language="json")
 
-    # 데이터 에디터 렌더링
+    # 데이터 에디터 렌더링 영역
     df_res = pd.DataFrame(st.session_state.analysis_result)
     if not df_res.empty:
-        # [해결책] 표의 레이아웃을 보존하기 위해 컨테이너 내부 렌더링
+        # [해결책] 표 영역 컨테이너 고정 (스크롤 보호)
         with st.container():
             edited = st.data_editor(
                 df_res,
@@ -581,7 +581,7 @@ elif st.session_state.step == 3:
                     "분류": st.column_config.SelectboxColumn("분류", options=["🔵 고", "🟢 한", "🔴 외", "🟣 혼"]),
                     "품사": st.column_config.SelectboxColumn("품사", options=["📦 명사", "🏃 동사", "🎨 형용사", "⚡ 부사", "🔍 관형사", "👤 대명사", "고유명사", "❗ 감탄사"])
                 },
-                use_container_width=True, num_rows="dynamic", key="step3_editor_v2" # 키 고정하여 초기화 억제
+                use_container_width=True, num_rows="dynamic", key="step3_editor_v2" # 키 고정 필수
             )
         
         # 수정 감지 로직
@@ -596,7 +596,7 @@ elif st.session_state.step == 3:
                 st.session_state.sync_trigger = True # 오버레이 트리거
                 st.rerun()
             else:
-                # 삭제 체크만 한 경우: 오버레이 없이 세션 업데이트
+                # 삭제 체크박스만 토글: 오버레이 없이 세션 업데이트
                 st.session_state.analysis_result = edited.to_dict('records')
     else:
         st.warning("분석된 결과 단어가 없습니다.")
@@ -625,8 +625,9 @@ elif st.session_state.step == 3:
             if st.button("➕ 단어 추가", use_container_width=True): add_manual()
         with b2:
             if st.button("⛔ 선택 삭제", use_container_width=True):
+                # [해결책] 선택 삭제 버튼 클릭 시에도 고정 오버레이 트리거
                 st.session_state.analysis_result = [r for r in st.session_state.analysis_result if not r.get('삭제', False)]
-                st.session_state.sync_trigger = True # 삭제 후 로딩 트리거
+                st.session_state.sync_trigger = True 
                 st.rerun()
         with b_save_only:
             if st.button("💾 현재 페이지만 저장", use_container_width=True):
@@ -656,13 +657,14 @@ elif st.session_state.step == 3:
         buf = io.BytesIO()
         with pd.ExcelWriter(buf, engine='openpyxl') as w: st.session_state.master_df.to_excel(w, index=False)
         c1, c2 = st.columns(2)
-        with c1: st.download_button(label=f"📥 {fname} 다운로드", data=buf.getvalue(), file_name=fname, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True, type="primary")
+        with c1:
+            st.download_button(label=f"📥 {fname} 다운로드", data=buf.getvalue(), file_name=fname, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True, type="primary")
         with c2:
             if st.button("🔄 처음 단계로 이동", use_container_width=True):
                 st.session_state.step = 2; st.session_state.is_finished = False; st.rerun()
 
-    # [핵심] 오버레이 트리거 해제 로직 (지연 처리)
+    # [해결책] 동기화 효과 시간 지연 (트리거가 켜져 있을 때만 sleep)
     if st.session_state.sync_trigger:
-        time.sleep(2.5) # 실제 동기화 효과 시간
+        time.sleep(2.5) 
         st.session_state.sync_trigger = False
         st.rerun()
