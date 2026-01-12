@@ -16,7 +16,7 @@ import traceback
 from PIL import Image # 이미지 검증 및 재인코딩용 필수 라이브러리
 
 # =========================================================
-# [0] 기본 설정 및 상태 초기화
+# [0] 기본 설정 및 라이브러리 초기화 (오류 방지)
 # =========================================================
 st.set_page_config(
     page_title="국어활동 AI 분석기", 
@@ -25,45 +25,62 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# 세션 상태 초기화 (모든 작업 상태 및 환경 변수 보존)
+# [Fix] 전역 변수 사전 초기화 (NameError 방지)
+PLUMBER_AVAILABLE = False
+FITZ_AVAILABLE = False
+
+try:
+    import pdfplumber
+    PLUMBER_AVAILABLE = True
+except ImportError:
+    pass
+
+try:
+    import fitz 
+    FITZ_AVAILABLE = True
+except ImportError:
+    pass
+
+# 세션 상태 초기화
 if 'step' not in st.session_state: st.session_state.step = 0
 if 'mode_key' not in st.session_state: st.session_state.mode_key = None
+if 'input_type' not in st.session_state: st.session_state.input_type = None
 if 'master_df' not in st.session_state: st.session_state.master_df = None
 if 'analysis_result' not in st.session_state: st.session_state.analysis_result = []
 if 'initial_draft' not in st.session_state: st.session_state.initial_draft = []
 if 'file_bytes' not in st.session_state: st.session_state.file_bytes = None
 if 'file_type' not in st.session_state: st.session_state.file_type = None
 if 'page_idx' not in st.session_state: st.session_state.page_idx = 0
-if 'total_pages' not in st.session_state: st.session_state.total_pages = 0
+if 'total_pages' not in st.session_state: st.session_state.total_pages = 1
 if 'start_offset' not in st.session_state: st.session_state.start_offset = 1
 if 'extracted_text' not in st.session_state: st.session_state.extracted_text = ""
 if 'debug_mode' not in st.session_state: st.session_state.debug_mode = False
 if 'last_raw_response' not in st.session_state: st.session_state.last_raw_response = ""
 if 'debug_log' not in st.session_state: st.session_state.debug_log = ""
-if 'current_tab_idx' not in st.session_state: st.session_state.current_tab_idx = 0 
 if 'is_finished' not in st.session_state: st.session_state.is_finished = False
 
 # =========================================================
-# [1] 디자인: CSS 매직 (안정적인 레이아웃 유지)
+# [1] 디자인: CSS 매직
 # =========================================================
-if st.session_state.step == 0:
+if st.session_state.step in [0, 1.5]:
     st.markdown("""
         <style>
             .stApp { background-color: #0e1117 !important; color: #ffffff !important; }
             div.block-container div[data-testid="column"] div.stButton > button {
-                width: 100%; height: 320px;
+                width: 100%; height: 280px;
                 background-color: #262730 !important;
-                border: 2px solid rgba(255,255,255,0.05) !important;
+                border: 2px solid rgba(255,255,255,0.1) !important;
                 border-radius: 20px !important;
                 color: #eeeeee !important;
-                font-size: 1.5rem !important; font-weight: 700 !important;
+                font-size: 1.4rem !important; font-weight: 700 !important;
                 transition: all 0.3s ease !important;
-                box-shadow: 0 4px 10px rgba(0,0,0,0.3) !important;
+                box-shadow: 0 4px 15px rgba(0,0,0,0.4) !important;
                 white-space: pre-wrap !important;
             }
             div.block-container div[data-testid="column"] div.stButton > button:hover {
-                transform: translateY(-8px);
+                transform: translateY(-10px);
                 background-color: #2b2c36 !important;
+                border-color: #2979ff !important;
             }
         </style>
     """, unsafe_allow_html=True)
@@ -73,43 +90,24 @@ else:
             .stApp { background-color: #0e1117 !important; color: #ffffff !important; }
             .stTextArea textarea { font-family: 'Malgun Gothic', sans-serif !important; font-size: 16px !important; line-height: 1.6 !important; }
             .stButton button { border-radius: 8px; font-weight: bold; height: auto; }
-            div.stRadio > div[role="radiogroup"] { display: flex; flex-direction: row; gap: 10px; }
             .control-card { background-color: #1e2129; padding: 20px; border-radius: 15px; border: 1px solid #3d4251; margin-bottom: 20px; }
             .status-badge { background-color: #2979ff; padding: 4px 12px; border-radius: 20px; font-size: 0.9rem; font-weight: 600; color: white !important; }
             .info-card { background-color: rgba(41, 121, 255, 0.1); border-left: 5px solid #2979ff; padding: 15px; border-radius: 5px; margin-top: 15px; }
             .debug-box { background-color: #000; color: #0f0; font-family: monospace; padding: 10px; border-radius: 5px; font-size: 0.8rem; overflow-x: auto; }
             .section-divider { border-bottom: 2px solid #3d4251; margin: 25px 0; }
             .guide-text { color: #888888; font-size: 0.85rem; font-weight: normal; margin-left: 10px; }
-            /* PDF 이미지 하단 공백 제거 및 밀착 */
+            /* PDF 이미지 하단 공백 제거 */
             [data-testid="stImage"] { margin-bottom: -15px !important; }
         </style>
     """, unsafe_allow_html=True)
 
-# 라이브러리 로드 확인 (전역 변수로 관리하여 NameError 방지)
-PLUMBER_AVAILABLE = False
-FITZ_AVAILABLE = False
-try:
-    import pdfplumber
-    PLUMBER_AVAILABLE = True
-except:
-    pass
-
-try:
-    import fitz 
-    FITZ_AVAILABLE = True
-except:
-    pass
-
 # =========================================================
-# [2] 구글 시트 및 API 엔진 (기존 기능 무삭제 보존)
+# [2] 구글 시트 및 API 엔진
 # =========================================================
 try:
-    if "GEMINI_API_KEY" in st.secrets:
-        API_KEY = st.secrets["GEMINI_API_KEY"]
-    else:
-        API_KEY = ""
-except:
-    API_KEY = ""
+    if "GEMINI_API_KEY" in st.secrets: API_KEY = st.secrets["GEMINI_API_KEY"]
+    else: API_KEY = ""
+except: API_KEY = ""
 
 MODEL_NAME = "gemini-2.0-flash-exp"
 SHEET_NAME = "Korean_DB"
@@ -184,10 +182,8 @@ def merge_master_data(old_df, new_df):
     if old_df is None or old_df.empty: return new_df
     key_cols = ['자료', '구분']
     merged = pd.merge(old_df, new_df, on=key_cols, how='outer', suffixes=('_old', '_new'))
-    
     page_cols_old = [c for c in old_df.columns if c.startswith('쪽수')]
     page_cols_new = [c for c in new_df.columns if c.startswith('쪽수')]
-    
     final_rows = []
     for _, row in merged.iterrows():
         new_row = {k: row[k] for k in key_cols}
@@ -198,11 +194,9 @@ def merge_master_data(old_df, new_df):
         for c in page_cols_new:
             val = row.get(f"{c}_new", row.get(c))
             if pd.notna(val) and str(val).strip() not in ['nan', '', 'None']: pages.append(str(val))
-            
         unique_pages = sorted(list(set(pages)))
         for i, p in enumerate(unique_pages): new_row[f"쪽수{i+1}"] = p
         final_rows.append(new_row)
-        
     result_df = pd.DataFrame(final_rows)
     result_df['출연횟수'] = result_df.apply(calc_freq, axis=1)
     sort_map = {'고':1, '순':1, '한':2, '외':3, '혼':4}
@@ -211,64 +205,38 @@ def merge_master_data(old_df, new_df):
     return result_df
 
 def save_logic_with_learning():
-    """학습 데이터 전송 및 마스터 데이터 업데이트"""
     sheet, _ = get_sheet_data_fresh(st.session_state.mode_key)
     now = datetime.now().isoformat()
     learning_logs = []
-    
     final_results = pd.DataFrame(st.session_state.analysis_result)
     initial_draft = pd.DataFrame(st.session_state.initial_draft)
-    
-    # 1. 교정 및 삭제 학습
     for _, draft_row in initial_draft.iterrows():
         orig = draft_row['원본']
         match = final_results[final_results['원본'] == orig]
-        
         if match.empty or match.iloc[0]['삭제']:
             learning_logs.append([now, orig, draft_row['원형'], draft_row['분류'], draft_row['품사'], 'delete', 'Engine-Compare', draft_row['원형'], draft_row['분류']])
         else:
             final_row = match.iloc[0]
-            if (draft_row['원형'] != final_row['원형'] or 
-                clean_val_for_save(draft_row['분류']) != clean_val_for_save(final_row['분류']) or 
-                clean_val_for_save(draft_row['품사']) != clean_val_for_save(final_row['품사'])):
-                
-                learning_logs.append([
-                    now, orig, final_row['원형'], 
-                    clean_val_for_save(final_row['분류']), 
-                    clean_val_for_save(final_row['품사']), 
-                    'modify', 'Engine-Compare', 
-                    draft_row['원형'], draft_row['분류']
-                ])
-                
-    # 2. 추가 학습
+            if (draft_row['원형'] != final_row['원형'] or clean_val_for_save(draft_row['분류']) != clean_val_for_save(final_row['분류']) or clean_val_for_save(draft_row['품사']) != clean_val_for_save(final_row['품사'])):
+                learning_logs.append([now, orig, final_row['원형'], clean_val_for_save(final_row['분류']), clean_val_for_save(final_row['품사']), 'modify', 'Engine-Compare', draft_row['원형'], draft_row['분류']])
     draft_originals = initial_draft['원본'].tolist()
     for _, final_row in final_results.iterrows():
         if final_row['원본'] not in draft_originals and not final_row['삭제']:
-            learning_logs.append([
-                now, final_row['원본'], final_row['원형'], 
-                clean_val_for_save(final_row['분류']), 
-                clean_val_for_save(final_row['품사']), 
-                'add', 'Engine-New', '', ''
-            ])
-            
+            learning_logs.append([now, final_row['원본'], final_row['원형'], clean_val_for_save(final_row['분류']), clean_val_for_save(final_row['품사']), 'add', 'Engine-New', '', ''])
     if learning_logs: send_data_with_retry(sheet, learning_logs, True)
-    
-    # 마스터 데이터 업데이트
     valid = final_results[final_results['삭제']==False].copy()
     valid['n_cnt'] = valid['횟수'].apply(lambda x: int(re.sub(r'[^0-9]', '', str(x))) if re.search(r'\d', str(x)) else 1)
     agg = valid.groupby(['원형', '분류', '품사'], as_index=False).agg({'n_cnt': 'sum'})
-    
     p_num = str(st.session_state.page_idx + st.session_state.start_offset)
     temp_rows = []
     for _, item in agg.iterrows():
         val = f"{p_num}_{item['n_cnt']}" if item['n_cnt'] > 1 else p_num
         temp_rows.append({'구분': clean_val_for_save(item['분류']), '자료': item['원형'], '쪽수1': val})
-        
     st.session_state.master_df = merge_master_data(st.session_state.master_df, pd.DataFrame(temp_rows))
     save_backup_to_cloud(st.session_state.mode_key, st.session_state.master_df)
 
 # =========================================================
-# [4] AI 분석 및 이미지 최적화 처리 (PIL 무삭제 보존)
+# [4] AI 분석 및 이미지 최적화 처리
 # =========================================================
 def clean_raw_text(text):
     text = re.sub(r'.*\.indd.*', '', text)
@@ -288,9 +256,7 @@ def process_image_for_api(image_bytes):
         output = io.BytesIO()
         img.save(output, format="PNG")
         return output.getvalue()
-    except Exception as e:
-        if "debug_log" in st.session_state: st.session_state.debug_log += f"이미지 전처리 경고: {str(e)}\n"
-        return None
+    except Exception as e: return None
 
 def api_call_direct(prompt, image_bytes=None):
     if not API_KEY: return None, "API Key Missing"
@@ -300,176 +266,119 @@ def api_call_direct(prompt, image_bytes=None):
     if image_bytes:
         optimized_img = process_image_for_api(image_bytes)
         if optimized_img:
-            try:
-                b64_img = base64.b64encode(optimized_img).decode('utf-8')
-                parts.append({"inline_data": {"mime_type": "image/png", "data": b64_img}})
-            except: pass
+            b64_img = base64.b64encode(optimized_img).decode('utf-8')
+            parts.append({"inline_data": {"mime_type": "image/png", "data": b64_img}})
     try:
         res = requests.post(url, headers=headers, json={"contents": [{"parts": parts}]}, timeout=300)
-        if res.status_code == 200: 
-            text_res = res.json()['candidates'][0]['content']['parts'][0]['text']
-            return text_res, "Success"
+        if res.status_code == 200: return res.json()['candidates'][0]['content']['parts'][0]['text'], "Success"
         return None, f"Error: {res.status_code} - {res.text}"
     except Exception as e: return None, str(e)
 
 def extract_text_unified(file_bytes, file_type, page_idx):
+    # [Fix] TypeError 방지
+    if not file_type: return ""
+    
     raw_text = ""
-    if file_type and "image" in file_type: 
+    if "image" in file_type: 
         raw_text, _ = api_call_direct("이 이미지 속의 텍스트를 모두 추출하세요. 줄바꿈 유지.", file_bytes)
-        raw_text = raw_text or ""
-    elif file_type and "pdf" in file_type:
+    elif "pdf" in file_type:
         if PLUMBER_AVAILABLE:
             try:
                 with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
                     st.session_state.total_pages = len(pdf.pages)
                     if page_idx < len(pdf.pages): raw_text = pdf.pages[page_idx].extract_text()
             except: pass
-        if (not raw_text or len(raw_text) < 10) and FIT_AVAILABLE:
+        if (not raw_text or len(raw_text) < 10) and FITZ_AVAILABLE:
             try:
                 doc = fitz.open(stream=file_bytes, filetype="pdf")
                 st.session_state.total_pages = len(doc)
                 if page_idx < len(doc): raw_text = doc[page_idx].get_text()
             except: pass
-    return clean_raw_text(raw_text)
+    return clean_raw_text(raw_text or "")
 
 def get_page_image(file_bytes, file_type, page_idx):
-    """TypeError 및 NameError 방지를 위한 로직 강화"""
+    # [Fix] TypeError 및 NameError 방지
     if not file_bytes or not file_type: return None
     
     if "image" in file_type: 
         return file_bytes
-    
-    if "pdf" in file_type and FIT_AVAILABLE:
+    if "pdf" in file_type and FITZ_AVAILABLE:
         try:
             doc = fitz.open(stream=file_bytes, filetype="pdf")
             if page_idx < len(doc): 
                 pix = doc[page_idx].get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
                 return pix.tobytes("png")
-        except Exception as e:
-            if st.session_state.debug_mode: st.error(f"이미지 렌더링 오류: {str(e)}")
-            return None
+        except: return None
     return None
 
 def generate_prompt_from_sheet(sheet_data):
     if not sheet_data: return ""
     rules = []
-    # 정확도 향상을 위한 과거 교정 데이터 참조 최적화
     for row in sheet_data[-400:]: 
         orig, root, origin, pos, action = row.get('original_word',''), row.get('root_word',''), row.get('origin',''), row.get('pos',''), row.get('action','')
-        if action == 'delete': rules.append(f"- '{orig}'는 절대 추출하지 말고 제외.")
-        elif action in ['modify', 'add']: rules.append(f"- '{orig}'의 올바른 분석: 원형:'{root}', 어종:'{origin}', 품사:'{pos}'.")
-    return "\n[과거 사용자 교정 데이터 (최우선순위 지침)]:\n" + "\n".join(rules) + "\n"
+        if action == 'delete': rules.append(f"- '{orig}'는 추출 제외.")
+        elif action in ['modify', 'add']: rules.append(f"- '{orig}' 정답: 원형:'{root}', 어종:'{origin}', 품사:'{pos}'.")
+    return "\n[사용자 교정 데이터 (최우선 준수)]:\n" + "\n".join(rules) + "\n"
 
 def run_analysis_action(txt, img_bytes=None):
     if not txt.strip(): st.warning("분석할 내용이 없습니다."); return
-    st.session_state.debug_log = f"[{datetime.now().strftime('%H:%M:%S')}] 정밀 시맨틱 분석 가동... 텍스트 길이: {len(txt)}\n"
-    
-    with st.spinner("AI가 고유명사와 동음이의어를 정밀 판별 중입니다..."):
+    with st.spinner("AI가 국어학적 관점에서 정밀 분석 중입니다..."):
         s_data = get_sheet_data_fresh(st.session_state.mode_key)[1]
-        
-        # [정확도 보강] 고유명사(인명/지명) 및 동음이의어 판별 로직 복원
         prompt = f"""
-        당신은 국어학 및 시맨틱 텍스트 분석 전문가입니다.
-        제공된 텍스트에서 주요 단어를 추출하되, 아래의 고도화된 지침을 엄격히 준수하십시오.
-
+        당신은 국어학 및 시맨틱 텍스트 분석 전문가입니다. 아래 지침을 엄격히 준수하십시오.
         {generate_prompt_from_sheet(s_data)}
-
-        [1. 고유명사 정밀 판별]
-        - **인명(사람 이름)**: 문맥상 사람 이름으로 판단되는 경우, 원형 뒤에 반드시 '(이름)'을 붙이십시오. (예: 홍길동(이름))
-        - **지명(지역 명칭)**: 국가, 도시, 산, 강 등 지역 명칭은 원형 뒤에 반드시 '(지명)'을 붙이십시오. (예: 서울(지명), 한강(지명))
-
-        [2. 동음이의어 및 문맥 분석]
-        - 단어의 형태는 같으나 뜻이 여러 개인 경우, 문맥상 의미를 파악하여 괄호 안에 보충 설명을 기재하십시오. 
-          (예: 배(과일), 배(선박), 배(신체))
-
-        [3. 어종 및 품사 분류 가이드]
-        - '고': 순우리말 / '한': 한자어 / '외': 외래어 / '혼': 복합어종
-        - 품사: 명사, 동사, 형용사, 부사, 관형사, 대명사, 감탄사 중 택 1
-
-        [4. 분석 제외 대상 (필수)]
-        - 조사, 어미, 수사.
-        - **의존 명사**: 것, 수, 만큼, 데, 바, 지, 리, 개, 명, 번, 쪽 등은 무조건 제외.
-        - 숫자(0-9), 로마자(A-Z), 특수기호.
-
+        [1. 고유명사 및 동음이의어 판별]
+        - **인명**: 사람 이름 식별 시 원형 뒤에 '(이름)' 표기. (예: 홍길동(이름))
+        - **지명**: 지역 명칭 식별 시 원형 뒤에 '(지명)' 표기. (예: 서울(지명))
+        - **동음이의어**: 문맥에 따른 의미를 괄호에 부연 설명. (예: 배(과일), 배(선박))
+        [2. 제외 대상] 조사, 어미, 수사, 의존명사(것, 수, 데, 바, 만큼, 지 등), 숫자, 로마자.
+        [3. 어종] 고(순우리말), 한(한자어), 외(외래어), 혼.
         [출력 양식: 한글 키 JSON 리스트]
         원본, 원형, 분류(고/한/외/혼), 품사(명사/동사/형용사/부사/관형사/대명사/감탄사)
         """
-        
-        raw, status = api_call_direct(prompt + f"\n\n[분석 대상 원문]:\n{txt[:5000]}", img_bytes)
-        st.session_state.last_raw_response = raw if raw else f"No response (Status: {status})"
-        
-        if not raw:
-            st.error(f"AI 응답 실패: {status}"); return
-            
+        raw, status = api_call_direct(prompt + f"\n\n[분석 대상]:\n{txt[:5000]}", img_bytes)
         try:
             clean_json = raw.replace("```json", "").replace("```", "").strip()
             match = re.search(r'\[.*\]', clean_json, re.DOTALL)
-            if not match: st.error("JSON 포맷 오류."); return
-            
             res = json.loads(match.group())
             proc = []; temp_dict = {}
             om = {'고':'🔵 고', '한':'🟢 한', '외':'🔴 외', '혼':'🟣 혼'}
             pm = {'명사':'📦 명사', '동사':'🏃 동사', '형용사':'🎨 형용사', '부사':'⚡ 부사', '관형사':'🔍 관형사', '대명사':'👤 대명사', '감탄사':'❗ 감탄사'}
-            
             draft_items = []
             for r in res:
                 o, root = str(r.get('원본') or '').strip(), str(r.get('원형') or '').strip()
                 orig_v, pos_v = str(r.get('분류') or '혼').strip(), str(r.get('품사') or '명사').strip()
-                
-                # [강력 필터링 로직 유지]
                 if re.search(r'[0-9a-zA-Z]', o) or re.search(r'[0-9a-zA-Z]', root): continue
                 if not o or not root: continue
                 if pos_v in ['조사', '어미', '의존명사', '의존 명사', '수사']: continue
-                # 금칙어 리스트 (의존명사 및 파편화된 단어)
-                if root in ['것', '수', '데', '바', '지', '리', '개', '번', '명', '쪽', '등']: continue
-
+                if root in ['것', '수', '데', '바', '지', '리', '개', '번', '명', '쪽']: continue
                 draft_items.append({'원본': o, '원형': root, '분류': orig_v, '품사': pos_v})
                 key = (root, orig_v, pos_v)
                 if key not in temp_dict: temp_dict[key] = []
                 temp_dict[key].append(o)
-                
             st.session_state.initial_draft = draft_items
             for (root, origin, pos), origs in temp_dict.items():
                 cnts = Counter(origs)
-                proc.append({
-                    "삭제": False, "횟수": f"{sum(cnts.values())}회", 
-                    "원본": ", ".join([f"{w}({c})" for w, c in cnts.items()]), "원형": root, 
-                    "분류": om.get(origin, origin), "품사": pm.get(pos, pos)
-                })
-            
+                proc.append({"삭제": False, "횟수": f"{sum(cnts.values())}회", "원본": ", ".join([f"{w}({c})" for w, c in cnts.items()]), "원형": root, "분류": om.get(origin, origin), "품사": pm.get(pos, pos)})
             st.session_state.analysis_result = proc; st.session_state.step = 3; st.rerun()
-            
-        except Exception as e:
-            st.error("데이터 정밀 파싱 중 오류가 발생했습니다."); st.session_state.debug_log += f"오류: {traceback.format_exc()}\n"
+        except Exception as e: st.error(f"파싱 오류: {str(e)}")
 
 # =========================================================
 # [5] UI: 메인 루프 (Wizard)
 # =========================================================
 
-with st.sidebar:
-    st.markdown("### ⚙️ 시스템 설정")
-    if st.session_state.debug_mode:
-        if st.button("🐞 디버깅 모드 끄기"): st.session_state.debug_mode = False; st.rerun()
-    else:
-        st.markdown("<br>"*5, unsafe_allow_html=True)
-        if st.button("🛠️ 관리자 모드 켜기"): st.session_state.debug_mode = True; st.rerun()
-
-# STEP 0: 시작 화면
+# STEP 0: 언어 규범 선택
 if st.session_state.step == 0:
     st.markdown("<h1 style='text-align: center; margin-bottom: 20px;'>📚 국어활동 AI 분석기</h1>", unsafe_allow_html=True)
     st.markdown("<p style='text-align: center; color: #888; margin-bottom: 50px;'>원하는 언어 규범을 선택하여 분석을 시작하세요.</p>", unsafe_allow_html=True)
     
     c_left, c_south, c_north, c_right = st.columns([1, 4, 4, 1])
     with c_south:
-        if st.button("🏛️\n\n대한민국 표준어\n\n(표준국어대사전 기준)\n\n[ 시작하기 ]", key="btn_south", use_container_width=True):
-            st.session_state.mode_key = "SOUTH"
-            st.session_state.step = 1
-            st.rerun()
+        if st.button("🏛️\n\n대한민국 표준어\n\n(표준국어대사전 기준)", use_container_width=True):
+            st.session_state.mode_key = "SOUTH"; st.session_state.step = 1; st.rerun()
     with c_north:
-        if st.button("🏔️\n\n북한 문화어\n\n(문화어 규범 기준)\n\n[ 시작하기 ]", key="btn_north", use_container_width=True):
-            st.session_state.mode_key = "NORTH"
-            st.session_state.step = 1
-            st.rerun()
+        if st.button("🏔️\n\n북한 문화어\n\n(문화어 규범 기준)", use_container_width=True):
+            st.session_state.mode_key = "NORTH"; st.session_state.step = 1; st.rerun()
 
 # STEP 1: 데이터 소스 선택
 elif st.session_state.step == 1:
@@ -478,221 +387,155 @@ elif st.session_state.step == 1:
     with col1:
         with st.container(border=True):
             st.subheader("📂 이어하기")
-            up_excel = st.file_uploader("기존 분석 엑셀 파일 업로드", type=['xlsx'])
+            up_excel = st.file_uploader("기존 분석 엑셀 업로드", type=['xlsx'])
             if up_excel:
-                with st.status("데이터 불러오는 중..."):
-                    try:
-                        # 엑셀 로드 안정성 강화
-                        st.session_state.master_df = pd.read_excel(up_excel, engine='openpyxl')
-                        st.session_state.step = 2; st.rerun()
-                    except Exception as e: 
-                        st.error(f"엑셀 파일 형식이 올바르지 않거나 손상되었습니다. (오류: {str(e)})")
+                try: st.session_state.master_df = pd.read_excel(up_excel, engine='openpyxl'); st.session_state.step = 1.5; st.rerun()
+                except: st.error("엑셀 형식이 올바르지 않습니다.")
     with col2:
         with st.container(border=True):
             st.subheader("🆕 새로 시작하기")
-            if st.button("새 프로젝트 생성", use_container_width=True):
-                st.session_state.master_df = None; st.session_state.step = 2; st.rerun()
-    st.markdown("---")
-    if st.button("⬅️ 모드 다시 선택"): st.session_state.step = 0; st.rerun()
+            if st.button("새 프로젝트 생성", use_container_width=True): st.session_state.master_df = None; st.session_state.step = 1.5; st.rerun()
+    if st.button("⬅️ 모드 선택으로"): st.session_state.step = 0; st.rerun()
+
+# STEP 1.5: 입력 방식 선택
+elif st.session_state.step == 1.5:
+    st.header("📝 입력 방식 선택")
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        if st.button("📄\n\nPDF 문서 분석\n\n(쪽수 관리 지원)", use_container_width=True):
+            st.session_state.input_type = "PDF"; st.session_state.step = 2; st.rerun()
+    with c2:
+        if st.button("🖼️\n\n이미지 분석\n\n(단일 사진 전용)", use_container_width=True):
+            st.session_state.input_type = "IMAGE"; st.session_state.step = 2; st.rerun()
+    with c3:
+        if st.button("✍️\n\n텍스트 직접 입력\n\n(복사한 글 분석)", use_container_width=True):
+            st.session_state.input_type = "DIRECT"; st.session_state.step = 2; st.rerun()
+    if st.button("⬅️ 데이터 소스 선택으로"): st.session_state.step = 1; st.rerun()
 
 # STEP 2: 자료 입력
 elif st.session_state.step == 2:
     st.session_state.is_finished = False
-    c_t, c_h = st.columns([8, 2])
-    with c_t: st.header("📝 분석 자료 입력")
-    with c_h:
-        if st.button("🏠 처음으로"): 
-            st.session_state.step = 0
-            st.rerun()
-
-    with st.expander("⚙️ 분석 환경 설정 (페이지 쪽수 설정)", expanded=True):
+    st.header(f"📝 {st.session_state.input_type} 분석 자료 입력")
+    
+    with st.expander("⚙️ 쪽수 및 환경 설정", expanded=True):
         st.session_state.start_offset = st.number_input("도서 1쪽의 실제 숫자 (시작 쪽수 설정)", value=st.session_state.start_offset)
         actual_p = st.session_state.page_idx + st.session_state.start_offset
-        st.markdown(f"<div class='info-card'>💾 <b>저장 위치 안내:</b> 현재 작업 중인 페이지는 엑셀의 <b>'{actual_p}쪽'</b>으로 기록됩니다.</div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='info-card'>💾 <b>저장 위치:</b> 현재 작업 중인 내용은 엑셀의 <b>'{actual_p}쪽'</b>으로 기록됩니다.</div>", unsafe_allow_html=True)
 
-    input_method = st.radio("방식", ["📄 파일 분석", "✍️ 직접 입력"], horizontal=True, index=st.session_state.current_tab_idx, label_visibility="collapsed")
-
-    if input_method == "📄 파일 분석":
-        st.session_state.current_tab_idx = 0
-        file = st.file_uploader("분석할 파일 업로드 (PDF, PNG, JPG)", type=['pdf', 'png', 'jpg'])
-        current_fb = file.getvalue() if file else st.session_state.file_bytes
-        current_ft = file.type if file else st.session_state.file_type
-        if current_fb:
-            if st.session_state.file_bytes != current_fb:
-                with st.status("파일 읽는 중..."):
-                    st.session_state.file_bytes = current_fb; st.session_state.file_type = current_ft
-                    st.session_state.page_idx = 0
-                    st.session_state.extracted_text = extract_text_unified(current_fb, current_ft, 0)
-            
+    if st.session_state.input_type == "PDF":
+        file = st.file_uploader("PDF 파일 업로드", type=['pdf'])
+        if file:
+            fb = file.getvalue()
+            if st.session_state.file_bytes != fb:
+                st.session_state.file_bytes = fb; st.session_state.file_type = "application/pdf"
+                st.session_state.page_idx = 0; st.session_state.extracted_text = extract_text_unified(fb, "application/pdf", 0)
             c1, c2 = st.columns(2)
             with c1:
-                img = get_page_image(st.session_state.file_bytes, st.session_state.file_type, st.session_state.page_idx)
+                img = get_page_image(st.session_state.file_bytes, "application/pdf", st.session_state.page_idx)
                 if img: st.image(img, use_container_width=True)
-                # 빈 칸 제거 컨트롤 박스 밀착
-                if st.session_state.file_type and "pdf" in st.session_state.file_type:
-                    st.markdown(f"<div style='margin-top:-10px; margin-bottom:10px;'><span class='status-badge'>📄 PDF 상태: {st.session_state.page_idx + 1} / {st.session_state.total_pages} 페이지</span></div>", unsafe_allow_html=True)
-                    
-                    j_col1, j_col2, j_col3 = st.columns([1, 1, 1])
-                    with j_col1:
-                        if st.button("◀ 이전 페이지", use_container_width=True, disabled=(st.session_state.page_idx <= 0)):
-                            with st.spinner("이동..."):
-                                st.session_state.page_idx -= 1
-                                st.session_state.extracted_text = extract_text_unified(st.session_state.file_bytes, st.session_state.file_type, st.session_state.page_idx); st.rerun()
-                    with j_col2:
-                        target_p = st.number_input("이동", min_value=1, max_value=st.session_state.total_pages, value=st.session_state.page_idx + 1, label_visibility="collapsed")
-                        if target_p != st.session_state.page_idx + 1:
-                            with st.spinner("점프..."):
-                                st.session_state.page_idx = target_p - 1
-                                st.session_state.extracted_text = extract_text_unified(st.session_state.file_bytes, st.session_state.file_type, st.session_state.page_idx); st.rerun()
-                    with j_col3:
-                        if st.button("다음 페이지 ▶", use_container_width=True, disabled=(st.session_state.page_idx >= st.session_state.total_pages - 1)):
-                            with st.spinner("이동..."):
-                                st.session_state.page_idx += 1
-                                st.session_state.extracted_text = extract_text_unified(st.session_state.file_bytes, st.session_state.file_type, st.session_state.page_idx); st.rerun()
+                st.markdown(f"<div style='margin-top:-10px; margin-bottom:10px;'><span class='status-badge'>📄 PDF 상태: {st.session_state.page_idx+1} / {st.session_state.total_pages} 페이지</span></div>", unsafe_allow_html=True)
+                j1, j2, j3 = st.columns([1,1,1])
+                with j1: 
+                    if st.button("◀ 이전", use_container_width=True, disabled=st.session_state.page_idx<=0):
+                        st.session_state.page_idx-=1; st.session_state.extracted_text=extract_text_unified(st.session_state.file_bytes,"application/pdf",st.session_state.page_idx); st.rerun()
+                with j2: target_p = st.number_input("이동", 1, st.session_state.total_pages, st.session_state.page_idx+1, label_visibility="collapsed")
+                with j3:
+                    if st.button("다음 ▶", use_container_width=True, disabled=st.session_state.page_idx>=st.session_state.total_pages-1):
+                        st.session_state.page_idx+=1; st.session_state.extracted_text=extract_text_unified(st.session_state.file_bytes,"application/pdf",st.session_state.page_idx); st.rerun()
             with c2:
-                txt_in = st.text_area("에디터 (추출 텍스트)", value=st.session_state.extracted_text, height=520)
-                st.session_state.extracted_text = txt_in
-                if st.button("🚀 분석 실행", type="primary", use_container_width=True): 
-                    run_analysis_action(txt_in, st.session_state.file_bytes)
-    else:
-        st.session_state.current_tab_idx = 1
-        direct_t = st.text_area("텍스트 입력 창", value=st.session_state.extracted_text, height=450)
-        st.session_state.extracted_text = direct_t
-        if st.button("🚀 분석 실행", type="primary", use_container_width=True): 
-            run_analysis_action(direct_t)
+                st.session_state.extracted_text = st.text_area("에디터 (추출 텍스트)", value=st.session_state.extracted_text, height=520)
+                if st.button("🚀 분석 실행", type="primary", use_container_width=True): run_analysis_action(st.session_state.extracted_text, st.session_state.file_bytes)
+
+    elif st.session_state.input_type == "IMAGE":
+        file = st.file_uploader("이미지 파일 업로드", type=['png', 'jpg', 'jpeg'])
+        if file:
+            fb = file.getvalue()
+            if st.session_state.file_bytes != fb:
+                st.session_state.file_bytes = fb; st.session_state.file_type = "image/png"
+                st.session_state.extracted_text = extract_text_unified(fb, "image/png", 0)
+            c1, c2 = st.columns(2)
+            with c1:
+                st.image(st.session_state.file_bytes, use_container_width=True, caption="이미지 원본")
+            with c2:
+                st.session_state.extracted_text = st.text_area("에디터 (추출 텍스트)", value=st.session_state.extracted_text, height=520)
+                if st.button("🚀 분석 실행", type="primary", use_container_width=True): run_analysis_action(st.session_state.extracted_text, st.session_state.file_bytes)
+
+    elif st.session_state.input_type == "DIRECT":
+        st.session_state.extracted_text = st.text_area("분석할 텍스트를 입력하세요", value=st.session_state.extracted_text, height=450)
+        if st.button("🚀 분석 실행", type="primary", use_container_width=True): run_analysis_action(st.session_state.extracted_text)
+
+    if st.button("🏠 처음으로"): st.session_state.step = 0; st.rerun()
 
 # STEP 3: 결과 확인
 elif st.session_state.step == 3:
     actual_p = st.session_state.page_idx + st.session_state.start_offset
-    ch, cb = st.columns([8, 2])
-    with ch: 
-        st.header(f"📊 분석 결과 확인")
-        # 실시간 저장 위치 가이드
-        st.markdown(f"<p style='color: #2979ff; font-size: 0.95rem; margin-top:-15px;'>📍 현재 작업 내용은 마스터 엑셀의 <b>'{actual_p}쪽'</b>으로 저장될 예정입니다.</p>", unsafe_allow_html=True)
-    with cb:
-        if st.button("⬅️ 입력 수정하기", use_container_width=True): st.session_state.step = 2; st.rerun()
+    st.header("📊 분석 결과 확인")
+    st.markdown(f"<p style='color: #2979ff; font-size: 0.95rem; margin-top:-15px;'>📍 현재 작업 내용은 마스터 엑셀의 <b>'{actual_p}쪽'</b>으로 저장될 예정입니다.</p>", unsafe_allow_html=True)
     
-    top_left, top_right = st.columns([1, 1])
-    with top_left:
-        st.subheader("🖼️ 원문 이미지")
-        img = get_page_image(st.session_state.file_bytes, st.session_state.file_type, st.session_state.page_idx)
-        if img: 
-            # 통합 페이지 안내 캡션 (전체쪽수/현재쪽수/저장쪽수)
-            location_caption = f"📄 PDF 총 {st.session_state.total_pages}쪽 중 현재 {st.session_state.page_idx + 1}쪽 (📍 엑셀에 '{actual_p}쪽'으로 저장 예정)"
-            st.image(img, use_container_width=True, caption=location_caption)
-    with top_right:
-        st.subheader("📝 원문 텍스트 확인")
-        st.text_area("원문 원본", value=st.session_state.extracted_text, height=500, disabled=True, label_visibility="collapsed")
+    if st.session_state.input_type in ["PDF", "IMAGE"]:
+        c1, c2 = st.columns([1, 1])
+        with c1:
+            img = get_page_image(st.session_state.file_bytes, st.session_state.file_type, st.session_state.page_idx)
+            if img:
+                cap = f"📄 PDF 총 {st.session_state.total_pages}쪽 중 현재 {st.session_state.page_idx+1}쪽 (📍 엑셀에 '{actual_p}쪽' 저장 예정)" if st.session_state.input_type=="PDF" else "이미지 미리보기"
+                st.image(img, use_container_width=True, caption=cap)
+        with c2:
+            st.text_area("추출 원문 확인", value=st.session_state.extracted_text, height=500, disabled=True)
+    else: 
+        st.text_area("입력 원문 확인", value=st.session_state.extracted_text, height=250, disabled=True)
 
     st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
-    st.markdown("### 📋 분석 결과 편집 <span class='guide-text'>(※ 연속 수정 시 동작 간에 작은 텀을 주시면 더욱 안전하게 저장됩니다)</span>", unsafe_allow_html=True)
+    st.markdown("### 📋 분석 결과 편집 <span class='guide-text'>(※ 연속 수정 시 동작 간에 작은 텀을 주시면 안전합니다)</span>", unsafe_allow_html=True)
     
-    if st.session_state.debug_mode:
-        with st.expander("🛠️ [정밀 디버깅] 로그 확인", expanded=False):
-            st.markdown(f"<div class='debug-box'>{st.session_state.get('debug_log', 'No log')}</div>", unsafe_allow_html=True)
-            raw_data = st.session_state.get('last_raw_response', '')
-            if raw_data and isinstance(raw_data, str): st.code(raw_data, language="json")
-
     df_res = pd.DataFrame(st.session_state.analysis_result)
     if not df_res.empty:
-        # 스크롤 튕김 방지용 고유 키 유지
-        edited = st.data_editor(
-            df_res,
-            column_config={
-                "삭제": st.column_config.CheckboxColumn("삭제"),
-                "원본": st.column_config.TextColumn("원본", disabled=True),
-                "분류": st.column_config.SelectboxColumn("분류", options=["🔵 고", "🟢 한", "🔴 외", "🟣 혼"]),
-                "품사": st.column_config.SelectboxColumn("품사", options=["📦 명사", "🏃 동사", "🎨 형용사", "⚡ 부사", "🔍 관형사", "👤 대명사", "고유명사", "❗ 감탄사"])
-            },
-            use_container_width=True, num_rows="dynamic", key="step3_editor_precision_scroll_final"
-        )
+        edited = st.data_editor(df_res, column_config={
+            "삭제": st.column_config.CheckboxColumn("삭제"),
+            "원본": st.column_config.TextColumn("원본", disabled=True),
+            "분류": st.column_config.SelectboxColumn("분류", options=["🔵 고", "🟢 한", "🔴 외", "🟣 혼"]),
+            "품사": st.column_config.SelectboxColumn("품사", options=["📦 명사", "🏃 동사", "🎨 형용사", "⚡ 부사", "🔍 관형사", "👤 대명사", "고유명사", "❗ 감탄사"])
+        }, use_container_width=True, num_rows="dynamic", key="editor_final")
         
         if not edited.equals(df_res):
             diff_mask = (edited != df_res).any(axis=1)
-            edited_rows = edited[diff_mask]
-            original_rows = df_res[diff_mask]
-            other_cols = [c for c in df_res.columns if c != "삭제"]
-            
-            if not edited_rows[other_cols].equals(original_rows[other_cols]):
+            if not edited[diff_mask][[c for c in df_res.columns if c != "삭제"]].equals(df_res[diff_mask][[c for c in df_res.columns if c != "삭제"]]):
                 st.session_state.analysis_result = edited.to_dict('records')
-                st.toast("🔄 데이터 동기화 중... 잠시만 기다려주세요.", icon="⏳")
-                time.sleep(2.0)
-                st.rerun()
-            else:
-                st.session_state.analysis_result = edited.to_dict('records')
-    else:
-        st.warning("분석된 결과 단어가 없습니다. 고유명사 및 실질 형태소 추출 여부를 확인하세요.")
-
-    dlg_func = st.dialog if hasattr(st, "dialog") else st.experimental_dialog
-    @dlg_func("➕ 단어 직접 추가")
-    def add_manual():
-        with st.form("manual_add_form"):
-            o, r = st.text_input("원본 단어"), st.text_input("원형(기본형)")
-            org = st.selectbox("어종 분류", ["고","한","외","혼"]); p = st.selectbox("품사", ["명사","동사","형용사","부사","관형사","대명사","고유명사","감탄사"])
-            cnt = st.number_input("출연 횟수", 1, 100, 1)
-            if st.form_submit_button("추가 완료"):
-                st.session_state.analysis_result.append({
-                    "삭제": False, "횟수": f"{cnt}회", "원본": f"{o}(수동)", "원형": r, 
-                    "분류": {'고':'🔵 고', '한':'🟢 한', '외':'🔴 외', '혼':'🟣 혼'}.get(org, org), 
-                    "품사": {'명사':'📦 명사', '동사':'🏃 동사', '형용사':'🎨 형용사', '부사':'⚡ 부사', '관형사':'🔍 관형사', '대명사':'👤 대명사', '감탄사':'❗ 감탄사'}.get(p, p)
-                })
-                st.toast("✅ 단어 추가 완료. 동기화 중...", icon="✨")
-                time.sleep(2.0)
-                st.rerun()
-
+                st.toast("🔄 데이터 동기화 중..."); time.sleep(2.0); st.rerun()
+            else: st.session_state.analysis_result = edited.to_dict('records')
+    
     if not st.session_state.is_finished:
-        b1, b2, b_save_only, b_save_next = st.columns([1, 1, 1.5, 2])
-        with b1:
-            if st.button("➕ 단어 추가", use_container_width=True): add_manual()
-        with b2:
-            if st.button("⛔ 선택 삭제", use_container_width=True):
-                st.session_state.analysis_result = [r for r in st.session_state.analysis_result if not r.get('삭제', False)]
-                st.toast("🗑️ 데이터 정리 및 동기화 중...", icon="⏳")
-                time.sleep(2.2)
+        b1, b2, b3, b4 = st.columns([1, 1, 1.5, 2])
+        with b1: 
+            if st.button("➕ 단어 추가"):
+                st.session_state.analysis_result.append({"삭제":False, "횟수":"1회", "원본":"수동추가", "원형":"", "분류":"🔵 고", "품사":"📦 명사"})
                 st.rerun()
-        with b_save_only:
-            # 저장만 하기 클릭 시 -> 2종 버튼(다운로드/다음쪽) 활성화
-            if st.button("💾 현재 페이지만 저장", use_container_width=True):
-                with st.status("데이터 통합 및 정밀 학습 중..."):
-                    save_logic_with_learning()
-                    st.session_state.is_finished = True 
-                    st.success("✅ 저장이 완료되었습니다. 다음 작업을 선택하세요.")
-                    time.sleep(1.0)
-                    st.rerun()
-        with b_save_next:
-            if st.button("🚀 저장하고 다음 쪽 가기", type="primary", use_container_width=True):
-                with st.status("데이터 통합 및 다음 쪽 준비 중..."):
-                    save_logic_with_learning()
-                    if st.session_state.file_type and "pdf" in st.session_state.file_type and st.session_state.page_idx < st.session_state.total_pages - 1:
-                        st.session_state.page_idx += 1
-                        st.session_state.extracted_text = extract_text_unified(st.session_state.file_bytes, st.session_state.file_type, st.session_state.page_idx)
-                        st.session_state.analysis_result = []
-                        st.session_state.step = 2
-                        st.success(f"✅ 저장 완료! {st.session_state.page_idx + st.session_state.start_offset}쪽으로 이동합니다.")
-                        time.sleep(1.5)
-                        st.rerun()
-                    else:
-                        st.session_state.is_finished = True
-                        st.balloons(); st.rerun()
+        with b2:
+            if st.button("⛔ 선택 삭제"):
+                st.session_state.analysis_result = [r for r in st.session_state.analysis_result if not r.get('삭제', False)]
+                st.toast("🗑️ 삭제 데이터 정리 중..."); time.sleep(2.0); st.rerun()
+        with b3:
+            if st.button("💾 현재 페이지만 저장"):
+                save_logic_with_learning(); st.session_state.is_finished = True; st.rerun()
+        with b4:
+            if st.button("🚀 저장하고 다음 쪽 가기", type="primary"):
+                save_logic_with_learning()
+                if st.session_state.input_type == "PDF" and st.session_state.page_idx < st.session_state.total_pages - 1:
+                    st.session_state.page_idx += 1; st.session_state.extracted_text = extract_text_unified(st.session_state.file_bytes, "application/pdf", st.session_state.page_idx)
+                    st.session_state.analysis_result = []; st.session_state.step = 2; st.rerun()
+                else: st.session_state.is_finished = True; st.balloons(); st.rerun()
     else:
-        # 저장 완료 후 2개 버튼 UI (다운로드, 다음쪽으로)
-        st.success("✅ 페이지 분석 데이터가 마스터 데이터에 성공적으로 통합되었습니다!")
-        st.info(f"📍 '{actual_p}쪽' 작업 결과가 엑셀 파일에 반영되었습니다.")
-        
+        # [수정] 저장 후 2개 버튼 UI (다운로드, 다음쪽으로)
+        st.success("✅ 저장이 완료되었습니다!")
         fname = f"Result_{st.session_state.mode_key}_{datetime.now().strftime('%m%d_%H%M')}.xlsx"
         buf = io.BytesIO()
         with pd.ExcelWriter(buf, engine='openpyxl') as w: st.session_state.master_df.to_excel(w, index=False)
-        
-        c_down, c_next = st.columns([1, 1])
-        with c_down:
-            st.download_button(label=f"📥 엑셀 다운로드", data=buf.getvalue(), file_name=fname, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True, type="primary")
+        c_down, c_next = st.columns(2)
+        with c_down: st.download_button(label="📥 엑셀 다운로드", data=buf.getvalue(), file_name=fname, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True, type="primary")
         with c_next:
-            # 다음 쪽이 있을 때만 버튼 활성화
-            can_go_next = st.session_state.file_type and "pdf" in st.session_state.file_type and st.session_state.page_idx < st.session_state.total_pages - 1
-            if st.button("➡️ 다음 쪽으로 이동", use_container_width=True, disabled=not can_go_next):
-                st.session_state.page_idx += 1
-                st.session_state.extracted_text = extract_text_unified(st.session_state.file_bytes, st.session_state.file_type, st.session_state.page_idx)
-                st.session_state.analysis_result = []
-                st.session_state.step = 2
-                st.session_state.is_finished = False
-                st.rerun()
+            if st.button("➡️ 다음 쪽으로 이동 (작업 계속)", use_container_width=True):
+                if st.session_state.input_type == "PDF" and st.session_state.page_idx < st.session_state.total_pages - 1:
+                    st.session_state.page_idx += 1
+                    st.session_state.extracted_text = extract_text_unified(st.session_state.file_bytes, "application/pdf", st.session_state.page_idx)
+                else:
+                    st.session_state.extracted_text = ""
+                st.session_state.analysis_result = []; st.session_state.step = 2; st.session_state.is_finished = False; st.rerun()
