@@ -196,27 +196,19 @@ def merge_master_data(old_df, new_df):
         unique_pages = sorted(list(set(pages)))
         for i, p in enumerate(unique_pages): new_row[f"쪽수{i+1}"] = p
         final_rows.append(new_row)
-        
     result_df = pd.DataFrame(final_rows)
     result_df['출연횟수'] = result_df.apply(calc_freq, axis=1)
     
-    # [Update] 엑셀 열 순서 재배치: '출연횟수'를 쪽수 앞쪽으로 이동
     fixed_cols = ['구분', '자료', '출연횟수']
     page_cols = sorted([c for c in result_df.columns if c.startswith('쪽수')], key=lambda x: int(re.sub(r'[^0-9]', '', x)) if re.search(r'\d', x) else 9999)
     final_cols = fixed_cols + page_cols
-    
-    # 누락된 열 방지 (혹시 모를 추가 열)
     remaining_cols = [c for c in result_df.columns if c not in final_cols and c != 'sk']
     final_cols = final_cols + remaining_cols
     
-    # 정렬을 위한 임시 컬럼 생성
     sort_map = {'고':1, '순':1, '한':2, '외':3, '혼':4}
     result_df['sk'] = result_df['구분'].map(sort_map).fillna(5)
     result_df = result_df.sort_values(['sk', '자료']).drop('sk', axis=1)
-    
-    # 컬럼 순서 적용
     result_df = result_df.reindex(columns=final_cols)
-    
     return result_df
 
 def save_logic_with_learning():
@@ -269,7 +261,6 @@ def process_image_for_api(image_bytes):
         img_io = io.BytesIO(image_bytes)
         img = Image.open(img_io)
         if img.mode != "RGB": img = img.convert("RGB")
-        # [Update] 이미지 해상도 보존 (2000 -> 3000으로 상향 조정)
         if max(img.size) > 3000: img.thumbnail((3000, 3000), Image.Resampling.LANCZOS)
         output = io.BytesIO()
         img.save(output, format="PNG")
@@ -301,7 +292,6 @@ def extract_text_unified(file_bytes, file_type, page_idx):
     
     if "image" in file_type: 
         raw_text, _ = api_call_direct("이 이미지 속의 텍스트를 모두 추출하세요. 줄바꿈 유지.", file_bytes)
-    
     elif "pdf" in file_type:
         if FITZ_AVAILABLE:
             try:
@@ -323,19 +313,16 @@ def extract_text_unified(file_bytes, file_type, page_idx):
                     with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
                         if page_idx < len(pdf.pages): raw_text = pdf.pages[page_idx].extract_text()
                 except: pass
-
     return clean_raw_text(raw_text or "")
 
 def get_page_image(file_bytes, file_type, page_idx):
     if not file_bytes or not file_type: return None
-    
-    if "image" in file_type: 
-        return file_bytes
+    if "image" in file_type: return file_bytes
     if "pdf" in file_type and FITZ_AVAILABLE:
         try:
             doc = fitz.open(stream=file_bytes, filetype="pdf")
             if page_idx < len(doc): 
-                # [Update] PDF 이미지 변환 해상도 2배 -> 4배 상향 (정확도 개선)
+                # [Fix] PDF 화질 4배로 고정 (정확도 향상)
                 pix = doc[page_idx].get_pixmap(matrix=fitz.Matrix(4.0, 4.0))
                 return pix.tobytes("png")
         except: return None
@@ -356,7 +343,6 @@ def run_analysis_action(txt, img_bytes=None):
     with st.spinner("AI가 국어학적 관점에서 정밀 분석 중입니다..."):
         s_data = get_sheet_data_fresh(st.session_state.mode_key)[1]
         
-        # [Update] Chain of Thought(CoT) 방식 프롬프트: '읽기'와 '분석' 분리
         prompt = f"""
         당신은 국어학 및 시맨틱 텍스트 분석 전문가입니다. 
         
@@ -398,12 +384,11 @@ def run_analysis_action(txt, img_bytes=None):
             clean_json = raw.replace("```json", "").replace("```", "").strip()
             match = re.search(r'\[.*\]', clean_json, re.DOTALL)
             
-            if match:
-                res = json.loads(match.group())
+            if match: res = json.loads(match.group())
             else:
                 try: res = json.loads(clean_json)
                 except: 
-                    st.warning("분석 결과가 없습니다. (텍스트가 너무 짧거나 인식되지 않음)")
+                    st.warning("분석 결과가 없습니다.")
                     res = []
 
             proc = []; temp_dict = {}
@@ -433,7 +418,7 @@ def run_analysis_action(txt, img_bytes=None):
             st.session_state.analysis_result = proc; st.session_state.step = 3; st.rerun()
             
         except Exception as e:
-            st.error(f"오류가 발생했습니다: {str(e)}")
+            st.error(f"파싱 오류: {str(e)}")
             st.session_state.debug_log = f"Error: {str(e)}\nRaw Response:\n{raw}"
 
 # =========================================================
@@ -515,17 +500,23 @@ elif st.session_state.step == 2:
 
     if st.session_state.input_type == "PDF":
         file = st.file_uploader("PDF 파일 업로드", type=['pdf'])
+        # [Fix] 파일 업로더 초기화 방지 로직 보강
+        effective_file = None
         if file:
-            fb = file.getvalue()
-            if st.session_state.file_bytes != fb:
-                st.session_state.file_bytes = fb; st.session_state.file_type = "application/pdf"
+            effective_file = file.getvalue()
+            if st.session_state.file_bytes != effective_file:
+                st.session_state.file_bytes = effective_file
+                st.session_state.file_type = "application/pdf"
                 st.session_state.page_idx = 0
                 if FITZ_AVAILABLE:
                     try: 
-                        with fitz.open(stream=fb, filetype="pdf") as doc: st.session_state.total_pages = len(doc)
+                        with fitz.open(stream=effective_file, filetype="pdf") as doc: st.session_state.total_pages = len(doc)
                     except: pass
-                st.session_state.extracted_text = extract_text_unified(fb, "application/pdf", 0)
-            
+                st.session_state.extracted_text = extract_text_unified(effective_file, "application/pdf", 0)
+        elif st.session_state.file_bytes:
+            effective_file = st.session_state.file_bytes
+
+        if effective_file:
             c1, c2 = st.columns(2)
             with c1:
                 img = get_page_image(st.session_state.file_bytes, "application/pdf", st.session_state.page_idx)
@@ -541,7 +532,6 @@ elif st.session_state.step == 2:
                 
                 with j2: 
                     target_p = st.number_input("이동", 1, st.session_state.total_pages, st.session_state.page_idx+1, label_visibility="collapsed")
-                    # [Fix] 페이지 이동 로직 명확화
                     if target_p != st.session_state.page_idx + 1:
                         st.session_state.page_idx = target_p - 1
                         st.session_state.extracted_text = extract_text_unified(st.session_state.file_bytes, "application/pdf", st.session_state.page_idx)
@@ -558,24 +548,23 @@ elif st.session_state.step == 2:
 
     elif st.session_state.input_type == "IMAGE":
         file = st.file_uploader("이미지 파일 업로드", type=['png', 'jpg', 'jpeg'])
+        effective_file = None
         if file:
-            fb = file.getvalue()
-            if st.session_state.file_bytes != fb:
-                st.session_state.file_bytes = fb; st.session_state.file_type = "image/png"
-                st.session_state.extracted_text = extract_text_unified(fb, "image/png", 0)
-            
+            effective_file = file.getvalue()
+            if st.session_state.file_bytes != effective_file:
+                st.session_state.file_bytes = effective_file
+                st.session_state.file_type = "image/png"
+                st.session_state.extracted_text = extract_text_unified(effective_file, "image/png", 0)
+        elif st.session_state.file_bytes and st.session_state.input_type == "IMAGE":
+            effective_file = st.session_state.file_bytes
+
+        if effective_file:
             c1, c2 = st.columns(2)
             with c1:
                 st.image(st.session_state.file_bytes, use_container_width=True, caption="이미지 원본")
             with c2:
                 st.session_state.extracted_text = st.text_area("에디터 (추출 텍스트)", value=st.session_state.extracted_text, height=520)
                 if st.button("🚀 분석 실행", type="primary", use_container_width=True): run_analysis_action(st.session_state.extracted_text, st.session_state.file_bytes)
-        elif st.session_state.file_bytes and st.session_state.input_type == "IMAGE":
-             c1, c2 = st.columns(2)
-             with c1: st.image(st.session_state.file_bytes, use_container_width=True, caption="이전 작업 이미지")
-             with c2:
-                 st.session_state.extracted_text = st.text_area("에디터 (추출 텍스트)", value=st.session_state.extracted_text, height=520)
-                 if st.button("🚀 분석 실행", type="primary", use_container_width=True): run_analysis_action(st.session_state.extracted_text, st.session_state.file_bytes)
 
     elif st.session_state.input_type == "DIRECT":
         st.session_state.extracted_text = st.text_area("분석할 텍스트를 입력하세요", value=st.session_state.extracted_text, height=450)
@@ -686,18 +675,24 @@ elif st.session_state.step == 3:
                         st.session_state.analysis_result = []; st.session_state.step = 2; st.rerun()
                     else: st.session_state.is_finished = True; st.balloons(); st.rerun()
     else:
-        st.success("✅ 저장이 완료되었습니다!")
+        # [Fix] 저장 완료 후 2개 버튼 UI (다운로드, 다음쪽으로)
+        st.success("✅ 페이지 분석 데이터가 마스터 데이터에 성공적으로 통합되었습니다!")
+        st.info(f"📍 '{actual_p}쪽' 작업 결과가 엑셀 파일에 반영되었습니다.")
+        
         fname = f"Result_{st.session_state.mode_key}_{datetime.now().strftime('%m%d_%H%M')}.xlsx"
         buf = io.BytesIO()
         with pd.ExcelWriter(buf, engine='openpyxl') as w: st.session_state.master_df.to_excel(w, index=False)
-        c_down, c_next = st.columns(2)
-        with c_down: st.download_button(label="📥 엑셀 다운로드", data=buf.getvalue(), file_name=fname, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True, type="primary")
+        
+        c_down, c_next = st.columns([1, 1])
+        with c_down:
+            st.download_button(label=f"📥 엑셀 다운로드", data=buf.getvalue(), file_name=fname, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True, type="primary")
         with c_next:
-            if st.button("➡️ 다음 쪽으로 이동 (작업 계속)", use_container_width=True):
-                # PDF는 자동 다음 페이지, 그 외는 초기화 후 입력창 복귀
-                if st.session_state.input_type == "PDF" and st.session_state.page_idx < st.session_state.total_pages - 1:
-                    st.session_state.page_idx += 1
-                    st.session_state.extracted_text = extract_text_unified(st.session_state.file_bytes, "application/pdf", st.session_state.page_idx)
-                else:
-                    st.session_state.extracted_text = ""
-                st.session_state.analysis_result = []; st.session_state.step = 2; st.session_state.is_finished = False; st.rerun()
+            # 다음 쪽이 있을 때만 버튼 활성화
+            can_go_next = st.session_state.file_type and "pdf" in st.session_state.file_type and st.session_state.page_idx < st.session_state.total_pages - 1
+            if st.button("➡️ 다음 쪽으로 이동", use_container_width=True, disabled=not can_go_next):
+                st.session_state.page_idx += 1
+                st.session_state.extracted_text = extract_text_unified(st.session_state.file_bytes, st.session_state.file_type, st.session_state.page_idx)
+                st.session_state.analysis_result = []
+                st.session_state.step = 2
+                st.session_state.is_finished = False
+                st.rerun()
