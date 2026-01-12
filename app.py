@@ -551,23 +551,40 @@ elif st.session_state.step == 3:
                 st.rerun()
 
     if not st.session_state.is_finished:
-        b1, b2, b3, b4 = st.columns([1, 1, 1.5, 2])
-        with b1: 
-            if st.button("➕ 단어 추가"): open_add_dialog()
-        with b2:
-            if st.button("⛔ 선택 삭제"):
-                st.session_state.analysis_result = [r for r in st.session_state.analysis_result if not r.get('삭제', False)]
-                st.toast("🗑️ 삭제 데이터 정리 중..."); time.sleep(2.0); st.rerun()
-        with b3:
-            if st.button("💾 현재 페이지만 저장"):
-                save_logic_with_learning(); st.session_state.is_finished = True; st.rerun()
-        with b4:
-            if st.button("🚀 저장하고 다음 쪽 가기", type="primary"):
-                save_logic_with_learning()
-                if st.session_state.input_type == "PDF" and st.session_state.page_idx < st.session_state.total_pages - 1:
-                    st.session_state.page_idx += 1; st.session_state.extracted_text = extract_text_unified(st.session_state.file_bytes, "application/pdf", st.session_state.page_idx)
-                    st.session_state.analysis_result = []; st.session_state.step = 2; st.rerun()
-                else: st.session_state.is_finished = True; st.balloons(); st.rerun()
+        if st.session_state.input_type == "DIRECT":
+            # [Update] 직접 입력 모드: 3버튼 (저장하고 다음쪽 가기 제거)
+            b1, b2, b3 = st.columns([1, 1, 2])
+            with b1: 
+                if st.button("➕ 단어 추가", use_container_width=True): open_add_dialog()
+            with b2:
+                if st.button("⛔ 선택 삭제", use_container_width=True):
+                    st.session_state.analysis_result = [r for r in st.session_state.analysis_result if not r.get('삭제', False)]
+                    st.toast("🗑️ 삭제 데이터 정리 중..."); time.sleep(2.0); st.rerun()
+            with b3:
+                # 직접 입력은 이 버튼이 '저장 완료' 역할
+                if st.button("💾 저장 완료", type="primary", use_container_width=True):
+                    save_logic_with_learning()
+                    st.session_state.is_finished = True
+                    st.rerun()
+        else:
+            # PDF/이미지 모드: 4버튼 (기존 유지)
+            b1, b2, b3, b4 = st.columns([1, 1, 1.5, 2])
+            with b1: 
+                if st.button("➕ 단어 추가", use_container_width=True): open_add_dialog()
+            with b2:
+                if st.button("⛔ 선택 삭제", use_container_width=True):
+                    st.session_state.analysis_result = [r for r in st.session_state.analysis_result if not r.get('삭제', False)]
+                    st.toast("🗑️ 삭제 데이터 정리 중..."); time.sleep(2.0); st.rerun()
+            with b3:
+                if st.button("💾 현재 페이지만 저장", use_container_width=True):
+                    save_logic_with_learning(); st.session_state.is_finished = True; st.rerun()
+            with b4:
+                if st.button("🚀 저장하고 다음 쪽 가기", type="primary", use_container_width=True):
+                    save_logic_with_learning()
+                    if st.session_state.input_type == "PDF" and st.session_state.page_idx < st.session_state.total_pages - 1:
+                        st.session_state.page_idx += 1; st.session_state.extracted_text = extract_text_unified(st.session_state.file_bytes, "application/pdf", st.session_state.page_idx)
+                        st.session_state.analysis_result = []; st.session_state.step = 2; st.rerun()
+                    else: st.session_state.is_finished = True; st.balloons(); st.rerun()
     else:
         st.success("✅ 저장이 완료되었습니다!")
         fname = f"Result_{st.session_state.mode_key}_{datetime.now().strftime('%m%d_%H%M')}.xlsx"
