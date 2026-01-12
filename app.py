@@ -216,7 +216,6 @@ def save_logic_with_learning():
     final_results = pd.DataFrame(st.session_state.analysis_result)
     initial_draft = pd.DataFrame(st.session_state.initial_draft)
     
-    # 1. 교정 및 삭제 학습
     for _, draft_row in initial_draft.iterrows():
         orig = draft_row['원본']
         match = final_results[final_results['원본'] == orig]
@@ -237,7 +236,6 @@ def save_logic_with_learning():
                     draft_row['원형'], draft_row['분류']
                 ])
                 
-    # 2. 추가 학습
     draft_originals = initial_draft['원본'].tolist()
     for _, final_row in final_results.iterrows():
         if final_row['원본'] not in draft_originals and not final_row['삭제']:
@@ -401,9 +399,10 @@ def run_analysis_action(txt, img_bytes=None):
             for r in res:
                 o, root = str(r.get('원본') or '').strip(), str(r.get('원형') or '').strip()
                 orig_v, pos_v = str(r.get('분류') or '혼').strip(), str(r.get('품사') or '명사').strip()
-                # [후처리 필터링] 숫자, 영어, 조사, 어미, 의존명사 차단
+                
                 if re.search(r'[0-9a-zA-Z]', o) or re.search(r'[0-9a-zA-Z]', root): continue
                 if not o or not root: continue
+                # [후처리 필터링] 의존명사 재차 차단
                 if pos_v in ['조사', '어미', '의존명사', '의존 명사', '수사']: continue
                 if root in ['것', '수', '데', '바', '지', '리', '개', '번', '명', '쪽']: continue
 
@@ -426,7 +425,6 @@ def run_analysis_action(txt, img_bytes=None):
 # [5] UI: 메인 루프 (Wizard)
 # =========================================================
 
-# 사이드바 설정 (무삭제 보존)
 with st.sidebar:
     st.markdown("### ⚙️ 시스템 설정")
     if st.session_state.debug_mode:
@@ -435,7 +433,7 @@ with st.sidebar:
         st.markdown("<br>"*5, unsafe_allow_html=True)
         if st.button("🛠️ 관리자 모드 켜기"): st.session_state.debug_mode = True; st.rerun()
 
-# STEP 0: 시작 화면 (시작하기 버튼 먹통 해결)
+# STEP 0: 시작 화면
 if st.session_state.step == 0:
     st.markdown("<h1 style='text-align: center; margin-bottom: 20px;'>📚 국어활동 AI 분석기</h1>", unsafe_allow_html=True)
     st.markdown("<p style='text-align: center; color: #888; margin-bottom: 50px;'>원하는 언어 규범을 선택하여 분석을 시작하세요.</p>", unsafe_allow_html=True)
@@ -444,12 +442,12 @@ if st.session_state.step == 0:
     with c_south:
         if st.button("🏛️\n\n대한민국 표준어\n\n(표준국어대사전 기준)\n\n[ 시작하기 ]", key="btn_south", use_container_width=True):
             st.session_state.mode_key = "SOUTH"
-            st.session_state.step = 1 # 단계 전환 확실히 명시
+            st.session_state.step = 1
             st.rerun()
     with c_north:
         if st.button("🏔️\n\n북한 문화어\n\n(문화어 규범 기준)\n\n[ 시작하기 ]", key="btn_north", use_container_width=True):
             st.session_state.mode_key = "NORTH"
-            st.session_state.step = 1 # 단계 전환 확실히 명시
+            st.session_state.step = 1
             st.rerun()
 
 # STEP 1: 데이터 소스 선택
@@ -555,7 +553,10 @@ elif st.session_state.step == 3:
     with top_left:
         st.subheader("🖼️ 원문 이미지")
         img = get_page_image(st.session_state.file_bytes, st.session_state.file_type, st.session_state.page_idx)
-        if img: st.image(img, use_container_width=True, caption=f"현재 페이지: {st.session_state.page_idx + 1}")
+        if img: 
+            # 통합 페이지 안내 캡션 적용
+            guide_caption = f"📄 PDF 총 {st.session_state.total_pages}쪽 중 현재 {st.session_state.page_idx + 1}쪽 (📍 엑셀에 '{actual_p}쪽'으로 저장 예정)"
+            st.image(img, use_container_width=True, caption=guide_caption)
     with top_right:
         st.subheader("📝 원문 텍스트 확인")
         st.text_area("원문 원본", value=st.session_state.extracted_text, height=500, disabled=True, label_visibility="collapsed")
@@ -580,7 +581,7 @@ elif st.session_state.step == 3:
                 "분류": st.column_config.SelectboxColumn("분류", options=["🔵 고", "🟢 한", "🔴 외", "🟣 혼"]),
                 "품사": st.column_config.SelectboxColumn("품사", options=["📦 명사", "🏃 동사", "🎨 형용사", "⚡ 부사", "🔍 관형사", "👤 대명사", "고유명사", "❗ 감탄사"])
             },
-            use_container_width=True, num_rows="dynamic", key="step3_editor_fixed_scroll"
+            use_container_width=True, num_rows="dynamic", key="step3_editor_v12_scroll"
         )
         
         if not edited.equals(df_res):
@@ -595,7 +596,7 @@ elif st.session_state.step == 3:
                 time.sleep(2.0)
                 st.rerun()
             else:
-                # 삭제 체크 시에는 rerun을 하지 않고 세션만 업데이트 (스크롤 보존)
+                # 삭제 체크 시에는 rerun을 하지 않고 세션만 조용히 업데이트 (스크롤 보존)
                 st.session_state.analysis_result = edited.to_dict('records')
     else:
         st.warning("분석된 결과 단어가 없습니다.")
@@ -617,7 +618,6 @@ elif st.session_state.step == 3:
                 time.sleep(2.0)
                 st.rerun()
 
-    # 제어 버튼 영역
     if not st.session_state.is_finished:
         b1, b2, b_save_only, b_save_next = st.columns([1, 1, 1.5, 2])
         with b1:
@@ -629,7 +629,7 @@ elif st.session_state.step == 3:
                 time.sleep(2.2)
                 st.rerun()
         with b_save_only:
-            # [사용자 요청] 저장만 하기 클릭 시 -> 엑셀 다운로드, 다음쪽 가기 2종 활성화
+            # 저장만 하기 클릭 시 -> 엑셀 다운로드, 다음쪽 가기 2종 활성화
             if st.button("💾 현재 페이지만 저장", use_container_width=True):
                 with st.status("데이터 통합 및 학습 로직 가동 중..."):
                     save_logic_with_learning()
@@ -653,7 +653,7 @@ elif st.session_state.step == 3:
                         st.session_state.is_finished = True
                         st.balloons(); st.rerun()
     else:
-        # [해결책] 저장 완료 후 2개 버튼 UI (다운로드, 다음쪽으로)
+        # 저장 완료 후 2개 버튼 UI (다운로드, 다음쪽으로)
         st.success("✅ 페이지 분석 데이터가 마스터 데이터에 성공적으로 통합되었습니다!")
         actual_p = st.session_state.page_idx + st.session_state.start_offset
         st.info(f"📍 '{actual_p}쪽' 작업 결과가 성공적으로 반영되었습니다.")
@@ -662,6 +662,7 @@ elif st.session_state.step == 3:
         buf = io.BytesIO()
         with pd.ExcelWriter(buf, engine='openpyxl') as w: st.session_state.master_df.to_excel(w, index=False)
         
+        # 처음으로 버튼 제거 후 2종 버튼 배치
         c_down, c_next = st.columns([1, 1])
         with c_down:
             st.download_button(label=f"📥 엑셀 다운로드", data=buf.getvalue(), file_name=fname, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True, type="primary")
