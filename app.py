@@ -93,7 +93,7 @@ else:
             .control-card { background-color: #1e2129; padding: 20px; border-radius: 15px; border: 1px solid #3d4251; margin-bottom: 20px; }
             .status-badge { background-color: #2979ff; padding: 4px 12px; border-radius: 20px; font-size: 0.9rem; font-weight: 600; color: white !important; }
             .info-card { background-color: rgba(41, 121, 255, 0.1); border-left: 5px solid #2979ff; padding: 15px; border-radius: 5px; margin-top: 15px; }
-            .debug-box { background-color: #222; color: #00ff00; font-family: monospace; padding: 15px; border-radius: 5px; font-size: 0.85rem; overflow-x: auto; border: 1px solid #444; margin-top: 10px; }
+            .debug-box { background-color: #222; color: #00ff00; font-family: monospace; padding: 15px; border-radius: 5px; font-size: 0.85rem; overflow-x: auto; border: 1px solid #444; margin-top: 10px; white-space: pre-wrap; word-break: break-all; }
             .section-divider { border-bottom: 2px solid #3d4251; margin: 25px 0; }
             .guide-text { color: #888888; font-size: 0.85rem; font-weight: normal; margin-left: 10px; }
             [data-testid="stImage"] { margin-bottom: -15px !important; }
@@ -263,7 +263,6 @@ def api_call_direct(prompt, image_bytes=None):
     headers = {'Content-Type': 'application/json'}
     parts = [{"text": prompt}]
     
-    # [Fix] 이미지 바이트가 유효할 때만 추가 (직접 입력 시 오류 방지)
     if image_bytes:
         optimized_img = process_image_for_api(image_bytes)
         if optimized_img:
@@ -368,7 +367,6 @@ def run_analysis_action(txt, img_bytes=None):
         원본, 원형, 분류(고/한/외/혼), 품사(명사/동사/형용사/부사/관형사/대명사/감탄사)
         """
         
-        # [Fix] 직접 입력 시 img_bytes가 None이어도 안전하게 호출
         raw, status = api_call_direct(prompt + f"\n\n[분석 대상]:\n{txt[:5000]}", img_bytes)
         st.session_state.last_raw_response = raw
         
@@ -378,13 +376,12 @@ def run_analysis_action(txt, img_bytes=None):
             clean_json = raw.replace("```json", "").replace("```", "").strip()
             match = re.search(r'\[.*\]', clean_json, re.DOTALL)
             
+            # [Fix] JSON 파싱 로직 강화 (NoneType 오류 방지)
             if match:
                 res = json.loads(match.group())
             else:
                 try: res = json.loads(clean_json)
-                except: 
-                    st.warning("분석된 내용이 없습니다. 문장이 너무 짧거나 분석할 단어가 없을 수 있습니다.")
-                    res = []
+                except: res = [] # 파싱 실패 시 빈 리스트로 처리하여 UI 오류 방지
 
             proc = []; temp_dict = {}
             om = {'고':'🔵 고', '한':'🟢 한', '외':'🔴 외', '혼':'🟣 혼'}
@@ -519,7 +516,7 @@ elif st.session_state.step == 2:
                         st.session_state.extracted_text = extract_text_unified(st.session_state.file_bytes, "application/pdf", st.session_state.page_idx)
                         st.rerun()
                 
-                # [Fix] 이동 버튼을 통한 명시적 페이지 점프 로직 추가
+                # [Fix] PDF 페이지 이동 로직 (Enter 입력 시 즉시 이동)
                 with j2: 
                     target_p = st.number_input("이동", 1, st.session_state.total_pages, st.session_state.page_idx+1, label_visibility="collapsed")
                     if target_p != st.session_state.page_idx + 1:
@@ -559,7 +556,7 @@ elif st.session_state.step == 2:
 
     elif st.session_state.input_type == "DIRECT":
         st.session_state.extracted_text = st.text_area("분석할 텍스트를 입력하세요", value=st.session_state.extracted_text, height=450)
-        # [Fix] 직접 입력 시 이미지 인자 None 전달 (오류 방지)
+        # [Fix] 직접 입력 시 img_bytes=None 명시 (오류 원천 차단)
         if st.button("🚀 분석 실행", type="primary", use_container_width=True): run_analysis_action(st.session_state.extracted_text, None)
 
 # STEP 3: 결과 확인
@@ -595,6 +592,7 @@ elif st.session_state.step == 3:
     st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
     st.markdown("### 📋 분석 결과 편집 <span class='guide-text'>(※ 연속 수정 시 동작 간에 작은 텀을 주시면 안전합니다)</span>", unsafe_allow_html=True)
     
+    # [Fix] 분석 결과가 없을 때 안내 메시지 출력 (테이블 증발 방지)
     df_res = pd.DataFrame(st.session_state.analysis_result)
     if not df_res.empty:
         edited = st.data_editor(df_res, column_config={
@@ -610,6 +608,8 @@ elif st.session_state.step == 3:
                 st.session_state.analysis_result = edited.to_dict('records')
                 st.toast("🔄 데이터 동기화 중..."); time.sleep(2.0); st.rerun()
             else: st.session_state.analysis_result = edited.to_dict('records')
+    else:
+        st.warning("⚠️ 분석된 단어가 없거나 모두 필터링되었습니다. 원문을 확인하거나 직접 단어를 추가해주세요.")
     
     @st.dialog("➕ 단어 직접 추가")
     def open_add_dialog():
