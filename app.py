@@ -25,7 +25,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# 세션 상태 초기화 (모든 작업 상태 보존)
+# 세션 상태 초기화 (모든 작업 상태 및 환경 변수 보존)
 if 'step' not in st.session_state: st.session_state.step = 0
 if 'mode_key' not in st.session_state: st.session_state.mode_key = None
 if 'master_df' not in st.session_state: st.session_state.master_df = None
@@ -42,10 +42,9 @@ if 'last_raw_response' not in st.session_state: st.session_state.last_raw_respon
 if 'debug_log' not in st.session_state: st.session_state.debug_log = ""
 if 'current_tab_idx' not in st.session_state: st.session_state.current_tab_idx = 0 
 if 'is_finished' not in st.session_state: st.session_state.is_finished = False
-if 'sync_trigger' not in st.session_state: st.session_state.sync_trigger = False # 로딩 오버레이 트리거
 
 # =========================================================
-# [1] 디자인: CSS 매직 (레이아웃 고정 및 콤팩트 오버레이)
+# [1] 디자인: CSS 매직 (안정적인 레이아웃 유지)
 # =========================================================
 if st.session_state.step == 0:
     st.markdown("""
@@ -79,30 +78,8 @@ else:
             .status-badge { background-color: #2979ff; padding: 4px 12px; border-radius: 20px; font-size: 0.9rem; font-weight: 600; color: white !important; }
             .info-card { background-color: rgba(41, 121, 255, 0.1); border-left: 5px solid #2979ff; padding: 15px; border-radius: 5px; margin-top: 15px; }
             .debug-box { background-color: #000; color: #0f0; font-family: monospace; padding: 10px; border-radius: 5px; font-size: 0.8rem; overflow-x: auto; }
-            button:disabled { opacity: 0.5 !important; cursor: not-allowed !important; }
             .section-divider { border-bottom: 2px solid #3d4251; margin: 25px 0; }
-            
-            /* 전체 스크롤 흔들림 방지 및 오버레이 */
-            .fixed-sync-overlay { 
-                position: fixed; 
-                top: 0; left: 0; width: 100vw; height: 100vh;
-                background-color: rgba(0, 0, 0, 0.5);
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                z-index: 10000; /* 다이얼로그보다 낮게, 표보다 높게 */
-                backdrop-filter: blur(2px);
-                pointer-events: all;
-            }
-            .loading-box-compact {
-                background-color: #1e2129;
-                padding: 20px 40px;
-                border-radius: 12px;
-                border: 2px solid #2979ff;
-                text-align: center;
-                box-shadow: 0 10px 40px rgba(0,0,0,1);
-                min-width: 300px;
-            }
+            .guide-text { color: #888888; font-size: 0.85rem; font-weight: normal; margin-left: 10px; }
         </style>
     """, unsafe_allow_html=True)
 
@@ -178,7 +155,7 @@ def save_backup_to_cloud(mode_key, df):
     except: return False
 
 # =========================================================
-# [3] 데이터 병합 및 비교 학습 엔진
+# [3] 데이터 병합 및 비교 학습 엔진 (로직 무삭제 보존)
 # =========================================================
 def clean_val_for_save(v):
     if isinstance(v, str): 
@@ -530,24 +507,13 @@ elif st.session_state.step == 2:
         if st.button("🚀 분석 실행", type="primary", use_container_width=True): 
             run_analysis_action(direct_t)
 
-# STEP 3: 결과 확인 (비파괴적 플로팅 오버레이 고정 레이아웃)
+# STEP 3: 결과 확인 (비침습적 토스트 알림 방식)
 elif st.session_state.step == 3:
     ch, cb = st.columns([8, 2])
     with ch: st.header("📊 분석 결과 확인")
     with cb:
         if st.button("⬅️ 입력 수정하기", use_container_width=True): st.session_state.step = 2; st.rerun()
     
-    # [수정] 홈페이지 전체 스크롤 고정 및 콤팩트 오버레이 레이어
-    if st.session_state.sync_trigger:
-        st.markdown("""
-            <div class="fixed-sync-overlay">
-                <div class="loading-box-compact">
-                    <h3 style='color: #2979ff; margin-bottom: 10px;'>🔄 데이터 동기화 중</h3>
-                    <p style='color: white; margin-bottom: 0;'>작업 내용을 안전하게 반영하고 있습니다.<br>잠시만 기다려주세요.</p>
-                </div>
-            </div>
-        """, unsafe_allow_html=True)
-
     # 상단 2단 배치 (이미지/원문)
     top_left, top_right = st.columns([1, 1])
     with top_left:
@@ -561,45 +527,45 @@ elif st.session_state.step == 3:
 
     st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
 
-    # 하단 분석 결과 편집
-    st.subheader("📋 분석 결과 편집")
+    # 하단 분석 결과 편집 (안내 문구 추가)
+    st.markdown("### 📋 분석 결과 편집 <span class='guide-text'>(※ 연속 수정 시 동작 간에 작은 텀을 주시면 더욱 안전하게 저장됩니다)</span>", unsafe_allow_html=True)
+    
     if st.session_state.debug_mode:
         with st.expander("🛠️ [정밀 디버깅] 로그 확인", expanded=False):
             st.markdown(f"<div class='debug-box'>{st.session_state.get('debug_log', 'No log')}</div>", unsafe_allow_html=True)
             raw_data = st.session_state.get('last_raw_response', '')
             if raw_data and isinstance(raw_data, str): st.code(raw_data, language="json")
 
-    # 데이터 에디터 고정 컨테이너
+    # 데이터 에디터 고정 렌더링
     df_res = pd.DataFrame(st.session_state.analysis_result)
     if not df_res.empty:
-        # [핵심] 표의 렌더링 위치를 물리적으로 고정하기 위한 컨테이너
-        main_editor_area = st.container()
-        with main_editor_area:
-            edited = st.data_editor(
-                df_res,
-                column_config={
-                    "삭제": st.column_config.CheckboxColumn("삭제"),
-                    "원본": st.column_config.TextColumn("원본", disabled=True),
-                    "분류": st.column_config.SelectboxColumn("분류", options=["🔵 고", "🟢 한", "🔴 외", "🟣 혼"]),
-                    "품사": st.column_config.SelectboxColumn("품사", options=["📦 명사", "🏃 동사", "🎨 형용사", "⚡ 부사", "🔍 관형사", "👤 대명사", "고유명사", "❗ 감탄사"])
-                },
-                use_container_width=True, num_rows="dynamic", key="step3_editor_v3"
-            )
+        edited = st.data_editor(
+            df_res,
+            column_config={
+                "삭제": st.column_config.CheckboxColumn("삭제"),
+                "원본": st.column_config.TextColumn("원본", disabled=True),
+                "분류": st.column_config.SelectboxColumn("분류", options=["🔵 고", "🟢 한", "🔴 외", "🟣 혼"]),
+                "품사": st.column_config.SelectboxColumn("품사", options=["📦 명사", "🏃 동사", "🎨 형용사", "⚡ 부사", "🔍 관형사", "👤 대명사", "고유명사", "❗ 감탄사"])
+            },
+            use_container_width=True, num_rows="dynamic", key="step3_editor_fixed_v4"
+        )
         
-        # 수정 감지 로직
+        # [핵심 로직] 수정 작업 감지 및 토스트 알림 연동 (홈페이지 스크롤 보존)
         if not edited.equals(df_res):
             diff_mask = (edited != df_res).any(axis=1)
             edited_rows = edited[diff_mask]
             original_rows = df_res[diff_mask]
             
-            # 삭제 컬럼 외의 변경 확인 (텍스트/분류 수정 시에만 로딩 트리거)
+            # 삭제 컬럼 외의 내용이 변경된 경우만 강제 텀 및 알림
             other_cols = [c for c in df_res.columns if c != "삭제"]
             if not edited_rows[other_cols].equals(original_rows[other_cols]):
                 st.session_state.analysis_result = edited.to_dict('records')
-                st.session_state.sync_trigger = True 
+                # 브라우저 스크롤을 방해하지 않는 토스트 알림
+                st.toast("🔄 데이터 동기화 중... 잠시만 기다려주세요.", icon="⏳")
+                time.sleep(2.0) # 안전 지연 시간
                 st.rerun()
             else:
-                # 삭제 체크박스 토글은 로딩 없이 조용히 업데이트 (연속성 확보)
+                # 삭제 체크박스 토글은 즉시 반영하여 작업 속도 유지
                 st.session_state.analysis_result = edited.to_dict('records')
     else:
         st.warning("분석된 결과 단어가 없습니다.")
@@ -618,44 +584,44 @@ elif st.session_state.step == 3:
                     "분류": {'고':'🔵 고', '한':'🟢 한', '외':'🔴 외', '혼':'🟣 혼'}.get(org, org), 
                     "품사": {'명사':'📦 명사', '동사':'🏃 동사', '형용사':'🎨 형용사', '부사':'⚡ 부사', '관형사':'🔍 관형사', '대명사':'👤 대명사', '감탄사':'❗ 감탄사'}.get(p, p)
                 })
-                st.session_state.sync_trigger = True # 추가 후 로딩 트리거 강제 실행
+                st.toast("✅ 새로운 단어가 추가되었습니다. 동기화 중...", icon="✨")
+                time.sleep(2.0)
                 st.rerun()
 
-    # 제어 버튼 영역 (독립 컨테이너 배치)
+    # 제어 버튼 영역
     if not st.session_state.is_finished:
-        button_container = st.container()
-        with button_container:
-            b1, b2, b_save_only, b_save_next = st.columns([1, 1, 1.5, 2])
-            with b1:
-                if st.button("➕ 단어 추가", use_container_width=True): add_manual()
-            with b2:
-                if st.button("⛔ 선택 삭제", use_container_width=True):
-                    # [사용자 요청] 삭제 버튼 클릭 시에도 고정 오버레이 트리거
-                    st.session_state.analysis_result = [r for r in st.session_state.analysis_result if not r.get('삭제', False)]
-                    st.session_state.sync_trigger = True 
+        b1, b2, b_save_only, b_save_next = st.columns([1, 1, 1.5, 2])
+        with b1:
+            if st.button("➕ 단어 추가", use_container_width=True): add_manual()
+        with b2:
+            if st.button("⛔ 선택 삭제", use_container_width=True):
+                # 선택 삭제 버튼 클릭 시에도 토스트 알림과 강제 지연 부여
+                st.session_state.analysis_result = [r for r in st.session_state.analysis_result if not r.get('삭제', False)]
+                st.toast("🗑️ 삭제된 데이터를 정리하고 동기화 중입니다.", icon="⏳")
+                time.sleep(2.0)
+                st.rerun()
+        with b_save_only:
+            if st.button("💾 현재 페이지만 저장", use_container_width=True):
+                with st.status("데이터 저장 중..."):
+                    save_logic_with_learning()
+                    st.success("✅ 저장 완료!")
+                    time.sleep(1)
                     st.rerun()
-            with b_save_only:
-                if st.button("💾 현재 페이지만 저장", use_container_width=True):
-                    with st.status("데이터 저장 중..."):
-                        save_logic_with_learning()
-                        st.success("✅ 저장 완료!")
-                        time.sleep(1)
+        with b_save_next:
+            if st.button("🚀 저장하고 다음 쪽 가기", type="primary", use_container_width=True):
+                with st.status("데이터 통합 및 다음 쪽 준비 중..."):
+                    save_logic_with_learning()
+                    if st.session_state.file_type == "application/pdf" and st.session_state.page_idx < st.session_state.total_pages - 1:
+                        st.session_state.page_idx += 1
+                        st.session_state.extracted_text = extract_text_unified(st.session_state.file_bytes, st.session_state.file_type, st.session_state.page_idx)
+                        st.session_state.analysis_result = []
+                        st.session_state.step = 2
+                        st.success(f"✅ 저장 완료! {st.session_state.page_idx + st.session_state.start_offset}쪽으로 이동합니다.")
+                        time.sleep(1.5)
                         st.rerun()
-            with b_save_next:
-                if st.button("🚀 저장하고 다음 쪽 가기", type="primary", use_container_width=True):
-                    with st.status("데이터 통합 및 다음 쪽 준비 중..."):
-                        save_logic_with_learning()
-                        if st.session_state.file_type == "application/pdf" and st.session_state.page_idx < st.session_state.total_pages - 1:
-                            st.session_state.page_idx += 1
-                            st.session_state.extracted_text = extract_text_unified(st.session_state.file_bytes, st.session_state.file_type, st.session_state.page_idx)
-                            st.session_state.analysis_result = []
-                            st.session_state.step = 2
-                            st.success(f"✅ 저장 완료! {st.session_state.page_idx + st.session_state.start_offset}쪽으로 이동합니다.")
-                            time.sleep(1.5)
-                            st.rerun()
-                        else:
-                            st.session_state.is_finished = True
-                            st.balloons(); st.rerun()
+                    else:
+                        st.session_state.is_finished = True
+                        st.balloons(); st.rerun()
     else:
         st.success("✅ 모든 페이지 분석 데이터가 통합 저장되었습니다!")
         fname = f"Result_{st.session_state.mode_key}_{datetime.now().strftime('%m%d_%H%M')}.xlsx"
@@ -666,9 +632,3 @@ elif st.session_state.step == 3:
         with c2:
             if st.button("🔄 처음 단계로 이동", use_container_width=True):
                 st.session_state.step = 2; st.session_state.is_finished = False; st.rerun()
-
-    # 로딩 트리거 해제 로직 (지연 효과)
-    if st.session_state.sync_trigger:
-        time.sleep(2.5) 
-        st.session_state.sync_trigger = False
-        st.rerun()
