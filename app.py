@@ -54,7 +54,7 @@ if 'page_idx' not in st.session_state: st.session_state.page_idx = 0
 if 'total_pages' not in st.session_state: st.session_state.total_pages = 1
 if 'start_offset' not in st.session_state: st.session_state.start_offset = 1
 if 'extracted_text' not in st.session_state: st.session_state.extracted_text = ""
-if 'debug_mode' not in st.session_state: st.session_state.debug_mode = False # 디버깅 모드 기본값
+if 'debug_mode' not in st.session_state: st.session_state.debug_mode = False
 if 'last_raw_response' not in st.session_state: st.session_state.last_raw_response = ""
 if 'debug_log' not in st.session_state: st.session_state.debug_log = ""
 if 'is_finished' not in st.session_state: st.session_state.is_finished = False
@@ -157,7 +157,7 @@ def save_backup_to_cloud(mode_key, df):
     except: return False
 
 # =========================================================
-# [3] 데이터 병합 및 비교 학습 엔진 (학습 로직 보존)
+# [3] 데이터 병합 및 비교 학습 엔진
 # =========================================================
 def clean_val_for_save(v):
     if isinstance(v, str): 
@@ -204,59 +204,33 @@ def merge_master_data(old_df, new_df):
     return result_df
 
 def save_logic_with_learning():
-    """사용자 수정 사항을 학습 데이터로 전송하고 마스터 데이터를 업데이트함"""
     sheet, _ = get_sheet_data_fresh(st.session_state.mode_key)
     now = datetime.now().isoformat()
     learning_logs = []
-    
     final_results = pd.DataFrame(st.session_state.analysis_result)
     initial_draft = pd.DataFrame(st.session_state.initial_draft)
-    
-    # 1. 교정 및 삭제 학습 (Draft와 Final 비교)
     for _, draft_row in initial_draft.iterrows():
         orig = draft_row['원본']
         match = final_results[final_results['원본'] == orig]
-        
         if match.empty or match.iloc[0]['삭제']:
             learning_logs.append([now, orig, draft_row['원형'], draft_row['분류'], draft_row['품사'], 'delete', 'Engine-Compare', draft_row['원형'], draft_row['분류']])
         else:
             final_row = match.iloc[0]
-            if (draft_row['원형'] != final_row['원형'] or 
-                clean_val_for_save(draft_row['분류']) != clean_val_for_save(final_row['분류']) or 
-                clean_val_for_save(draft_row['품사']) != clean_val_for_save(final_row['품사'])):
-                
-                learning_logs.append([
-                    now, orig, final_row['원형'], 
-                    clean_val_for_save(final_row['분류']), 
-                    clean_val_for_save(final_row['품사']), 
-                    'modify', 'Engine-Compare', 
-                    draft_row['원형'], draft_row['분류']
-                ])
-                
-    # 2. 추가 학습 (새로운 단어)
+            if (draft_row['원형'] != final_row['원형'] or clean_val_for_save(draft_row['분류']) != clean_val_for_save(final_row['분류']) or clean_val_for_save(draft_row['품사']) != clean_val_for_save(final_row['품사'])):
+                learning_logs.append([now, orig, final_row['원형'], clean_val_for_save(final_row['분류']), clean_val_for_save(final_row['품사']), 'modify', 'Engine-Compare', draft_row['원형'], draft_row['분류']])
     draft_originals = initial_draft['원본'].tolist()
     for _, final_row in final_results.iterrows():
         if final_row['원본'] not in draft_originals and not final_row['삭제']:
-            learning_logs.append([
-                now, final_row['원본'], final_row['원형'], 
-                clean_val_for_save(final_row['분류']), 
-                clean_val_for_save(final_row['품사']), 
-                'add', 'Engine-New', '', ''
-            ])
-            
+            learning_logs.append([now, final_row['원본'], final_row['원형'], clean_val_for_save(final_row['분류']), clean_val_for_save(final_row['품사']), 'add', 'Engine-New', '', ''])
     if learning_logs: send_data_with_retry(sheet, learning_logs, True)
-    
-    # 마스터 데이터 업데이트
     valid = final_results[final_results['삭제']==False].copy()
     valid['n_cnt'] = valid['횟수'].apply(lambda x: int(re.sub(r'[^0-9]', '', str(x))) if re.search(r'\d', str(x)) else 1)
     agg = valid.groupby(['원형', '분류', '품사'], as_index=False).agg({'n_cnt': 'sum'})
-    
     p_num = str(st.session_state.page_idx + st.session_state.start_offset)
     temp_rows = []
     for _, item in agg.iterrows():
         val = f"{p_num}_{item['n_cnt']}" if item['n_cnt'] > 1 else p_num
         temp_rows.append({'구분': clean_val_for_save(item['분류']), '자료': item['원형'], '쪽수1': val})
-        
     st.session_state.master_df = merge_master_data(st.session_state.master_df, pd.DataFrame(temp_rows))
     save_backup_to_cloud(st.session_state.mode_key, st.session_state.master_df)
 
@@ -288,11 +262,14 @@ def api_call_direct(prompt, image_bytes=None):
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={API_KEY.strip()}"
     headers = {'Content-Type': 'application/json'}
     parts = [{"text": prompt}]
+    
+    # [Fix] 이미지 바이트가 존재할 때만 전송 (None이면 텍스트만 전송)
     if image_bytes:
         optimized_img = process_image_for_api(image_bytes)
         if optimized_img:
             b64_img = base64.b64encode(optimized_img).decode('utf-8')
             parts.append({"inline_data": {"mime_type": "image/png", "data": b64_img}})
+            
     try:
         res = requests.post(url, headers=headers, json={"contents": [{"parts": parts}]}, timeout=300)
         if res.status_code == 200: 
@@ -308,6 +285,7 @@ def extract_text_unified(file_bytes, file_type, page_idx):
         raw_text, _ = api_call_direct("이 이미지 속의 텍스트를 모두 추출하세요. 줄바꿈 유지.", file_bytes)
     
     elif "pdf" in file_type:
+        # PDF 페이지 계산
         if FITZ_AVAILABLE:
             try:
                 doc = fitz.open(stream=file_bytes, filetype="pdf")
@@ -400,8 +378,15 @@ def run_analysis_action(txt, img_bytes=None):
             clean_json = raw.replace("```json", "").replace("```", "").strip()
             match = re.search(r'\[.*\]', clean_json, re.DOTALL)
             
-            if match: res = json.loads(match.group())
-            else: res = json.loads(clean_json)
+            # [Fix] JSON 매칭 실패 시 fallback 처리 강화
+            if match:
+                res = json.loads(match.group())
+            else:
+                try: res = json.loads(clean_json)
+                except: 
+                    # 리스트 형식이 아닌 경우 빈 리스트 처리 후 오류 방지
+                    st.warning("분석 결과 형식이 예상과 다릅니다. 재시도하거나 텍스트를 확인해주세요.")
+                    res = []
 
             proc = []; temp_dict = {}
             om = {'고':'🔵 고', '한':'🟢 한', '외':'🔴 외', '혼':'🟣 혼'}
@@ -500,6 +485,7 @@ elif st.session_state.step == 1.5:
 elif st.session_state.step == 2:
     st.session_state.is_finished = False
     
+    # [Update] 상단 헤더 및 내비게이션 배치
     c_head, c_nav = st.columns([8, 2])
     with c_head: st.header(f"📝 {st.session_state.input_type} 분석 자료 입력")
     with c_nav:
@@ -528,13 +514,22 @@ elif st.session_state.step == 2:
                 img = get_page_image(st.session_state.file_bytes, "application/pdf", st.session_state.page_idx)
                 if img: st.image(img, use_container_width=True)
                 st.markdown(f"<div style='margin-top:-10px; margin-bottom:10px;'><span class='status-badge'>📄 PDF 상태: {st.session_state.page_idx+1} / {st.session_state.total_pages} 페이지</span></div>", unsafe_allow_html=True)
+                
                 j1, j2, j3 = st.columns([1,1,1])
                 with j1: 
                     if st.button("◀ 이전", use_container_width=True, disabled=st.session_state.page_idx<=0):
                         st.session_state.page_idx -= 1
                         st.session_state.extracted_text = extract_text_unified(st.session_state.file_bytes, "application/pdf", st.session_state.page_idx)
                         st.rerun()
-                with j2: target_p = st.number_input("이동", 1, st.session_state.total_pages, st.session_state.page_idx+1, label_visibility="collapsed")
+                
+                # [Fix] 이동 버튼을 통한 명시적 페이지 점프 로직 추가
+                with j2: 
+                    target_p = st.number_input("이동", 1, st.session_state.total_pages, st.session_state.page_idx+1, label_visibility="collapsed")
+                    if target_p != st.session_state.page_idx + 1:
+                        st.session_state.page_idx = target_p - 1
+                        st.session_state.extracted_text = extract_text_unified(st.session_state.file_bytes, "application/pdf", st.session_state.page_idx)
+                        st.rerun()
+
                 with j3:
                     if st.button("다음 ▶", use_container_width=True, disabled=st.session_state.page_idx>=st.session_state.total_pages-1):
                         st.session_state.page_idx += 1
@@ -567,7 +562,7 @@ elif st.session_state.step == 2:
 
     elif st.session_state.input_type == "DIRECT":
         st.session_state.extracted_text = st.text_area("분석할 텍스트를 입력하세요", value=st.session_state.extracted_text, height=450)
-        # [Fix] 직접 입력 시 이미지 없음 명시
+        # [Fix] 직접 입력 시 이미지 인자 None 전달 (오류 방지)
         if st.button("🚀 분석 실행", type="primary", use_container_width=True): run_analysis_action(st.session_state.extracted_text, None)
 
 # STEP 3: 결과 확인
@@ -639,7 +634,6 @@ elif st.session_state.step == 3:
 
     if not st.session_state.is_finished:
         if st.session_state.input_type in ["DIRECT", "IMAGE"]:
-            # [Update] 이미지/직접 입력 모드: 3버튼 (저장 완료)
             b1, b2, b3 = st.columns([1, 1, 2])
             with b1: 
                 if st.button("➕ 단어 추가", use_container_width=True): open_add_dialog()
@@ -648,7 +642,6 @@ elif st.session_state.step == 3:
                     st.session_state.analysis_result = [r for r in st.session_state.analysis_result if not r.get('삭제', False)]
                     st.toast("🗑️ 삭제 데이터 정리 중..."); time.sleep(2.0); st.rerun()
             with b3:
-                # 학습 데이터 전송 + 완료 처리
                 if st.button("💾 저장 완료", type="primary", use_container_width=True):
                     with st.status("데이터 저장 및 학습 반영 중..."):
                         save_logic_with_learning()
@@ -657,7 +650,6 @@ elif st.session_state.step == 3:
                         time.sleep(1.0)
                         st.rerun()
         else:
-            # PDF 모드: 4버튼 (연속 작업 지원)
             b1, b2, b3, b4 = st.columns([1, 1, 1.5, 2])
             with b1: 
                 if st.button("➕ 단어 추가", use_container_width=True): open_add_dialog()
