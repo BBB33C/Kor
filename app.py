@@ -71,20 +71,19 @@ def reset_input_buffer():
     st.session_state.is_finished = False
 
 # =========================================================
-# [1] 디자인: CSS 매직 (그라데이션 및 높이 맞춤 적용)
+# [1] 디자인: CSS 매직
 # =========================================================
 if st.session_state.step in [0, 1.5]:
     st.markdown("""
         <style>
             .stApp { background-color: #0e1117 !important; color: #ffffff !important; }
-            
-            /* 버튼 그라데이션 적용 */
+            /* [Revert] 그라데이션 제거 -> 깔끔한 다크 카드 스타일로 복귀 */
             div.block-container div[data-testid="column"] div.stButton > button {
                 width: 100%; height: 280px;
-                background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%) !important; /* Deep Blue Gradient */
+                background-color: #262730 !important;
                 border: 2px solid rgba(255,255,255,0.1) !important;
                 border-radius: 20px !important;
-                color: #ffffff !important;
+                color: #eeeeee !important;
                 font-size: 1.4rem !important; font-weight: 700 !important;
                 transition: all 0.3s ease !important;
                 box-shadow: 0 4px 15px rgba(0,0,0,0.4) !important;
@@ -92,29 +91,37 @@ if st.session_state.step in [0, 1.5]:
             }
             div.block-container div[data-testid="column"] div.stButton > button:hover {
                 transform: translateY(-10px);
-                background: linear-gradient(135deg, #2a5298 0%, #1e3c72 100%) !important;
-                border-color: #6dd5fa !important;
-                box-shadow: 0 8px 25px rgba(41, 121, 255, 0.6) !important;
+                background-color: #2b2c36 !important;
+                border-color: #2979ff !important;
             }
         </style>
     """, unsafe_allow_html=True)
 elif st.session_state.step == 1:
-    # [Design Fix] 이어하기/새로하기 상자 높이 맞춤
+    # [Design Fix] 이어하기/새로하기 상자 높이 통일 및 그라데이션 제거
     st.markdown("""
         <style>
             .stApp { background-color: #0e1117 !important; color: #ffffff !important; }
-            /* 컨테이너 높이 강제 통일 */
-            div[data-testid="stVerticalBlock"] > div[data-testid="stVerticalBlock"] {
-                min-height: 250px;
-                display: flex; flex-direction: column; justify-content: center;
+            
+            /* 컨테이너(상자) 높이 강제 통일 */
+            div[data-testid="stVerticalBlockBorderWrapper"] > div {
+                min-height: 250px !important;
+                display: flex; 
+                flex-direction: column; 
+                justify-content: center;
             }
+            
+            /* 새로 시작하기 버튼 스타일 (그라데이션 제거, 깔끔하게) */
             div.stButton > button {
                 width: 100%;
-                background: linear-gradient(90deg, #4b6cb7 0%, #182848 100%) !important;
+                background-color: #2979ff !important;
                 color: white !important;
                 border: none !important;
                 border-radius: 10px;
-                height: 50px; font-size: 1.1rem;
+                height: 50px; font-size: 1.1rem; font-weight: bold;
+            }
+            div.stButton > button:hover {
+                background-color: #2b2c36 !important;
+                border: 1px solid #2979ff !important;
             }
         </style>
     """, unsafe_allow_html=True)
@@ -373,6 +380,7 @@ def get_page_image(file_bytes, file_type, page_idx):
         try:
             doc = fitz.open(stream=file_bytes, filetype="pdf")
             if page_idx < len(doc): 
+                # PDF 화질 4배
                 pix = doc[page_idx].get_pixmap(matrix=fitz.Matrix(4.0, 4.0))
                 return pix.tobytes("png")
         except: return None
