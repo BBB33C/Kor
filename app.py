@@ -59,6 +59,22 @@ if 'last_raw_response' not in st.session_state: st.session_state.last_raw_respon
 if 'debug_log' not in st.session_state: st.session_state.debug_log = ""
 if 'is_finished' not in st.session_state: st.session_state.is_finished = False
 
+# [New] 입력 데이터만 초기화하는 안전 함수 (엑셀 파일 보호)
+def reset_input_buffer():
+    """
+    모드 변경 시 입력된 파일, 텍스트, 분석 결과만 초기화합니다.
+    주의: master_df(엑셀 파일)와 mode_key(언어 규범)는 절대 초기화하지 않습니다.
+    """
+    st.session_state.file_bytes = None
+    st.session_state.file_type = None
+    st.session_state.extracted_text = ""
+    st.session_state.analysis_result = []
+    st.session_state.initial_draft = []
+    st.session_state.page_idx = 0
+    st.session_state.total_pages = 1
+    st.session_state.is_finished = False
+    # master_df는 건드리지 않음
+
 # =========================================================
 # [1] 디자인: CSS 매직
 # =========================================================
@@ -200,7 +216,6 @@ def merge_master_data(old_df, new_df):
     result_df = pd.DataFrame(final_rows)
     result_df['출연횟수'] = result_df.apply(calc_freq, axis=1)
     
-    # [Update] 열 순서 변경: 구분, 자료, 출연횟수, 쪽수1, 쪽수2...
     fixed_cols = ['구분', '자료', '출연횟수']
     page_cols = sorted([c for c in result_df.columns if c.startswith('쪽수')], key=lambda x: int(re.sub(r'[^0-9]', '', x)) if re.search(r'\d', x) else 9999)
     final_cols = fixed_cols + page_cols
@@ -212,7 +227,6 @@ def merge_master_data(old_df, new_df):
     result_df = result_df.sort_values(['sk', '자료']).drop('sk', axis=1)
     result_df = result_df.reindex(columns=final_cols)
     
-    # [Fix] NaN 값을 빈 문자열로 치환하여 엑셀 저장 시 깔끔하게
     result_df = result_df.fillna("")
     
     return result_df
@@ -349,7 +363,6 @@ def run_analysis_action(txt, img_bytes=None):
     with st.spinner("AI가 국어학적 관점에서 정밀 분석 중입니다..."):
         s_data = get_sheet_data_fresh(st.session_state.mode_key)[1]
         
-        # [Update] 고유명사 표시 제거 및 명사 통합 프롬프트
         prompt = f"""
         당신은 국어학 및 시맨틱 텍스트 분석 전문가입니다. 
         
@@ -449,9 +462,11 @@ if st.session_state.step == 0:
     c_left, c_south, c_north, c_right = st.columns([1, 4, 4, 1])
     with c_south:
         if st.button("🏛️\n\n대한민국 표준어\n\n(표준국어대사전 기준)", use_container_width=True):
+            reset_input_buffer()
             st.session_state.mode_key = "SOUTH"; st.session_state.step = 1; st.rerun()
     with c_north:
         if st.button("🏔️\n\n북한 문화어\n\n(문화어 규범 기준)", use_container_width=True):
+            reset_input_buffer()
             st.session_state.mode_key = "NORTH"; st.session_state.step = 1; st.rerun()
 
 # STEP 1: 데이터 소스 선택
@@ -459,7 +474,9 @@ elif st.session_state.step == 1:
     c1, c2 = st.columns([8, 2])
     with c1: st.header("📂 데이터 소스 선택")
     with c2: 
-        if st.button("⬅️ 모드 선택으로", use_container_width=True): st.session_state.step = 0; st.rerun()
+        if st.button("⬅️ 모드 선택으로", use_container_width=True): 
+            reset_input_buffer()
+            st.session_state.step = 0; st.rerun()
 
     col1, col2 = st.columns(2)
     with col1:
@@ -482,17 +499,22 @@ elif st.session_state.step == 1.5:
     c1, c2 = st.columns([8, 2])
     with c1: st.header("📝 입력 방식 선택")
     with c2: 
-        if st.button("⬅️ 소스 선택으로", use_container_width=True): st.session_state.step = 1; st.rerun()
+        if st.button("⬅️ 소스 선택으로", use_container_width=True): 
+            reset_input_buffer()
+            st.session_state.step = 1; st.rerun()
 
     c1, c2, c3 = st.columns(3)
     with c1:
         if st.button("📄\n\nPDF 문서 분석\n\n(쪽수 관리 지원)", use_container_width=True):
+            reset_input_buffer()
             st.session_state.input_type = "PDF"; st.session_state.step = 2; st.rerun()
     with c2:
         if st.button("🖼️\n\n이미지 분석\n\n(단일 사진 전용)", use_container_width=True):
+            reset_input_buffer()
             st.session_state.input_type = "IMAGE"; st.session_state.step = 2; st.rerun()
     with c3:
         if st.button("✍️\n\n텍스트 직접 입력\n\n(복사한 글 분석)", use_container_width=True):
+            reset_input_buffer()
             st.session_state.input_type = "DIRECT"; st.session_state.step = 2; st.rerun()
 
 # STEP 2: 자료 입력
@@ -502,7 +524,9 @@ elif st.session_state.step == 2:
     c_head, c_nav = st.columns([8, 2])
     with c_head: st.header(f"📝 {st.session_state.input_type} 분석 자료 입력")
     with c_nav:
-        if st.button("🏠 처음으로", use_container_width=True): st.session_state.step = 0; st.rerun()
+        if st.button("🏠 처음으로", use_container_width=True): 
+            reset_input_buffer()
+            st.session_state.step = 0; st.rerun()
     
     with st.expander("⚙️ 쪽수 및 환경 설정", expanded=True):
         st.session_state.start_offset = st.number_input("현재 작업 중인 페이지의 쪽수 설정 (PDF는 시작 쪽수)", value=st.session_state.start_offset)
@@ -574,7 +598,13 @@ elif st.session_state.step == 2:
         if effective_file:
             c1, c2 = st.columns(2)
             with c1:
-                st.image(st.session_state.file_bytes, use_container_width=True, caption="이미지 원본")
+                # [Fix] 이미지 렌더링 에러 방지 (UnidentifiedImageError)
+                try:
+                    if "image" in str(st.session_state.file_type):
+                        st.image(st.session_state.file_bytes, use_container_width=True, caption="이미지 원본")
+                except:
+                    st.error("이미지를 표시할 수 없습니다. (파일 형식 오류)")
+                    
             with c2:
                 st.session_state.extracted_text = st.text_area("에디터 (추출 텍스트)", value=st.session_state.extracted_text, height=520)
                 if st.button("🚀 분석 실행", type="primary", use_container_width=True): run_analysis_action(st.session_state.extracted_text, st.session_state.file_bytes)
@@ -604,10 +634,12 @@ elif st.session_state.step == 3:
     if st.session_state.input_type in ["PDF", "IMAGE"]:
         c1, c2 = st.columns([1, 1])
         with c1:
-            img = get_page_image(st.session_state.file_bytes, st.session_state.file_type, st.session_state.page_idx)
-            if img:
-                cap = f"📄 PDF 총 {st.session_state.total_pages}쪽 중 현재 {st.session_state.page_idx+1}쪽 (📍 엑셀에 '{actual_p}쪽' 저장 예정)" if st.session_state.input_type=="PDF" else "이미지 미리보기"
-                st.image(img, use_container_width=True, caption=cap)
+            try:
+                img = get_page_image(st.session_state.file_bytes, st.session_state.file_type, st.session_state.page_idx)
+                if img:
+                    cap = f"📄 PDF 총 {st.session_state.total_pages}쪽 중 현재 {st.session_state.page_idx+1}쪽 (📍 엑셀에 '{actual_p}쪽' 저장 예정)" if st.session_state.input_type=="PDF" else "이미지 미리보기"
+                    st.image(img, use_container_width=True, caption=cap)
+            except: pass
         with c2:
             st.text_area("추출 원문 확인", value=st.session_state.extracted_text, height=500, disabled=True)
     else: 
