@@ -16,7 +16,7 @@ import traceback
 from PIL import Image # 이미지 검증 및 재인코딩용 필수 라이브러리
 
 # =========================================================
-# [0] 기본 설정 및 라이브러리 초기화 (오류 방지)
+# [0] 기본 설정 및 라이브러리 초기화
 # =========================================================
 st.set_page_config(
     page_title="국어활동 AI 분석기", 
@@ -96,7 +96,6 @@ else:
             .debug-box { background-color: #000; color: #0f0; font-family: monospace; padding: 10px; border-radius: 5px; font-size: 0.8rem; overflow-x: auto; }
             .section-divider { border-bottom: 2px solid #3d4251; margin: 25px 0; }
             .guide-text { color: #888888; font-size: 0.85rem; font-weight: normal; margin-left: 10px; }
-            /* PDF 이미지 하단 공백 제거 */
             [data-testid="stImage"] { margin-bottom: -15px !important; }
         </style>
     """, unsafe_allow_html=True)
@@ -275,11 +274,8 @@ def api_call_direct(prompt, image_bytes=None):
     except Exception as e: return None, str(e)
 
 def get_page_image(file_bytes, file_type, page_idx):
-    # [Fix] TypeError 및 NameError 방지
     if not file_bytes or not file_type: return None
-    
-    if "image" in file_type: 
-        return file_bytes
+    if "image" in file_type: return file_bytes
     if "pdf" in file_type and FITZ_AVAILABLE:
         try:
             doc = fitz.open(stream=file_bytes, filetype="pdf")
@@ -290,17 +286,15 @@ def get_page_image(file_bytes, file_type, page_idx):
     return None
 
 def extract_text_unified(file_bytes, file_type, page_idx):
-    # [Fix] TypeError 방지
     if not file_type: return ""
-    
     raw_text = ""
     # 이미지 모드
     if "image" in file_type: 
         raw_text, _ = api_call_direct("이 이미지 속의 텍스트를 모두 추출하세요. 줄바꿈 유지.", file_bytes)
     
-    # [Update] PDF 모드: 텍스트 추출 대신 '이미지 변환 후 AI 분석'으로 변경 (정확도 향상)
+    # PDF 모드: 이미지 변환 후 Vision 분석
     elif "pdf" in file_type:
-        # 1. 전체 페이지 수 계산 (기존 로직 유지)
+        # 1. 전체 페이지 수 계산 (업로드 시점에도 하지만 안전장치)
         if FITZ_AVAILABLE:
             try:
                 doc = fitz.open(stream=file_bytes, filetype="pdf")
@@ -312,12 +306,11 @@ def extract_text_unified(file_bytes, file_type, page_idx):
                     st.session_state.total_pages = len(pdf.pages)
             except: pass
             
-        # 2. 해당 페이지를 이미지로 변환하여 AI에게 전송 (Vision Analysis)
+        # 2. 해당 페이지 Vision 분석
         page_img = get_page_image(file_bytes, file_type, page_idx)
         if page_img:
             raw_text, _ = api_call_direct("이 이미지 속의 텍스트를 모두 추출하세요. 줄바꿈 유지.", page_img)
         else:
-            # 이미지 변환 실패 시 텍스트 추출로 폴백
             if PLUMBER_AVAILABLE:
                 try:
                     with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
@@ -340,7 +333,6 @@ def run_analysis_action(txt, img_bytes=None):
     with st.spinner("AI가 국어학적 관점에서 정밀 분석 중입니다..."):
         s_data = get_sheet_data_fresh(st.session_state.mode_key)[1]
         
-        # [정확도 보강] 동음이의어, 고유명사, 그리고 용언 기본형('다' 포함) 규칙 추가
         prompt = f"""
         당신은 국어학 및 시맨틱 텍스트 분석 전문가입니다. 아래 지침을 엄격히 준수하십시오.
         {generate_prompt_from_sheet(s_data)}
@@ -371,6 +363,7 @@ def run_analysis_action(txt, img_bytes=None):
         [출력 양식: 한글 키 JSON 리스트]
         원본, 원형, 분류(고/한/외/혼), 품사(명사/동사/형용사/부사/관형사/대명사/감탄사)
         """
+        # [Fix] 직접 입력 시 img_bytes가 None으로 들어올 수 있으므로 안전하게 처리
         raw, status = api_call_direct(prompt + f"\n\n[분석 대상]:\n{txt[:5000]}", img_bytes)
         try:
             clean_json = raw.replace("```json", "").replace("```", "").strip()
@@ -419,7 +412,12 @@ if st.session_state.step == 0:
 
 # STEP 1: 데이터 소스 선택
 elif st.session_state.step == 1:
-    st.header("📂 데이터 소스 선택")
+    # [Update] 상단 헤더 및 내비게이션 배치
+    c1, c2 = st.columns([8, 2])
+    with c1: st.header("📂 데이터 소스 선택")
+    with c2: 
+        if st.button("⬅️ 모드 선택으로", use_container_width=True): st.session_state.step = 0; st.rerun()
+
     col1, col2 = st.columns(2)
     with col1:
         with st.container(border=True):
@@ -432,11 +430,15 @@ elif st.session_state.step == 1:
         with st.container(border=True):
             st.subheader("🆕 새로 시작하기")
             if st.button("새 프로젝트 생성", use_container_width=True): st.session_state.master_df = None; st.session_state.step = 1.5; st.rerun()
-    if st.button("⬅️ 모드 선택으로"): st.session_state.step = 0; st.rerun()
 
 # STEP 1.5: 입력 방식 선택
 elif st.session_state.step == 1.5:
-    st.header("📝 입력 방식 선택")
+    # [Update] 상단 헤더 및 내비게이션 배치
+    c1, c2 = st.columns([8, 2])
+    with c1: st.header("📝 입력 방식 선택")
+    with c2: 
+        if st.button("⬅️ 소스 선택으로", use_container_width=True): st.session_state.step = 1; st.rerun()
+
     c1, c2, c3 = st.columns(3)
     with c1:
         if st.button("📄\n\nPDF 문서 분석\n\n(쪽수 관리 지원)", use_container_width=True):
@@ -447,15 +449,18 @@ elif st.session_state.step == 1.5:
     with c3:
         if st.button("✍️\n\n텍스트 직접 입력\n\n(복사한 글 분석)", use_container_width=True):
             st.session_state.input_type = "DIRECT"; st.session_state.step = 2; st.rerun()
-    if st.button("⬅️ 데이터 소스 선택으로"): st.session_state.step = 1; st.rerun()
 
 # STEP 2: 자료 입력
 elif st.session_state.step == 2:
     st.session_state.is_finished = False
-    st.header(f"📝 {st.session_state.input_type} 분석 자료 입력")
+    
+    # [Update] 상단 헤더 및 내비게이션 배치
+    c_head, c_nav = st.columns([8, 2])
+    with c_head: st.header(f"📝 {st.session_state.input_type} 분석 자료 입력")
+    with c_nav:
+        if st.button("🏠 처음으로", use_container_width=True): st.session_state.step = 0; st.rerun()
     
     with st.expander("⚙️ 쪽수 및 환경 설정", expanded=True):
-        # [Update] 쪽수 설정 문구 직관화
         st.session_state.start_offset = st.number_input("현재 작업 중인 페이지의 쪽수 설정 (PDF는 시작 쪽수)", value=st.session_state.start_offset)
         actual_p = st.session_state.page_idx + st.session_state.start_offset
         st.markdown(f"<div class='info-card'>💾 <b>저장 위치:</b> 현재 작업 중인 내용은 엑셀의 <b>'{actual_p}쪽'</b>으로 기록됩니다.</div>", unsafe_allow_html=True)
@@ -464,10 +469,16 @@ elif st.session_state.step == 2:
         file = st.file_uploader("PDF 파일 업로드", type=['pdf'])
         if file:
             fb = file.getvalue()
-            # 파일이 바뀌었을 때만 초기화, 아니면 유지
             if st.session_state.file_bytes != fb:
                 st.session_state.file_bytes = fb; st.session_state.file_type = "application/pdf"
-                st.session_state.page_idx = 0; st.session_state.extracted_text = extract_text_unified(fb, "application/pdf", 0)
+                st.session_state.page_idx = 0
+                # [Fix] PDF 업로드 즉시 전체 페이지 수 계산 및 텍스트 추출
+                if FITZ_AVAILABLE:
+                    try: 
+                        with fitz.open(stream=fb, filetype="pdf") as doc: st.session_state.total_pages = len(doc)
+                    except: pass
+                st.session_state.extracted_text = extract_text_unified(fb, "application/pdf", 0)
+            
             c1, c2 = st.columns(2)
             with c1:
                 img = get_page_image(st.session_state.file_bytes, "application/pdf", st.session_state.page_idx)
@@ -489,7 +500,6 @@ elif st.session_state.step == 2:
         file = st.file_uploader("이미지 파일 업로드", type=['png', 'jpg', 'jpeg'])
         if file:
             fb = file.getvalue()
-            # 파일이 바뀌었을 때만 초기화
             if st.session_state.file_bytes != fb:
                 st.session_state.file_bytes = fb; st.session_state.file_type = "image/png"
                 st.session_state.extracted_text = extract_text_unified(fb, "image/png", 0)
@@ -500,33 +510,28 @@ elif st.session_state.step == 2:
             with c2:
                 st.session_state.extracted_text = st.text_area("에디터 (추출 텍스트)", value=st.session_state.extracted_text, height=520)
                 if st.button("🚀 분석 실행", type="primary", use_container_width=True): run_analysis_action(st.session_state.extracted_text, st.session_state.file_bytes)
-        
-        # [Update] 입력 창 복귀 시 파일 업로더가 비어있어도 기존 세션 이미지 유지
         elif st.session_state.file_bytes and st.session_state.input_type == "IMAGE":
              c1, c2 = st.columns(2)
-             with c1:
-                 st.image(st.session_state.file_bytes, use_container_width=True, caption="이전 작업 이미지")
+             with c1: st.image(st.session_state.file_bytes, use_container_width=True, caption="이전 작업 이미지")
              with c2:
                  st.session_state.extracted_text = st.text_area("에디터 (추출 텍스트)", value=st.session_state.extracted_text, height=520)
                  if st.button("🚀 분석 실행", type="primary", use_container_width=True): run_analysis_action(st.session_state.extracted_text, st.session_state.file_bytes)
 
-
     elif st.session_state.input_type == "DIRECT":
         st.session_state.extracted_text = st.text_area("분석할 텍스트를 입력하세요", value=st.session_state.extracted_text, height=450)
-        if st.button("🚀 분석 실행", type="primary", use_container_width=True): run_analysis_action(st.session_state.extracted_text)
-
-    if st.button("🏠 처음으로"): st.session_state.step = 0; st.rerun()
+        # [Fix] 직접 입력 시 img_bytes=None 명시적 전달
+        if st.button("🚀 분석 실행", type="primary", use_container_width=True): run_analysis_action(st.session_state.extracted_text, None)
 
 # STEP 3: 결과 확인
 elif st.session_state.step == 3:
     actual_p = st.session_state.page_idx + st.session_state.start_offset
     
+    # [Update] 상단 헤더 및 내비게이션 (우상단 배치)
     ch, cb = st.columns([8.5, 1.5])
     with ch: 
         st.header("📊 분석 결과 확인")
         st.markdown(f"<p style='color: #2979ff; font-size: 0.95rem; margin-top:-15px;'>📍 현재 작업 내용은 마스터 엑셀의 <b>'{actual_p}쪽'</b>으로 저장될 예정입니다.</p>", unsafe_allow_html=True)
     with cb:
-        # [Update] 입력 창으로 돌아가기 (데이터 유지)
         if st.button("⬅️ 입력 창으로", use_container_width=True): st.session_state.step = 2; st.rerun()
     
     if st.session_state.input_type in ["PDF", "IMAGE"]:
