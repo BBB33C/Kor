@@ -275,7 +275,9 @@ def api_call_direct(prompt, image_bytes=None):
     except Exception as e: return None, str(e)
 
 def extract_text_unified(file_bytes, file_type, page_idx):
+    # [Fix] TypeError 방지
     if not file_type: return ""
+    
     raw_text = ""
     if "image" in file_type: 
         raw_text, _ = api_call_direct("이 이미지 속의 텍스트를 모두 추출하세요. 줄바꿈 유지.", file_bytes)
@@ -295,8 +297,11 @@ def extract_text_unified(file_bytes, file_type, page_idx):
     return clean_raw_text(raw_text or "")
 
 def get_page_image(file_bytes, file_type, page_idx):
+    # [Fix] TypeError 및 NameError 방지
     if not file_bytes or not file_type: return None
-    if "image" in file_type: return file_bytes
+    
+    if "image" in file_type: 
+        return file_bytes
     if "pdf" in file_type and FITZ_AVAILABLE:
         try:
             doc = fitz.open(stream=file_bytes, filetype="pdf")
@@ -320,6 +325,7 @@ def run_analysis_action(txt, img_bytes=None):
     with st.spinner("AI가 국어학적 관점에서 정밀 분석 중입니다..."):
         s_data = get_sheet_data_fresh(st.session_state.mode_key)[1]
         
+        # [정확도 보강] 동음이의어, 고유명사, 그리고 용언 기본형('다' 포함) 규칙 추가
         prompt = f"""
         당신은 국어학 및 시맨틱 텍스트 분석 전문가입니다. 아래 지침을 엄격히 준수하십시오.
         {generate_prompt_from_sheet(s_data)}
@@ -485,8 +491,14 @@ elif st.session_state.step == 2:
 # STEP 3: 결과 확인
 elif st.session_state.step == 3:
     actual_p = st.session_state.page_idx + st.session_state.start_offset
-    st.header("📊 분석 결과 확인")
-    st.markdown(f"<p style='color: #2979ff; font-size: 0.95rem; margin-top:-15px;'>📍 현재 작업 내용은 마스터 엑셀의 <b>'{actual_p}쪽'</b>으로 저장될 예정입니다.</p>", unsafe_allow_html=True)
+    
+    # [New] 상단 '입력 창으로 돌아가기' 버튼 배치 (작게)
+    ch, cb = st.columns([8.5, 1.5])
+    with ch: 
+        st.header("📊 분석 결과 확인")
+        st.markdown(f"<p style='color: #2979ff; font-size: 0.95rem; margin-top:-15px;'>📍 현재 작업 내용은 마스터 엑셀의 <b>'{actual_p}쪽'</b>으로 저장될 예정입니다.</p>", unsafe_allow_html=True)
+    with cb:
+        if st.button("⬅️ 입력 창으로", use_container_width=True): st.session_state.step = 2; st.rerun()
     
     if st.session_state.input_type in ["PDF", "IMAGE"]:
         c1, c2 = st.columns([1, 1])
