@@ -80,10 +80,12 @@ else:
             .debug-box { background-color: #000; color: #0f0; font-family: monospace; padding: 10px; border-radius: 5px; font-size: 0.8rem; overflow-x: auto; }
             .section-divider { border-bottom: 2px solid #3d4251; margin: 25px 0; }
             .guide-text { color: #888888; font-size: 0.85rem; font-weight: normal; margin-left: 10px; }
+            /* PDF 이미지 하단 공백 제거용 */
+            [data-testid="stImage"] { margin-bottom: -15px !important; }
         </style>
     """, unsafe_allow_html=True)
 
-# 라이브러리 로드 확인 (전역 변수로 관리하여 NameError 방지)
+# 라이브러리 로드 확인 (NameError 방지를 위해 전역 배치)
 try:
     import pdfplumber
     PLUMBER_AVAILABLE = True
@@ -96,7 +98,7 @@ except:
     FITZ_AVAILABLE = False
 
 # =========================================================
-# [2] 구글 시트 및 API 엔진
+# [2] 구글 시트 및 API 엔진 (학습 기능 핵심)
 # =========================================================
 try:
     if "GEMINI_API_KEY" in st.secrets:
@@ -206,6 +208,7 @@ def merge_master_data(old_df, new_df):
     return result_df
 
 def save_logic_with_learning():
+    """사용자 수정 사항을 학습 데이터로 전송하고 마스터 데이터를 업데이트함"""
     sheet, _ = get_sheet_data_fresh(st.session_state.mode_key)
     now = datetime.now().isoformat()
     learning_logs = []
@@ -213,6 +216,7 @@ def save_logic_with_learning():
     final_results = pd.DataFrame(st.session_state.analysis_result)
     initial_draft = pd.DataFrame(st.session_state.initial_draft)
     
+    # 1. 교정 및 삭제 학습
     for _, draft_row in initial_draft.iterrows():
         orig = draft_row['원본']
         match = final_results[final_results['원본'] == orig]
@@ -233,6 +237,7 @@ def save_logic_with_learning():
                     draft_row['원형'], draft_row['분류']
                 ])
                 
+    # 2. 추가 학습
     draft_originals = initial_draft['원본'].tolist()
     for _, final_row in final_results.iterrows():
         if final_row['원본'] not in draft_originals and not final_row['삭제']:
@@ -340,7 +345,7 @@ def get_page_image(file_bytes, file_type, page_idx):
 def generate_prompt_from_sheet(sheet_data):
     if not sheet_data: return ""
     rules = []
-    # 정확도 향상을 위한 참조 범위 최적화
+    # 정확도 향상을 위한 과거 교정 데이터 참조
     for row in sheet_data[-300:]: 
         orig, root, origin, pos, action = row.get('original_word',''), row.get('root_word',''), row.get('origin',''), row.get('pos',''), row.get('action','')
         if action == 'delete': rules.append(f"- '{orig}'는 절대로 분석하지 말고 제외할 것.")
@@ -430,6 +435,7 @@ with st.sidebar:
         st.markdown("<br>"*5, unsafe_allow_html=True)
         if st.button("🛠️ 관리자 모드 켜기"): st.session_state.debug_mode = True; st.rerun()
 
+# STEP 0: 시작 화면
 if st.session_state.step == 0:
     st.markdown("<h1 style='text-align: center; margin-bottom: 20px;'>📚 국어활동 AI 분석기</h1>", unsafe_allow_html=True)
     st.markdown("<p style='text-align: center; color: #888; margin-bottom: 50px;'>원하는 언어 규범을 선택하여 분석을 시작하세요.</p>", unsafe_allow_html=True)
@@ -441,6 +447,7 @@ if st.session_state.step == 0:
         if st.button("🏔️\n\n북한 문화어\n\n(문화어 규범 기준)\n\n[ 시작하기 ]", key="btn_north", use_container_width=True):
             st.session_state.mode_key = "NORTH"; st.session_state.step = 1; st.rerun()
 
+# STEP 1: 데이터 소스 선택
 elif st.session_state.step == 1:
     st.header("📂 데이터 소스 선택")
     col1, col2 = st.columns(2)
@@ -462,6 +469,7 @@ elif st.session_state.step == 1:
     st.markdown("---")
     if st.button("⬅️ 모드 다시 선택"): st.session_state.step = 0; st.rerun()
 
+# STEP 2: 자료 입력
 elif st.session_state.step == 2:
     st.session_state.is_finished = False
     c_t, c_h = st.columns([8, 2])
@@ -494,7 +502,6 @@ elif st.session_state.step == 2:
                 if img: st.image(img, use_container_width=True)
                 # 불필요한 빈 칸 제거 및 컨트롤 섹션 밀착
                 if st.session_state.file_type == "application/pdf":
-                    # 불필요한 슬롯 제거 후 즉시 문구 출력
                     st.markdown(f"<div style='margin-top:-10px; margin-bottom:10px;'><span class='status-badge'>📄 PDF 상태: {st.session_state.page_idx + 1} / {st.session_state.total_pages} 페이지</span></div>", unsafe_allow_html=True)
                     
                     j_col1, j_col2, j_col3 = st.columns([1, 1, 1])
@@ -526,9 +533,14 @@ elif st.session_state.step == 2:
         if st.button("🚀 분석 실행", type="primary", use_container_width=True): 
             run_analysis_action(direct_t)
 
+# STEP 3: 결과 확인
 elif st.session_state.step == 3:
+    actual_p = st.session_state.page_idx + st.session_state.start_offset
     ch, cb = st.columns([8, 2])
-    with ch: st.header("📊 분석 결과 확인")
+    with ch: 
+        st.header(f"📊 분석 결과 확인")
+        # 저장 위치 실시간 안내 문구 추가
+        st.markdown(f"<p style='color: #2979ff; font-size: 0.95rem; margin-top:-15px;'>📍 현재 작업 내용은 마스터 엑셀의 <b>'{actual_p}쪽'</b>으로 저장될 예정입니다.</p>", unsafe_allow_html=True)
     with cb:
         if st.button("⬅️ 입력 수정하기", use_container_width=True): st.session_state.step = 2; st.rerun()
     
@@ -544,9 +556,14 @@ elif st.session_state.step == 3:
     st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
     st.markdown("### 📋 분석 결과 편집 <span class='guide-text'>(※ 연속 수정 시 동작 간에 작은 텀을 주시면 더욱 안전하게 저장됩니다)</span>", unsafe_allow_html=True)
     
+    if st.session_state.debug_mode:
+        with st.expander("🛠️ [정밀 디버깅] 로그 확인", expanded=False):
+            st.markdown(f"<div class='debug-box'>{st.session_state.get('debug_log', 'No log')}</div>", unsafe_allow_html=True)
+            raw_data = st.session_state.get('last_raw_response', '')
+            if raw_data and isinstance(raw_data, str): st.code(raw_data, language="json")
+
     df_res = pd.DataFrame(st.session_state.analysis_result)
     if not df_res.empty:
-        # 스크롤 튕김 방지용 고유 키
         edited = st.data_editor(
             df_res,
             column_config={
@@ -555,7 +572,7 @@ elif st.session_state.step == 3:
                 "분류": st.column_config.SelectboxColumn("분류", options=["🔵 고", "🟢 한", "🔴 외", "🟣 혼"]),
                 "품사": st.column_config.SelectboxColumn("품사", options=["📦 명사", "🏃 동사", "🎨 형용사", "⚡ 부사", "🔍 관형사", "👤 대명사", "고유명사", "❗ 감탄사"])
             },
-            use_container_width=True, num_rows="dynamic", key="step3_editor_v10_scroll"
+            use_container_width=True, num_rows="dynamic", key="step3_editor_v11_scroll"
         )
         
         if not edited.equals(df_res):
@@ -604,11 +621,11 @@ elif st.session_state.step == 3:
         with b_save_only:
             # [수정] 저장 버튼 클릭 시 3종 선택 메뉴 활성화
             if st.button("💾 현재 페이지만 저장", use_container_width=True):
-                with st.status("데이터 저장 중..."):
+                with st.status("데이터 통합 및 학습 로직 가동 중..."):
                     save_logic_with_learning()
                     st.session_state.is_finished = True 
-                    st.success("✅ 현재 페이지 저장이 완료되었습니다.")
-                    time.sleep(1.0)
+                    st.success("✅ 저장이 완료되었습니다. 아래에서 작업을 선택하세요.")
+                    time.sleep(1.2)
                     st.rerun()
         with b_save_next:
             if st.button("🚀 저장하고 다음 쪽 가기", type="primary", use_container_width=True):
@@ -627,10 +644,7 @@ elif st.session_state.step == 3:
                         st.balloons(); st.rerun()
     else:
         # [수정] 저장 완료 후 3개 버튼 UI (다운로드, 처음으로, 다음쪽으로)
-        st.success("✅ 페이지 분석 데이터가 마스터 데이터에 통합되었습니다!")
-        actual_p = st.session_state.page_idx + st.session_state.start_offset
-        st.info(f"📍 '{actual_p}쪽' 작업 결과가 성공적으로 반영되었습니다.")
-        
+        st.success("✅ 페이지 분석 데이터가 마스터 데이터에 성공적으로 통합되었습니다!")
         fname = f"Result_{st.session_state.mode_key}_{datetime.now().strftime('%m%d_%H%M')}.xlsx"
         buf = io.BytesIO()
         with pd.ExcelWriter(buf, engine='openpyxl') as w: st.session_state.master_df.to_excel(w, index=False)
