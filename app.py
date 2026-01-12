@@ -10,7 +10,7 @@ import base64
 import hashlib
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-from datetime import datetime
+from datetime import datetime, timedelta # 시간 계산용 timedelta 추가
 from collections import Counter
 import traceback
 from PIL import Image # 이미지 검증 및 재인코딩용 필수 라이브러리
@@ -71,18 +71,20 @@ def reset_input_buffer():
     st.session_state.is_finished = False
 
 # =========================================================
-# [1] 디자인: CSS 매직
+# [1] 디자인: CSS 매직 (그라데이션 및 높이 맞춤 적용)
 # =========================================================
 if st.session_state.step in [0, 1.5]:
     st.markdown("""
         <style>
             .stApp { background-color: #0e1117 !important; color: #ffffff !important; }
+            
+            /* 버튼 그라데이션 적용 */
             div.block-container div[data-testid="column"] div.stButton > button {
                 width: 100%; height: 280px;
-                background-color: #262730 !important;
+                background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%) !important; /* Deep Blue Gradient */
                 border: 2px solid rgba(255,255,255,0.1) !important;
                 border-radius: 20px !important;
-                color: #eeeeee !important;
+                color: #ffffff !important;
                 font-size: 1.4rem !important; font-weight: 700 !important;
                 transition: all 0.3s ease !important;
                 box-shadow: 0 4px 15px rgba(0,0,0,0.4) !important;
@@ -90,8 +92,29 @@ if st.session_state.step in [0, 1.5]:
             }
             div.block-container div[data-testid="column"] div.stButton > button:hover {
                 transform: translateY(-10px);
-                background-color: #2b2c36 !important;
-                border-color: #2979ff !important;
+                background: linear-gradient(135deg, #2a5298 0%, #1e3c72 100%) !important;
+                border-color: #6dd5fa !important;
+                box-shadow: 0 8px 25px rgba(41, 121, 255, 0.6) !important;
+            }
+        </style>
+    """, unsafe_allow_html=True)
+elif st.session_state.step == 1:
+    # [Design Fix] 이어하기/새로하기 상자 높이 맞춤
+    st.markdown("""
+        <style>
+            .stApp { background-color: #0e1117 !important; color: #ffffff !important; }
+            /* 컨테이너 높이 강제 통일 */
+            div[data-testid="stVerticalBlock"] > div[data-testid="stVerticalBlock"] {
+                min-height: 250px;
+                display: flex; flex-direction: column; justify-content: center;
+            }
+            div.stButton > button {
+                width: 100%;
+                background: linear-gradient(90deg, #4b6cb7 0%, #182848 100%) !important;
+                color: white !important;
+                border: none !important;
+                border-radius: 10px;
+                height: 50px; font-size: 1.1rem;
             }
         </style>
     """, unsafe_allow_html=True)
@@ -133,7 +156,6 @@ def get_google_sheet_client():
         return gspread.authorize(creds)
     except: return None
 
-# [Update] 읽기 전용 캐싱 함수 (속도 향상 및 전체 데이터 로드)
 @st.cache_data(show_spinner=False)
 def fetch_all_rules_from_db(mode_key):
     client = get_google_sheet_client()
@@ -145,7 +167,6 @@ def fetch_all_rules_from_db(mode_key):
         return ws.get_all_records()
     except: return []
 
-# 쓰기 전용 함수 (캐시 사용 안 함, 워크시트 객체 반환)
 def get_sheet_object_for_write(mode_key):
     client = get_google_sheet_client()
     if not client: return None
@@ -244,7 +265,6 @@ def save_logic_with_learning():
     final_results = pd.DataFrame(st.session_state.analysis_result)
     initial_draft = pd.DataFrame(st.session_state.initial_draft)
     
-    # 1. 수정/삭제 학습
     for _, draft_row in initial_draft.iterrows():
         orig = draft_row['원본']
         match = final_results[final_results['원본'] == orig]
@@ -255,7 +275,6 @@ def save_logic_with_learning():
             if (draft_row['원형'] != final_row['원형'] or clean_val_for_save(draft_row['분류']) != clean_val_for_save(final_row['분류']) or clean_val_for_save(draft_row['품사']) != clean_val_for_save(final_row['품사'])):
                 learning_logs.append([now, orig, final_row['원형'], clean_val_for_save(final_row['분류']), clean_val_for_save(final_row['품사']), 'modify', 'Engine-Compare', draft_row['원형'], draft_row['분류']])
     
-    # 2. 추가 학습
     draft_originals = initial_draft['원본'].tolist()
     for _, final_row in final_results.iterrows():
         if final_row['원본'] not in draft_originals and not final_row['삭제']:
@@ -263,7 +282,6 @@ def save_logic_with_learning():
     
     if learning_logs: 
         send_data_with_retry(sheet, learning_logs, True)
-        # [Update] 저장 시 캐시 비우기 (새로운 규칙 반영)
         fetch_all_rules_from_db.clear()
     
     valid = final_results[final_results['삭제']==False].copy()
@@ -362,13 +380,10 @@ def get_page_image(file_bytes, file_type, page_idx):
 
 def generate_prompt_from_sheet(sheet_data):
     if not sheet_data: return ""
-    
-    # [Update] 중복 제거 및 최신 규칙 압축 (Dictionary Deduplication)
     rule_dict = {}
     for row in sheet_data:
         orig = str(row.get('original_word', '')).strip()
         if not orig: continue
-        # 같은 단어가 나오면 최신 값으로 덮어씀 (자연스럽게 최신 규칙 유지)
         rule_dict[orig] = row
 
     rules = []
@@ -386,10 +401,9 @@ def generate_prompt_from_sheet(sheet_data):
     return "\n[사용자 교정 데이터 (최우선 준수)]:\n" + "\n".join(rules) + "\n"
 
 def run_analysis_action(txt, img_bytes=None):
-    if not txt.strip(): st.warning("분석할 내용이 없습니다."); return
+    if not txt.strip(): st.warning("내용이 없습니다."); return
     
     with st.spinner("AI가 국어학적 관점에서 정밀 분석 중입니다..."):
-        # [Update] 캐시된 전체 데이터 로드
         s_data = fetch_all_rules_from_db(st.session_state.mode_key)
         
         prompt = f"""
@@ -402,9 +416,9 @@ def run_analysis_action(txt, img_bytes=None):
         {generate_prompt_from_sheet(s_data)}
         
         [1. 고유명사(Named Entity) 처리]
-        - **인명, 지명 등 고유명사**는 특별한 표시(예: (이름)) 없이 원형 그대로 출력하십시오.
+        - **인명, 지명 등 고유명사**는 특별한 표시 없이 원형 그대로 출력하십시오.
         - 품사는 반드시 **'명사'**로 통일하십시오.
-        - 예: '홍길동이' -> 원형:'홍길동', 품사:'명사' (O) / 원형:'홍길동(이름)' (X)
+        - 예: '홍길동이' -> 원형:'홍길동', 품사:'명사' (O)
         
         [2. 동음이의어(Homonym) 구분]
         - 단어의 형태가 같으나 뜻이 다른 경우만 괄호로 구분. (예: 배(과일), 배(선박))
@@ -437,7 +451,8 @@ def run_analysis_action(txt, img_bytes=None):
             else:
                 try: res = json.loads(clean_json)
                 except: 
-                    st.warning("분석 결과가 없습니다.")
+                    # [Text Change] 분석 실패 메시지 변경
+                    st.warning("텍스트가 인식되지 않았습니다. 다시 한번 시도해주세요.")
                     res = []
 
             proc = []; temp_dict = {}
@@ -550,7 +565,9 @@ elif st.session_state.step == 2:
     st.session_state.is_finished = False
     
     c_head, c_nav = st.columns([8, 2])
-    with c_head: st.header(f"📝 {st.session_state.input_type} 분석 자료 입력")
+    # [Text Change] DIRECT -> TEXT 문구 변경
+    title_text = "TEXT 분석 자료 입력" if st.session_state.input_type == "DIRECT" else f"{st.session_state.input_type} 분석 자료 입력"
+    with c_head: st.header(f"📝 {title_text}")
     with c_nav:
         if st.button("🏠 처음으로", use_container_width=True): 
             reset_input_buffer()
@@ -592,7 +609,6 @@ elif st.session_state.step == 2:
                         st.session_state.page_idx -= 1
                         st.session_state.extracted_text = extract_text_unified(st.session_state.file_bytes, "application/pdf", st.session_state.page_idx)
                         st.rerun()
-                
                 with j2: 
                     target_p = st.number_input("이동", 1, st.session_state.total_pages, st.session_state.page_idx+1, label_visibility="collapsed")
                     if target_p != st.session_state.page_idx + 1:
@@ -600,7 +616,6 @@ elif st.session_state.step == 2:
                         st.session_state.page_idx = target_p - 1
                         st.session_state.extracted_text = extract_text_unified(st.session_state.file_bytes, "application/pdf", st.session_state.page_idx)
                         st.rerun()
-
                 with j3:
                     if st.button("다음 ▶", use_container_width=True, disabled=st.session_state.page_idx>=st.session_state.total_pages-1):
                         st.toast("⏳ 페이지 분석 중입니다... 잠시만 기다려주세요.", icon="📄")
@@ -631,7 +646,6 @@ elif st.session_state.step == 2:
                         st.image(st.session_state.file_bytes, use_container_width=True, caption="이미지 원본")
                 except:
                     st.error("이미지를 표시할 수 없습니다. (파일 형식 오류)")
-                    
             with c2:
                 st.session_state.extracted_text = st.text_area("에디터 (추출 텍스트)", value=st.session_state.extracted_text, height=520)
                 if st.button("🚀 분석 실행", type="primary", use_container_width=True): run_analysis_action(st.session_state.extracted_text, st.session_state.file_bytes)
@@ -647,9 +661,11 @@ elif st.session_state.step == 3:
     ch, cb = st.columns([8.5, 1.5])
     with ch: 
         st.header("📊 분석 결과 확인")
-        st.markdown(f"<p style='color: #2979ff; font-size: 0.95rem; margin-top:-15px;'>📍 현재 작업 내용은 마스터 엑셀의 <b>'{actual_p}쪽'</b>으로 저장될 예정입니다.</p>", unsafe_allow_html=True)
+        # [Text Change] 좌상단 안내 문구 변경
+        st.markdown(f"<p style='color: #2979ff; font-size: 0.95rem; margin-top:-15px;'>[{actual_p}쪽으로 엑셀에 저장 예정]</p>", unsafe_allow_html=True)
     with cb:
-        if st.button("⬅️ 입력 창으로", use_container_width=True): st.session_state.step = 2; st.rerun()
+        # [Text Change] 입력 창으로 버튼 줄바꿈
+        if st.button("⬅️ 입력 \n 창으로", use_container_width=True): st.session_state.step = 2; st.rerun()
     
     if st.session_state.debug_mode:
         with st.expander("🛠️ [정밀 디버깅] 로그 확인", expanded=True):
@@ -673,7 +689,8 @@ elif st.session_state.step == 3:
         st.text_area("입력 원문 확인", value=st.session_state.extracted_text, height=250, disabled=True)
 
     st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
-    st.markdown("### 📋 분석 결과 편집 <span class='guide-text'>(※ 연속 수정 시 동작 간에 작은 텀을 주시면 안전합니다)</span>", unsafe_allow_html=True)
+    # [Text Change] 안내 가이드 문구 변경
+    st.markdown("### 📋 분석 결과 편집 <span class='guide-text'>(※ 동작 직후 데이터 동기화 중 알림이 사라지면 다음 동작을 진행해주세요)</span>", unsafe_allow_html=True)
     
     df_res = pd.DataFrame(st.session_state.analysis_result)
     if not df_res.empty:
@@ -721,7 +738,8 @@ elif st.session_state.step == 3:
                     st.session_state.analysis_result = [r for r in st.session_state.analysis_result if not r.get('삭제', False)]
                     st.toast("🗑️ 삭제 데이터 정리 중..."); time.sleep(2.0); st.rerun()
             with b3:
-                if st.button("💾 저장 완료", type="primary", use_container_width=True):
+                # [Text Change] 버튼 문구 변경
+                if st.button("💾 결과 저장 및 학습", type="primary", use_container_width=True):
                     with st.status("데이터 저장 및 학습 반영 중..."):
                         save_logic_with_learning()
                         st.session_state.is_finished = True
@@ -749,7 +767,9 @@ elif st.session_state.step == 3:
                     else: st.session_state.is_finished = True; st.balloons(); st.rerun()
     else:
         st.success("✅ 저장이 완료되었습니다!")
-        fname = f"Result_{st.session_state.mode_key}_{datetime.now().strftime('%m%d_%H%M')}.xlsx"
+        # [Text Change] 엑셀 이름 한국 시간 기준
+        kst_now = datetime.utcnow() + timedelta(hours=9)
+        fname = f"KR 분석 결과 {kst_now.strftime('%m%d_%H%M')}.xlsx"
         buf = io.BytesIO()
         try:
             with pd.ExcelWriter(buf, engine='openpyxl') as w: 
