@@ -440,7 +440,8 @@ elif st.session_state.step == 2:
     st.header(f"📝 {st.session_state.input_type} 분석 자료 입력")
     
     with st.expander("⚙️ 쪽수 및 환경 설정", expanded=True):
-        st.session_state.start_offset = st.number_input("도서 1쪽의 실제 숫자 (시작 쪽수 설정)", value=st.session_state.start_offset)
+        # [Update] 쪽수 설정 문구 변경
+        st.session_state.start_offset = st.number_input("현재 작업 중인 페이지의 쪽수 설정 (PDF는 시작 쪽수)", value=st.session_state.start_offset)
         actual_p = st.session_state.page_idx + st.session_state.start_offset
         st.markdown(f"<div class='info-card'>💾 <b>저장 위치:</b> 현재 작업 중인 내용은 엑셀의 <b>'{actual_p}쪽'</b>으로 기록됩니다.</div>", unsafe_allow_html=True)
 
@@ -472,15 +473,27 @@ elif st.session_state.step == 2:
         file = st.file_uploader("이미지 파일 업로드", type=['png', 'jpg', 'jpeg'])
         if file:
             fb = file.getvalue()
+            # [Update] 파일이 동일하면 재분석하지 않고 기존 상태 유지 (입력 창 복귀 시 유지됨)
             if st.session_state.file_bytes != fb:
                 st.session_state.file_bytes = fb; st.session_state.file_type = "image/png"
                 st.session_state.extracted_text = extract_text_unified(fb, "image/png", 0)
+            
             c1, c2 = st.columns(2)
             with c1:
                 st.image(st.session_state.file_bytes, use_container_width=True, caption="이미지 원본")
             with c2:
                 st.session_state.extracted_text = st.text_area("에디터 (추출 텍스트)", value=st.session_state.extracted_text, height=520)
                 if st.button("🚀 분석 실행", type="primary", use_container_width=True): run_analysis_action(st.session_state.extracted_text, st.session_state.file_bytes)
+        
+        # [Update] 입력 창으로 돌아왔을 때 파일 업로더가 비어있어도 세션에 이미지 있으면 표시
+        elif st.session_state.file_bytes and st.session_state.input_type == "IMAGE":
+             c1, c2 = st.columns(2)
+             with c1:
+                 st.image(st.session_state.file_bytes, use_container_width=True, caption="이전 작업 이미지")
+             with c2:
+                 st.session_state.extracted_text = st.text_area("에디터 (추출 텍스트)", value=st.session_state.extracted_text, height=520)
+                 if st.button("🚀 분석 실행", type="primary", use_container_width=True): run_analysis_action(st.session_state.extracted_text, st.session_state.file_bytes)
+
 
     elif st.session_state.input_type == "DIRECT":
         st.session_state.extracted_text = st.text_area("분석할 텍스트를 입력하세요", value=st.session_state.extracted_text, height=450)
@@ -492,12 +505,12 @@ elif st.session_state.step == 2:
 elif st.session_state.step == 3:
     actual_p = st.session_state.page_idx + st.session_state.start_offset
     
-    # [New] 상단 '입력 창으로 돌아가기' 버튼 배치 (작게)
     ch, cb = st.columns([8.5, 1.5])
     with ch: 
         st.header("📊 분석 결과 확인")
         st.markdown(f"<p style='color: #2979ff; font-size: 0.95rem; margin-top:-15px;'>📍 현재 작업 내용은 마스터 엑셀의 <b>'{actual_p}쪽'</b>으로 저장될 예정입니다.</p>", unsafe_allow_html=True)
     with cb:
+        # [Update] 입력 창으로 돌아가기 (Step 2로 이동, 데이터 유지)
         if st.button("⬅️ 입력 창으로", use_container_width=True): st.session_state.step = 2; st.rerun()
     
     if st.session_state.input_type in ["PDF", "IMAGE"]:
@@ -531,7 +544,6 @@ elif st.session_state.step == 3:
                 st.toast("🔄 데이터 동기화 중..."); time.sleep(2.0); st.rerun()
             else: st.session_state.analysis_result = edited.to_dict('records')
     
-    # [Fix] 단어 추가 다이얼로그 호출 로직 수정
     @st.dialog("➕ 단어 직접 추가")
     def open_add_dialog():
         with st.form("manual_add_form"):
@@ -552,7 +564,6 @@ elif st.session_state.step == 3:
 
     if not st.session_state.is_finished:
         if st.session_state.input_type == "DIRECT":
-            # [Update] 직접 입력 모드: 3버튼 (저장하고 다음쪽 가기 제거)
             b1, b2, b3 = st.columns([1, 1, 2])
             with b1: 
                 if st.button("➕ 단어 추가", use_container_width=True): open_add_dialog()
@@ -561,13 +572,11 @@ elif st.session_state.step == 3:
                     st.session_state.analysis_result = [r for r in st.session_state.analysis_result if not r.get('삭제', False)]
                     st.toast("🗑️ 삭제 데이터 정리 중..."); time.sleep(2.0); st.rerun()
             with b3:
-                # 직접 입력은 이 버튼이 '저장 완료' 역할
                 if st.button("💾 저장 완료", type="primary", use_container_width=True):
                     save_logic_with_learning()
                     st.session_state.is_finished = True
                     st.rerun()
         else:
-            # PDF/이미지 모드: 4버튼 (기존 유지)
             b1, b2, b3, b4 = st.columns([1, 1, 1.5, 2])
             with b1: 
                 if st.button("➕ 단어 추가", use_container_width=True): open_add_dialog()
