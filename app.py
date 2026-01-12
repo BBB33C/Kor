@@ -83,7 +83,7 @@ else:
         </style>
     """, unsafe_allow_html=True)
 
-# 라이브러리 로드 확인 (전역 변수로 관리하여 NameError 방지)
+# 라이브러리 로드 확인 (NameError 방지를 위해 전역 배치)
 try:
     import pdfplumber
     PLUMBER_AVAILABLE = True
@@ -96,7 +96,7 @@ except:
     FITZ_AVAILABLE = False
 
 # =========================================================
-# [2] 구글 시트 및 API 엔진 (기존 기능 보존)
+# [2] 구글 시트 및 API 엔진
 # =========================================================
 try:
     if "GEMINI_API_KEY" in st.secrets:
@@ -155,7 +155,7 @@ def save_backup_to_cloud(mode_key, df):
     except: return False
 
 # =========================================================
-# [3] 데이터 병합 및 비교 학습 엔진 (로직 무삭제 보존)
+# [3] 데이터 병합 및 비교 학습 엔진
 # =========================================================
 def clean_val_for_save(v):
     if isinstance(v, str): 
@@ -260,7 +260,7 @@ def save_logic_with_learning():
     save_backup_to_cloud(st.session_state.mode_key, st.session_state.master_df)
 
 # =========================================================
-# [4] AI 분석 및 이미지 최적화 처리 (PIL 무삭제 보존)
+# [4] AI 분석 및 이미지 최적화 처리 (Stability 무삭제)
 # =========================================================
 def clean_raw_text(text):
     text = re.sub(r'.*\.indd.*', '', text)
@@ -351,16 +351,15 @@ def run_analysis_action(txt, img_bytes=None):
     st.session_state.debug_log = f"[{datetime.now().strftime('%H:%M:%S')}] 분석 시작... 텍스트 길이: {len(txt)}\n"
     with st.spinner("AI 분석 엔진 가동 중..."):
         s_data = get_sheet_data_fresh(st.session_state.mode_key)[1]
-        # [의존 명사 제외] 프롬프트 최강 지침
+        # [사용자 요청] 의존 명사를 완벽하게 제외하도록 프롬프트 최상위 지침 적용
         prompt = f"""
         당신은 국어 형태소 분석 전문가입니다. 아래 지침에 따라 텍스트를 JSON 리스트로 정밀 분석하십시오.
         {generate_prompt_from_sheet(s_data)}
         [분석 핵심 규칙]
-        1. **특수문자/조사/어미/의존명사 제거**: 기호, 문장부호, 조사, 어미는 물론 **의존 명사(것, 수, 만큼, 데 등)**는 절대 결과에 포함하지 마십시오.
-        2. **숫자 및 영어 제외**: 아라비아 숫자(0-9)나 영문자(A-Z, a-z)가 포함된 단어는 무조건 제외하십시오. (한글 숫자만 가능)
+        1. **의존 명사 및 조사/어미 제거**: 조사, 어미뿐만 아니라 **의존 명사(것, 수, 만큼, 데, 바, 지 등)**는 무조건 분석 결과에서 제외하십시오.
+        2. **숫자 및 영어 제외**: 아라비아 숫자(0-9)나 영문자(A-Z, a-z)가 포함된 단어는 무조건 제외하십시오.
         3. **동음이의어**: 문맥상 뜻이 갈리는 단어는 원형 뒤에 괄호로 뜻을 구분하십시오.
-        4. **개체명 인식 (인명/지명)**: 성함은 원형 뒤에 '(이름)', 지역 명칭은 '(지명)'을 표기하십시오.
-        [어종 판별] 한자 기반 단어는 '한'으로, 순우리말은 '고', 서구 유래어는 '외'로 분류하십시오.
+        4. **개체명 인식**: 성함은 원형 뒤에 '(이름)', 지역 명칭은 '(지명)'을 표기하십시오.
         [출력 양식: 반드시 한글 키 JSON 리스트]
         원본, 원형, 분류(고/한/외/혼), 품사(명사/동사/형용사/부사/관형사/대명사/감탄사)
         """
@@ -381,7 +380,7 @@ def run_analysis_action(txt, img_bytes=None):
             for r in res:
                 o, root = str(r.get('원본') or '').strip(), str(r.get('원형') or '').strip()
                 orig_v, pos_v = str(r.get('분류') or '혼').strip(), str(r.get('품사') or '명사').strip()
-                # 후처리 필터링 강화
+                # 2차 강력 필터링 (의존명사, 조사, 숫자/영어)
                 if re.search(r'[0-9a-zA-Z]', o) or re.search(r'[0-9a-zA-Z]', root): continue
                 if not o or not root: continue
                 if pos_v in ['조사', '어미', '의존명사', '의존 명사']: continue
@@ -411,7 +410,6 @@ with st.sidebar:
         st.markdown("<br>"*5, unsafe_allow_html=True)
         if st.button("🛠️ 관리자 모드 켜기"): st.session_state.debug_mode = True; st.rerun()
 
-# STEP 0: 시작 화면
 if st.session_state.step == 0:
     st.markdown("<h1 style='text-align: center; margin-bottom: 20px;'>📚 국어활동 AI 분석기</h1>", unsafe_allow_html=True)
     st.markdown("<p style='text-align: center; color: #888; margin-bottom: 50px;'>원하는 언어 규범을 선택하여 분석을 시작하세요.</p>", unsafe_allow_html=True)
@@ -423,7 +421,6 @@ if st.session_state.step == 0:
         if st.button("🏔️\n\n북한 문화어\n\n(문화어 규범 기준)\n\n[ 시작하기 ]", key="btn_north", use_container_width=True):
             st.session_state.mode_key = "NORTH"; st.session_state.step = 1; st.rerun()
 
-# STEP 1: 데이터 소스 선택
 elif st.session_state.step == 1:
     st.header("📂 데이터 소스 선택")
     col1, col2 = st.columns(2)
@@ -445,7 +442,6 @@ elif st.session_state.step == 1:
     st.markdown("---")
     if st.button("⬅️ 모드 다시 선택"): st.session_state.step = 0; st.rerun()
 
-# STEP 2: 자료 입력
 elif st.session_state.step == 2:
     st.session_state.is_finished = False
     c_t, c_h = st.columns([8, 2])
@@ -510,7 +506,6 @@ elif st.session_state.step == 2:
         if st.button("🚀 분석 실행", type="primary", use_container_width=True): 
             run_analysis_action(direct_t)
 
-# STEP 3: 결과 확인
 elif st.session_state.step == 3:
     ch, cb = st.columns([8, 2])
     with ch: st.header("📊 분석 결과 확인")
@@ -550,7 +545,7 @@ elif st.session_state.step == 3:
                 "분류": st.column_config.SelectboxColumn("분류", options=["🔵 고", "🟢 한", "🔴 외", "🟣 혼"]),
                 "품사": st.column_config.SelectboxColumn("품사", options=["📦 명사", "🏃 동사", "🎨 형용사", "⚡ 부사", "🔍 관형사", "👤 대명사", "고유명사", "❗ 감탄사"])
             },
-            use_container_width=True, num_rows="dynamic", key="step3_editor_scroll_v7"
+            use_container_width=True, num_rows="dynamic", key="step3_editor_v8_scroll_fixed"
         )
         
         # 수정 감지 및 토스트 알림
@@ -566,7 +561,7 @@ elif st.session_state.step == 3:
                 time.sleep(2.0)
                 st.rerun()
             else:
-                # 삭제 체크 시에는 rerun을 하지 않고 세션만 조용히 업데이트 (스크롤 보존 핵심)
+                # 삭제 체크 시에는 rerun을 하지 않고 세션만 조용히 업데이트
                 st.session_state.analysis_result = edited.to_dict('records')
     else:
         st.warning("분석된 결과 단어가 없습니다.")
@@ -601,13 +596,13 @@ elif st.session_state.step == 3:
                 time.sleep(2.2)
                 st.rerun()
         with b_save_only:
-            # [사용자 요청 반영] 현재 페이지만 저장 시 다운로드 바로 활성화
+            # [사용자 요청] 저장만 하기 클릭 시 -> 다운로드, 처음으로, 다음쪽으로 3종 버튼 활성화
             if st.button("💾 현재 페이지만 저장", use_container_width=True):
-                with st.status("현재 데이터 통합 및 저장 중..."):
+                with st.status("데이터 통합 및 저장 중..."):
                     save_logic_with_learning()
-                    st.session_state.is_finished = True # 저장 후 다운로드 영역으로 전환
-                    st.success("✅ 현재 페이지 저장이 완료되었습니다!")
-                    time.sleep(1.2)
+                    st.session_state.is_finished = True 
+                    st.success("✅ 저장이 완료되었습니다. 아래에서 작업을 선택하세요.")
+                    time.sleep(1.0)
                     st.rerun()
         with b_save_next:
             if st.button("🚀 저장하고 다음 쪽 가기", type="primary", use_container_width=True):
@@ -625,13 +620,29 @@ elif st.session_state.step == 3:
                         st.session_state.is_finished = True
                         st.balloons(); st.rerun()
     else:
-        # 다운로드 및 단계 이동 영역
-        st.success("✅ 모든 분석 데이터가 통합 저장되었습니다!")
+        # [해결책] 저장 완료 후 3개 버튼 UI (다운로드, 처음으로, 다음쪽으로)
+        st.success("✅ 페이지 분석 데이터가 마스터 데이터에 통합되었습니다!")
+        actual_p = st.session_state.page_idx + st.session_state.start_offset
+        st.info(f"📍 '{actual_p}쪽' 작업 결과가 성공적으로 반영되었습니다.")
+        
         fname = f"Result_{st.session_state.mode_key}_{datetime.now().strftime('%m%d_%H%M')}.xlsx"
         buf = io.BytesIO()
         with pd.ExcelWriter(buf, engine='openpyxl') as w: st.session_state.master_df.to_excel(w, index=False)
-        c1, c2 = st.columns(2)
-        with c1: st.download_button(label=f"📥 {fname} 다운로드", data=buf.getvalue(), file_name=fname, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True, type="primary")
-        with c2:
-            if st.button("🔄 처음 단계로 이동 (새 분석)", use_container_width=True):
+        
+        # 3종 버튼 레이아웃
+        c_down, c_reset, c_next = st.columns([1, 1, 1])
+        with c_down:
+            st.download_button(label=f"📥 엑셀 다운로드", data=buf.getvalue(), file_name=fname, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True, type="primary")
+        with c_reset:
+            if st.button("🔄 처음 단계로 이동", use_container_width=True):
                 st.session_state.step = 2; st.session_state.is_finished = False; st.rerun()
+        with c_next:
+            # 다음 쪽이 있을 때만 버튼 활성화
+            can_go_next = st.session_state.file_type == "application/pdf" and st.session_state.page_idx < st.session_state.total_pages - 1
+            if st.button("➡️ 다음 쪽으로 이동", use_container_width=True, disabled=not can_go_next):
+                st.session_state.page_idx += 1
+                st.session_state.extracted_text = extract_text_unified(st.session_state.file_bytes, st.session_state.file_type, st.session_state.page_idx)
+                st.session_state.analysis_result = []
+                st.session_state.step = 2
+                st.session_state.is_finished = False
+                st.rerun()
