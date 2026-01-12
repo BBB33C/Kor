@@ -83,7 +83,7 @@ else:
         </style>
     """, unsafe_allow_html=True)
 
-# 라이브러리 로드 확인 (NameError 방지를 위해 전역 배치)
+# 라이브러리 로드 확인 (전역 변수로 관리하여 NameError 방지)
 try:
     import pdfplumber
     PLUMBER_AVAILABLE = True
@@ -96,7 +96,7 @@ except:
     FITZ_AVAILABLE = False
 
 # =========================================================
-# [2] 구글 시트 및 API 엔진
+# [2] 구글 시트 및 API 엔진 (기존 기능 보존)
 # =========================================================
 try:
     if "GEMINI_API_KEY" in st.secrets:
@@ -155,7 +155,7 @@ def save_backup_to_cloud(mode_key, df):
     except: return False
 
 # =========================================================
-# [3] 데이터 병합 및 비교 학습 엔진
+# [3] 데이터 병합 및 비교 학습 엔진 (정확도 복구 핵심)
 # =========================================================
 def clean_val_for_save(v):
     if isinstance(v, str): 
@@ -260,7 +260,7 @@ def save_logic_with_learning():
     save_backup_to_cloud(st.session_state.mode_key, st.session_state.master_df)
 
 # =========================================================
-# [4] AI 분석 및 이미지 최적화 처리 (Stability 무삭제)
+# [4] AI 분석 및 이미지 최적화 처리 (PIL 무삭제 보존)
 # =========================================================
 def clean_raw_text(text):
     text = re.sub(r'.*\.indd.*', '', text)
@@ -340,61 +340,97 @@ def get_page_image(file_bytes, file_type, page_idx):
 def generate_prompt_from_sheet(sheet_data):
     if not sheet_data: return ""
     rules = []
-    for row in sheet_data[-150:]:
+    # 참조 범위를 최적화하여 AI가 정확히 판단하도록 유도
+    for row in sheet_data[-300:]: 
         orig, root, origin, pos, action = row.get('original_word',''), row.get('root_word',''), row.get('origin',''), row.get('pos',''), row.get('action','')
-        if action == 'delete': rules.append(f"- '{orig}'는 분석 제외.")
-        elif action in ['modify', 'add']: rules.append(f"- '{orig}' 분석 결과는 원형:'{root}', 분류:'{origin}', 품사:'{pos}'가 정답.")
-    return "\n[사용자 학습 데이터]:\n" + "\n".join(rules) + "\n"
+        if action == 'delete': rules.append(f"- '{orig}'는 절대로 분석하지 말고 제외할 것.")
+        elif action in ['modify', 'add']: rules.append(f"- '{orig}'의 올바른 분석은 원형:'{root}', 어종:'{origin}', 품사:'{pos}'임.")
+    return "\n[과거 교정 학습 데이터 (최우선 준수)]:\n" + "\n".join(rules) + "\n"
 
 def run_analysis_action(txt, img_bytes=None):
     if not txt.strip(): st.warning("분석할 내용이 없습니다."); return
-    st.session_state.debug_log = f"[{datetime.now().strftime('%H:%M:%S')}] 분석 시작... 텍스트 길이: {len(txt)}\n"
-    with st.spinner("AI 분석 엔진 가동 중..."):
+    st.session_state.debug_log = f"[{datetime.now().strftime('%H:%M:%S')}] 정밀 분석 엔진 가동... 텍스트 길이: {len(txt)}\n"
+    
+    with st.spinner("AI가 국어학적 관점에서 정밀 분석 중입니다..."):
         s_data = get_sheet_data_fresh(st.session_state.mode_key)[1]
-        # [사용자 요청] 의존 명사를 완벽하게 제외하도록 프롬프트 최상위 지침 적용
+        
+        # [정확도 보강] 어종 및 품사 판별을 위한 정밀 가이드라인 복원
         prompt = f"""
-        당신은 국어 형태소 분석 전문가입니다. 아래 지침에 따라 텍스트를 JSON 리스트로 정밀 분석하십시오.
+        당신은 국립국어원 표준국어대사전 및 한국어 문법 지식에 정통한 언어 분석 전문가입니다.
+        제공된 텍스트에서 명사, 동사, 형용사 등의 실질 형태소를 추출하고 아래 지침을 엄격히 준수하십시오.
+
         {generate_prompt_from_sheet(s_data)}
-        [분석 핵심 규칙]
-        1. **의존 명사 및 조사/어미 제거**: 조사, 어미뿐만 아니라 **의존 명사(것, 수, 만큼, 데, 바, 지 등)**는 무조건 분석 결과에서 제외하십시오.
-        2. **숫자 및 영어 제외**: 아라비아 숫자(0-9)나 영문자(A-Z, a-z)가 포함된 단어는 무조건 제외하십시오.
-        3. **동음이의어**: 문맥상 뜻이 갈리는 단어는 원형 뒤에 괄호로 뜻을 구분하십시오.
-        4. **개체명 인식**: 성함은 원형 뒤에 '(이름)', 지역 명칭은 '(지명)'을 표기하십시오.
+
+        [어종 판별 가이드라인]
+        - '고': 순우리말 (예: 하늘, 어머니, 아름답다, 가다)
+        - '한': 한자어 기반 (예: 학교(學校), 분석(分析), 국어(國語))
+        - '외': 외래어 및 서구 유래어 (예: 컴퓨터, 버스, 라디오, 커피)
+        - '혼': 위의 어종이 섞인 형태 (예: 컴퓨터소리, 전봇대)
+
+        [품사 판별 가이드라인]
+        - 명사: 대상을 지칭하는 단어 (고유명사 포함)
+        - 동사: 동작이나 작용을 나타내며 기본형(~다)으로 출력
+        - 형용사: 성질이나 상태를 나타내며 기본형(~다)으로 출력
+        - 부사: 용언이나 문장을 수식하는 단어
+
+        [분석 제외 대상 - 절대 포함 금지]
+        1. **조사 및 어미**: 은/는/이/가/을/를/고/며/어/아 등.
+        2. **의존 명사**: 것, 수, 만큼, 데, 바, 지, 리, 개, 명, 번, 쪽 등.
+        3. **숫자 및 외국어**: 아라비아 숫자(0-9), 로마자(A-Z, a-z), 특수기호. (한글 숫자 '하나', '둘' 등은 허용)
+        4. **개별 형태소 조각**: 단어로서의 의미를 상실한 자음/모음 조각.
+
         [출력 양식: 반드시 한글 키 JSON 리스트]
-        원본, 원형, 분류(고/한/외/혼), 품사(명사/동사/형용사/부사/관형사/대명사/감탄사)
+        [
+          {{"원본": "원본단어", "원형": "기본형", "분류": "고/한/외/혼", "품사": "명사/동사/형용사/부사/관형사/대명사/감탄사"}},
+          ...
+        ]
         """
-        raw, status = api_call_direct(prompt + f"\n[대상]:\n{txt[:5000]}", img_bytes)
+        
+        raw, status = api_call_direct(prompt + f"\n\n[분석 대상 원문]:\n{txt[:5000]}", img_bytes)
         st.session_state.last_raw_response = raw if raw else f"No response (Status: {status})"
-        st.session_state.debug_log += f"API 상태: {status}\nAI 응답 길이: {len(raw) if raw else 0}\n"
-        if not raw: st.error(f"AI 응답을 받지 못했습니다. 상태: {status}"); return
+        
+        if not raw:
+            st.error(f"AI 응답을 받지 못했습니다. 상태: {status}"); return
+            
         try:
             clean_json = raw.replace("```json", "").replace("```", "").strip()
             match = re.search(r'\[.*\]', clean_json, re.DOTALL)
             if not match: st.error("JSON 형식을 찾을 수 없습니다."); return
+            
             res = json.loads(match.group())
-            st.session_state.debug_log += f"추출된 단어 개수: {len(res)}\n"
             proc = []; temp_dict = {}
             om = {'고':'🔵 고', '한':'🟢 한', '외':'🔴 외', '혼':'🟣 혼'}
             pm = {'명사':'📦 명사', '동사':'🏃 동사', '형용사':'🎨 형용사', '부사':'⚡ 부사', '관형사':'🔍 관형사', '대명사':'👤 대명사', '감탄사':'❗ 감탄사'}
+            
             draft_items = []
             for r in res:
                 o, root = str(r.get('원본') or '').strip(), str(r.get('원형') or '').strip()
                 orig_v, pos_v = str(r.get('분류') or '혼').strip(), str(r.get('품사') or '명사').strip()
-                # 2차 강력 필터링 (의존명사, 조사, 숫자/영어)
+                
+                # [정밀 필터링] 숫자, 영어, 조사, 어미, 의존명사 차단
                 if re.search(r'[0-9a-zA-Z]', o) or re.search(r'[0-9a-zA-Z]', root): continue
                 if not o or not root: continue
-                if pos_v in ['조사', '어미', '의존명사', '의존 명사']: continue
-                
+                if pos_v in ['조사', '어미', '의존명사', '의존 명사', '수사']: continue
+                if root in ['것', '수', '데', '바', '지', '리', '개', '번', '명', '쪽']: continue
+
                 draft_items.append({'원본': o, '원형': root, '분류': orig_v, '품사': pos_v})
                 key = (root, orig_v, pos_v)
                 if key not in temp_dict: temp_dict[key] = []
                 temp_dict[key].append(o)
+                
             st.session_state.initial_draft = draft_items
             for (root, origin, pos), origs in temp_dict.items():
                 cnts = Counter(origs)
-                proc.append({"삭제": False, "횟수": f"{sum(cnts.values())}회", "원본": ", ".join([f"{w}({c})" for w, c in cnts.items()]), "원형": root, "분류": om.get(origin, origin), "품사": pm.get(pos, pos)})
-            st.session_state.analysis_result = proc; st.session_state.debug_log += "데이터 병합 완료.\n"
+                proc.append({
+                    "삭제": False, "횟수": f"{sum(cnts.values())}회", 
+                    "원본": ", ".join([f"{w}({c})" for w, c in cnts.items()]), 
+                    "원형": root, "분류": om.get(origin, origin), "품사": pm.get(pos, pos)
+                })
+            
+            st.session_state.analysis_result = proc
+            st.session_state.debug_log += f"최종 {len(proc)}개 단어 추출 완료.\n"
             st.session_state.step = 3; st.rerun()
+            
         except Exception as e:
             st.error(f"데이터 파싱 오류: {str(e)}"); st.session_state.debug_log += f"오류 발생: {traceback.format_exc()}\n"
 
@@ -410,6 +446,7 @@ with st.sidebar:
         st.markdown("<br>"*5, unsafe_allow_html=True)
         if st.button("🛠️ 관리자 모드 켜기"): st.session_state.debug_mode = True; st.rerun()
 
+# STEP 0: 시작 화면
 if st.session_state.step == 0:
     st.markdown("<h1 style='text-align: center; margin-bottom: 20px;'>📚 국어활동 AI 분석기</h1>", unsafe_allow_html=True)
     st.markdown("<p style='text-align: center; color: #888; margin-bottom: 50px;'>원하는 언어 규범을 선택하여 분석을 시작하세요.</p>", unsafe_allow_html=True)
@@ -421,6 +458,7 @@ if st.session_state.step == 0:
         if st.button("🏔️\n\n북한 문화어\n\n(문화어 규범 기준)\n\n[ 시작하기 ]", key="btn_north", use_container_width=True):
             st.session_state.mode_key = "NORTH"; st.session_state.step = 1; st.rerun()
 
+# STEP 1: 데이터 소스 선택
 elif st.session_state.step == 1:
     st.header("📂 데이터 소스 선택")
     col1, col2 = st.columns(2)
@@ -442,6 +480,7 @@ elif st.session_state.step == 1:
     st.markdown("---")
     if st.button("⬅️ 모드 다시 선택"): st.session_state.step = 0; st.rerun()
 
+# STEP 2: 자료 입력
 elif st.session_state.step == 2:
     st.session_state.is_finished = False
     c_t, c_h = st.columns([8, 2])
@@ -506,6 +545,7 @@ elif st.session_state.step == 2:
         if st.button("🚀 분석 실행", type="primary", use_container_width=True): 
             run_analysis_action(direct_t)
 
+# STEP 3: 결과 확인
 elif st.session_state.step == 3:
     ch, cb = st.columns([8, 2])
     with ch: st.header("📊 분석 결과 확인")
@@ -545,7 +585,7 @@ elif st.session_state.step == 3:
                 "분류": st.column_config.SelectboxColumn("분류", options=["🔵 고", "🟢 한", "🔴 외", "🟣 혼"]),
                 "품사": st.column_config.SelectboxColumn("품사", options=["📦 명사", "🏃 동사", "🎨 형용사", "⚡ 부사", "🔍 관형사", "👤 대명사", "고유명사", "❗ 감탄사"])
             },
-            use_container_width=True, num_rows="dynamic", key="step3_editor_v8_scroll_fixed"
+            use_container_width=True, num_rows="dynamic", key="step3_editor_v9_precision"
         )
         
         # 수정 감지 및 토스트 알림
@@ -564,7 +604,7 @@ elif st.session_state.step == 3:
                 # 삭제 체크 시에는 rerun을 하지 않고 세션만 조용히 업데이트
                 st.session_state.analysis_result = edited.to_dict('records')
     else:
-        st.warning("분석된 결과 단어가 없습니다.")
+        st.warning("분석된 결과 단어가 없습니다. 정확한 추출을 위해 원본 텍스트를 확인하세요.")
 
     # 다이얼로그
     dlg_func = st.dialog if hasattr(st, "dialog") else st.experimental_dialog
