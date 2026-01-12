@@ -275,9 +275,7 @@ def api_call_direct(prompt, image_bytes=None):
     except Exception as e: return None, str(e)
 
 def extract_text_unified(file_bytes, file_type, page_idx):
-    # [Fix] TypeError 방지
     if not file_type: return ""
-    
     raw_text = ""
     if "image" in file_type: 
         raw_text, _ = api_call_direct("이 이미지 속의 텍스트를 모두 추출하세요. 줄바꿈 유지.", file_bytes)
@@ -297,11 +295,8 @@ def extract_text_unified(file_bytes, file_type, page_idx):
     return clean_raw_text(raw_text or "")
 
 def get_page_image(file_bytes, file_type, page_idx):
-    # [Fix] TypeError 및 NameError 방지
     if not file_bytes or not file_type: return None
-    
-    if "image" in file_type: 
-        return file_bytes
+    if "image" in file_type: return file_bytes
     if "pdf" in file_type and FITZ_AVAILABLE:
         try:
             doc = fitz.open(stream=file_bytes, filetype="pdf")
@@ -325,7 +320,6 @@ def run_analysis_action(txt, img_bytes=None):
     with st.spinner("AI가 국어학적 관점에서 정밀 분석 중입니다..."):
         s_data = get_sheet_data_fresh(st.session_state.mode_key)[1]
         
-        # [정확도 보강] 동음이의어, 고유명사, 그리고 용언 기본형('다' 포함) 규칙 추가
         prompt = f"""
         당신은 국어학 및 시맨틱 텍스트 분석 전문가입니다. 아래 지침을 엄격히 준수하십시오.
         {generate_prompt_from_sheet(s_data)}
@@ -525,12 +519,29 @@ elif st.session_state.step == 3:
                 st.toast("🔄 데이터 동기화 중..."); time.sleep(2.0); st.rerun()
             else: st.session_state.analysis_result = edited.to_dict('records')
     
+    # [Fix] 단어 추가 다이얼로그 호출 로직 수정
+    @st.dialog("➕ 단어 직접 추가")
+    def open_add_dialog():
+        with st.form("manual_add_form"):
+            o = st.text_input("원본 단어")
+            r = st.text_input("원형(기본형)")
+            org = st.selectbox("어종 분류", ["고","한","외","혼"])
+            p = st.selectbox("품사", ["명사","동사","형용사","부사","관형사","대명사","고유명사","감탄사"])
+            cnt = st.number_input("출연 횟수", 1, 100, 1)
+            if st.form_submit_button("추가 완료"):
+                st.session_state.analysis_result.append({
+                    "삭제": False, "횟수": f"{cnt}회", "원본": f"{o}(수동)", "원형": r, 
+                    "분류": {'고':'🔵 고', '한':'🟢 한', '외':'🔴 외', '혼':'🟣 혼'}.get(org, org), 
+                    "품사": {'명사':'📦 명사', '동사':'🏃 동사', '형용사':'🎨 형용사', '부사':'⚡ 부사', '관형사':'🔍 관형사', '대명사':'👤 대명사', '감탄사':'❗ 감탄사'}.get(p, p)
+                })
+                st.toast("✅ 단어 추가 완료. 동기화 중...", icon="✨")
+                time.sleep(2.0)
+                st.rerun()
+
     if not st.session_state.is_finished:
         b1, b2, b3, b4 = st.columns([1, 1, 1.5, 2])
         with b1: 
-            if st.button("➕ 단어 추가"):
-                st.session_state.analysis_result.append({"삭제":False, "횟수":"1회", "원본":"수동추가", "원형":"", "분류":"🔵 고", "품사":"📦 명사"})
-                st.rerun()
+            if st.button("➕ 단어 추가"): open_add_dialog()
         with b2:
             if st.button("⛔ 선택 삭제"):
                 st.session_state.analysis_result = [r for r in st.session_state.analysis_result if not r.get('삭제', False)]
