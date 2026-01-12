@@ -200,7 +200,7 @@ def merge_master_data(old_df, new_df):
     result_df = pd.DataFrame(final_rows)
     result_df['출연횟수'] = result_df.apply(calc_freq, axis=1)
     
-    # 엑셀 열 순서 재배치: 출연횟수 -> 쪽수 순
+    # [Update] 열 순서 변경: 구분, 자료, 출연횟수, 쪽수1, 쪽수2...
     fixed_cols = ['구분', '자료', '출연횟수']
     page_cols = sorted([c for c in result_df.columns if c.startswith('쪽수')], key=lambda x: int(re.sub(r'[^0-9]', '', x)) if re.search(r'\d', x) else 9999)
     final_cols = fixed_cols + page_cols
@@ -211,6 +211,10 @@ def merge_master_data(old_df, new_df):
     result_df['sk'] = result_df['구분'].map(sort_map).fillna(5)
     result_df = result_df.sort_values(['sk', '자료']).drop('sk', axis=1)
     result_df = result_df.reindex(columns=final_cols)
+    
+    # [Fix] NaN 값을 빈 문자열로 치환하여 엑셀 저장 시 깔끔하게
+    result_df = result_df.fillna("")
+    
     return result_df
 
 def save_logic_with_learning():
@@ -324,7 +328,7 @@ def get_page_image(file_bytes, file_type, page_idx):
         try:
             doc = fitz.open(stream=file_bytes, filetype="pdf")
             if page_idx < len(doc): 
-                # PDF 화질 4배 (Vision 정확도용)
+                # PDF 화질 4배
                 pix = doc[page_idx].get_pixmap(matrix=fitz.Matrix(4.0, 4.0))
                 return pix.tobytes("png")
         except: return None
@@ -345,6 +349,7 @@ def run_analysis_action(txt, img_bytes=None):
     with st.spinner("AI가 국어학적 관점에서 정밀 분석 중입니다..."):
         s_data = get_sheet_data_fresh(st.session_state.mode_key)[1]
         
+        # [Update] 고유명사 표시 제거 및 명사 통합 프롬프트
         prompt = f"""
         당신은 국어학 및 시맨틱 텍스트 분석 전문가입니다. 
         
@@ -354,12 +359,13 @@ def run_analysis_action(txt, img_bytes=None):
         
         {generate_prompt_from_sheet(s_data)}
         
-        [1. 고유명사(Named Entity) 식별]
-        - **인명(이름)**: 사람 이름 뒤에 '(이름)' 표기. (예: 홍길동(이름))
-        - **지명(장소)**: 지역 명칭 뒤에 '(지명)' 표기. (예: 서울(지명))
+        [1. 고유명사(Named Entity) 처리]
+        - **인명, 지명 등 고유명사**는 특별한 표시(예: (이름)) 없이 원형 그대로 출력하십시오.
+        - 품사는 반드시 **'명사'**로 통일하십시오.
+        - 예: '홍길동이' -> 원형:'홍길동', 품사:'명사' (O) / 원형:'홍길동(이름)' (X)
         
         [2. 동음이의어(Homonym) 구분]
-        - 문맥상 의미를 괄호에 표기. (예: 배(과일), 배(선박))
+        - 단어의 형태가 같으나 뜻이 다른 경우만 괄호로 구분. (예: 배(과일), 배(선박))
         
         [3. 용언(동사/형용사) 기본형]
         - 반드시 어미 '다'를 붙일 것. (예: 했다 -> 하다, 예쁜 -> 예쁘다)
@@ -462,7 +468,6 @@ elif st.session_state.step == 1:
             up_excel = st.file_uploader("기존 분석 엑셀 업로드", type=['xlsx'])
             if up_excel:
                 try:
-                    # [Fix] 엑셀 읽기 오류 방지 (엔진 명시)
                     st.session_state.master_df = pd.read_excel(up_excel, engine='openpyxl')
                     st.session_state.step = 1.5; st.rerun()
                 except Exception as e:
@@ -531,6 +536,7 @@ elif st.session_state.step == 2:
                 j1, j2, j3 = st.columns([1,1,1])
                 with j1: 
                     if st.button("◀ 이전", use_container_width=True, disabled=st.session_state.page_idx<=0):
+                        st.toast("⏳ 페이지 분석 중입니다... 잠시만 기다려주세요.", icon="📄")
                         st.session_state.page_idx -= 1
                         st.session_state.extracted_text = extract_text_unified(st.session_state.file_bytes, "application/pdf", st.session_state.page_idx)
                         st.rerun()
@@ -538,12 +544,14 @@ elif st.session_state.step == 2:
                 with j2: 
                     target_p = st.number_input("이동", 1, st.session_state.total_pages, st.session_state.page_idx+1, label_visibility="collapsed")
                     if target_p != st.session_state.page_idx + 1:
+                        st.toast("⏳ 페이지 이동 중입니다...", icon="🚀")
                         st.session_state.page_idx = target_p - 1
                         st.session_state.extracted_text = extract_text_unified(st.session_state.file_bytes, "application/pdf", st.session_state.page_idx)
                         st.rerun()
 
                 with j3:
                     if st.button("다음 ▶", use_container_width=True, disabled=st.session_state.page_idx>=st.session_state.total_pages-1):
+                        st.toast("⏳ 페이지 분석 중입니다... 잠시만 기다려주세요.", icon="📄")
                         st.session_state.page_idx += 1
                         st.session_state.extracted_text = extract_text_unified(st.session_state.file_bytes, "application/pdf", st.session_state.page_idx)
                         st.rerun()
@@ -646,7 +654,6 @@ elif st.session_state.step == 3:
 
     if not st.session_state.is_finished:
         if st.session_state.input_type in ["DIRECT", "IMAGE"]:
-            # [Update] 이미지/직접 입력: 3버튼, 다음장 이동 제거
             b1, b2, b3 = st.columns([1, 1, 2])
             with b1: 
                 if st.button("➕ 단어 추가", use_container_width=True): open_add_dialog()
@@ -655,7 +662,6 @@ elif st.session_state.step == 3:
                     st.session_state.analysis_result = [r for r in st.session_state.analysis_result if not r.get('삭제', False)]
                     st.toast("🗑️ 삭제 데이터 정리 중..."); time.sleep(2.0); st.rerun()
             with b3:
-                # [Update] 저장 완료만 수행하고 UI 유지
                 if st.button("💾 저장 완료", type="primary", use_container_width=True):
                     with st.status("데이터 저장 및 학습 반영 중..."):
                         save_logic_with_learning()
@@ -664,7 +670,6 @@ elif st.session_state.step == 3:
                         time.sleep(1.0)
                         st.rerun()
         else:
-            # PDF 모드: 4버튼 유지
             b1, b2, b3, b4 = st.columns([1, 1, 1.5, 2])
             with b1: 
                 if st.button("➕ 단어 추가", use_container_width=True): open_add_dialog()
@@ -679,21 +684,18 @@ elif st.session_state.step == 3:
                 if st.button("🚀 저장하고 다음 쪽 가기", type="primary", use_container_width=True):
                     save_logic_with_learning()
                     if st.session_state.input_type == "PDF" and st.session_state.page_idx < st.session_state.total_pages - 1:
+                        st.toast("⏳ 다음 페이지 분석 중...", icon="📄")
                         st.session_state.page_idx += 1; st.session_state.extracted_text = extract_text_unified(st.session_state.file_bytes, "application/pdf", st.session_state.page_idx)
                         st.session_state.analysis_result = []; st.session_state.step = 2; st.rerun()
                     else: st.session_state.is_finished = True; st.balloons(); st.rerun()
     else:
-        st.success("✅ 페이지 분석 데이터가 마스터 데이터에 성공적으로 통합되었습니다!")
-        st.info(f"📍 '{actual_p}쪽' 작업 결과가 엑셀 파일에 반영되었습니다.")
-        
-        # [Fix] 엑셀 저장 시 데이터 타입 강제 변환 (astype(str)) -> 파일 오류 방지
+        st.success("✅ 저장이 완료되었습니다!")
         fname = f"Result_{st.session_state.mode_key}_{datetime.now().strftime('%m%d_%H%M')}.xlsx"
         buf = io.BytesIO()
         try:
             with pd.ExcelWriter(buf, engine='openpyxl') as w: 
                 st.session_state.master_df.astype(str).to_excel(w, index=False)
         except:
-            # 혹시 모를 에러 대비 fallback
             with pd.ExcelWriter(buf, engine='openpyxl') as w: 
                 st.session_state.master_df.to_excel(w, index=False)
         
@@ -701,11 +703,11 @@ elif st.session_state.step == 3:
         with c_down:
             st.download_button(label=f"📥 엑셀 다운로드", data=buf.getvalue(), file_name=fname, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True, type="primary")
         
-        # [Update] PDF 모드일 때만 다음 쪽 이동 버튼 표시
         if st.session_state.input_type == "PDF":
             with c_next:
                 can_go_next = st.session_state.file_type and "pdf" in st.session_state.file_type and st.session_state.page_idx < st.session_state.total_pages - 1
                 if st.button("➡️ 다음 쪽으로 이동", use_container_width=True, disabled=not can_go_next):
+                    st.toast("⏳ 다음 페이지 분석 중...", icon="📄")
                     st.session_state.page_idx += 1
                     st.session_state.extracted_text = extract_text_unified(st.session_state.file_bytes, st.session_state.file_type, st.session_state.page_idx)
                     st.session_state.analysis_result = []
