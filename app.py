@@ -77,7 +77,7 @@ if st.session_state.step in [0, 1.5]:
     st.markdown("""
         <style>
             .stApp { background-color: #0e1117 !important; color: #ffffff !important; }
-            /* 버튼 스타일: 단색 다크 그레이, 그라데이션 제거 */
+            /* [Step 0, 1.5] 버튼 스타일: 단색 다크 그레이, 그라데이션 제거 */
             div.block-container div[data-testid="column"] div.stButton > button {
                 width: 100%; height: 280px;
                 background-image: none !important;
@@ -98,32 +98,34 @@ if st.session_state.step in [0, 1.5]:
         </style>
     """, unsafe_allow_html=True)
 elif st.session_state.step == 1:
-    # [Design Fix] 상자 높이 320px 강제 고정 및 중앙 정렬
+    # [Design Fix] 상자 높이 350px 강제 고정 및 중앙 정렬, 버튼 그라데이션 제거
     st.markdown("""
         <style>
             .stApp { background-color: #0e1117 !important; color: #ffffff !important; }
             
             /* 컨테이너(테두리 박스) 높이 강제 통일 */
-            div[data-testid="stVerticalBlockBorderWrapper"] > div {
-                height: 320px !important;  /* 고정 높이 할당 */
-                min-height: 320px !important;
-                display: flex; 
-                flex-direction: column; 
-                justify-content: center; /* 내용물 수직 중앙 정렬 */
+            div[data-testid="stVerticalBlockBorderWrapper"] {
+                height: 350px !important;  /* 고정 높이 할당 */
+                display: flex !important; 
+                flex-direction: column !important; 
+                justify-content: center !important; /* 내용물 수직 중앙 정렬 */
             }
             
             /* 버튼 스타일 (그라데이션 완전 제거) */
             div.stButton > button {
                 width: 100%;
                 background-image: none !important;
-                background-color: #2979ff !important; /* 단색 블루 */
+                background-color: #262730 !important; /* 단색 다크 그레이 */
+                border: 2px solid rgba(255,255,255,0.1) !important;
                 color: white !important;
-                border: none !important;
                 border-radius: 10px;
-                height: 50px; font-size: 1.1rem; font-weight: bold;
+                height: 60px; font-size: 1.2rem; font-weight: bold;
+                box-shadow: none !important;
             }
             div.stButton > button:hover {
-                background-color: #1e3c72 !important; /* 호버 시 약간 어둡게 */
+                background-color: #2b2c36 !important;
+                border-color: #2979ff !important;
+                transform: translateY(-2px);
             }
         </style>
     """, unsafe_allow_html=True)
@@ -416,19 +418,30 @@ def run_analysis_action(txt, img_bytes=None):
     with st.spinner("AI가 국어학적 관점에서 정밀 분석 중입니다..."):
         s_data = fetch_all_rules_from_db(st.session_state.mode_key)
         
+        # [Update] 과잉 교정 방지 프롬프트 (Transcription First)
         prompt = f"""
         당신은 국어학 및 시맨틱 텍스트 분석 전문가입니다. 
         
-        [수행 절차]
-        1. 먼저 이미지나 텍스트에 있는 단어들을 빠짐없이 읽어내십시오.
-        2. 그 다음, 아래 규칙을 적용하여 분류하십시오.
+        [절대 규칙 - Transcription First]
+        1. **'원본'**은 이미지나 텍스트에 있는 **'어절(Word Segment)'**을 토씨 하나 틀리지 말고 그대로 옮겨 적으십시오.
+        2. 오타, 띄어쓰기 오류, 활용된 어미, 조사 모두 **보이는 그대로** 적어야 합니다. 절대 임의로 수정하거나 기본형으로 바꾸지 마십시오.
+        3. **'원형'**과 **'품사'**는 그 '원본'을 보고 언어학적으로 분석하여 채우십시오.
         
         {generate_prompt_from_sheet(s_data)}
         
+        [예시 - 반드시 이 형식을 따를 것]
+        * 텍스트: "선생님께서 말씀하셨습니다."
+          -> {{ "원본": "말씀하셨습니다", "원형": "말씀하다", "품사": "동사", "분류": "고" }}
+        * 텍스트: "친구랑 학교에 갔다"
+          -> {{ "원본": "친구랑", "원형": "친구", "품사": "명사", "분류": "고" }}
+          -> {{ "원본": "갔다", "원형": "가다", "품사": "동사", "분류": "고" }}
+        * 텍스트: "시작합니다"
+          -> {{ "원본": "시작합니다", "원형": "시작하다", "품사": "동사", "분류": "한" }} (O)
+          -> {{ "원본": "시작하다", "원형": "시작하다", ... }} (X - 원본 변형 금지)
+
         [1. 고유명사(Named Entity) 처리]
         - **인명, 지명 등 고유명사**는 특별한 표시 없이 원형 그대로 출력하십시오.
         - 품사는 반드시 **'명사'**로 통일하십시오.
-        - 예: '홍길동이' -> 원형:'홍길동', 품사:'명사' (O)
         
         [2. 동음이의어(Homonym) 구분]
         - 단어의 형태가 같으나 뜻이 다른 경우만 괄호로 구분. (예: 배(과일), 배(선박))
@@ -444,7 +457,7 @@ def run_analysis_action(txt, img_bytes=None):
         
         [출력 양식: JSON 리스트]
         [
-          {{"원본": "단어1", "원형": "기본형1", "분류": "고/한/외/혼", "품사": "명사/동사/..."}},
+          {{"원본": "보이는그대로", "원형": "기본형", "분류": "고/한/외/혼", "품사": "명사/동사/..."}},
           ...
         ]
         """
@@ -461,7 +474,6 @@ def run_analysis_action(txt, img_bytes=None):
             else:
                 try: res = json.loads(clean_json)
                 except: 
-                    # [Text Change] 분석 실패 메시지 변경
                     st.warning("텍스트가 인식되지 않았습니다. 다시 한번 시도해주세요.")
                     res = []
 
@@ -575,7 +587,6 @@ elif st.session_state.step == 2:
     st.session_state.is_finished = False
     
     c_head, c_nav = st.columns([8, 2])
-    # [Text Change] DIRECT -> TEXT 문구 변경
     title_text = "TEXT 분석 자료 입력" if st.session_state.input_type == "DIRECT" else f"{st.session_state.input_type} 분석 자료 입력"
     with c_head: st.header(f"📝 {title_text}")
     with c_nav:
@@ -671,10 +682,8 @@ elif st.session_state.step == 3:
     ch, cb = st.columns([8.5, 1.5])
     with ch: 
         st.header("📊 분석 결과 확인")
-        # [Text Change] 좌상단 안내 문구 변경
         st.markdown(f"<p style='color: #2979ff; font-size: 0.95rem; margin-top:-15px;'>[{actual_p}쪽으로 엑셀에 저장 예정]</p>", unsafe_allow_html=True)
     with cb:
-        # [Text Change] 입력 창으로 버튼 줄바꿈
         if st.button("⬅️ 입력 \n 창으로", use_container_width=True): st.session_state.step = 2; st.rerun()
     
     if st.session_state.debug_mode:
@@ -699,7 +708,6 @@ elif st.session_state.step == 3:
         st.text_area("입력 원문 확인", value=st.session_state.extracted_text, height=250, disabled=True)
 
     st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
-    # [Text Change] 안내 가이드 문구 변경
     st.markdown("### 📋 분석 결과 편집 <span class='guide-text'>(※ 동작 직후 데이터 동기화 중 알림이 사라지면 다음 동작을 진행해주세요)</span>", unsafe_allow_html=True)
     
     df_res = pd.DataFrame(st.session_state.analysis_result)
@@ -748,7 +756,6 @@ elif st.session_state.step == 3:
                     st.session_state.analysis_result = [r for r in st.session_state.analysis_result if not r.get('삭제', False)]
                     st.toast("🗑️ 삭제 데이터 정리 중..."); time.sleep(2.0); st.rerun()
             with b3:
-                # [Text Change] 버튼 문구 변경
                 if st.button("💾 결과 저장 및 학습", type="primary", use_container_width=True):
                     with st.status("데이터 저장 및 학습 반영 중..."):
                         save_logic_with_learning()
@@ -777,7 +784,6 @@ elif st.session_state.step == 3:
                     else: st.session_state.is_finished = True; st.balloons(); st.rerun()
     else:
         st.success("✅ 저장이 완료되었습니다!")
-        # [Text Change] 엑셀 이름 한국 시간 기준
         kst_now = datetime.utcnow() + timedelta(hours=9)
         fname = f"KR 분석 결과 {kst_now.strftime('%m%d_%H%M')}.xlsx"
         buf = io.BytesIO()
