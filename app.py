@@ -58,6 +58,7 @@ if 'debug_mode' not in st.session_state: st.session_state.debug_mode = False
 if 'last_raw_response' not in st.session_state: st.session_state.last_raw_response = ""
 if 'debug_log' not in st.session_state: st.session_state.debug_log = ""
 if 'is_finished' not in st.session_state: st.session_state.is_finished = False
+if 'split_mode' not in st.session_state: st.session_state.split_mode = False # [New] 분할 모드 상태
 
 # [New] 입력 데이터만 초기화하는 안전 함수
 def reset_input_buffer():
@@ -69,6 +70,7 @@ def reset_input_buffer():
     st.session_state.page_idx = 0
     st.session_state.total_pages = 1
     st.session_state.is_finished = False
+    st.session_state.split_mode = False
 
 # =========================================================
 # [1] 디자인: CSS 매직
@@ -77,7 +79,6 @@ if st.session_state.step in [0, 1.5]:
     st.markdown("""
         <style>
             .stApp { background-color: #0e1117 !important; color: #ffffff !important; }
-            /* [Step 0, 1.5] 버튼 스타일: 단색 다크 그레이, 그라데이션 제거 */
             div.block-container div[data-testid="column"] div.stButton > button {
                 width: 100%; height: 280px;
                 background-image: none !important;
@@ -98,24 +99,19 @@ if st.session_state.step in [0, 1.5]:
         </style>
     """, unsafe_allow_html=True)
 elif st.session_state.step == 1:
-    # [Design Fix] 상자 높이 350px 강제 고정 및 중앙 정렬, 버튼 그라데이션 제거
     st.markdown("""
         <style>
             .stApp { background-color: #0e1117 !important; color: #ffffff !important; }
-            
-            /* 컨테이너(테두리 박스) 높이 강제 통일 */
             div[data-testid="stVerticalBlockBorderWrapper"] {
-                height: 350px !important;  /* 고정 높이 할당 */
+                height: 350px !important;
                 display: flex !important; 
                 flex-direction: column !important; 
-                justify-content: center !important; /* 내용물 수직 중앙 정렬 */
+                justify-content: center !important;
             }
-            
-            /* 버튼 스타일 (그라데이션 완전 제거) */
             div.stButton > button {
                 width: 100%;
                 background-image: none !important;
-                background-color: #262730 !important; /* 단색 다크 그레이 */
+                background-color: #262730 !important;
                 border: 2px solid rgba(255,255,255,0.1) !important;
                 color: white !important;
                 border-radius: 10px;
@@ -358,12 +354,15 @@ def extract_text_unified(file_bytes, file_type, page_idx):
         if FITZ_AVAILABLE:
             try:
                 doc = fitz.open(stream=file_bytes, filetype="pdf")
-                st.session_state.total_pages = len(doc)
+                # [Update] 분할 모드일 때 페이지 수 처리
+                total = len(doc) * 2 if st.session_state.split_mode else len(doc)
+                st.session_state.total_pages = total
             except: pass
         elif PLUMBER_AVAILABLE:
             try:
                 with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
-                    st.session_state.total_pages = len(pdf.pages)
+                    total = len(pdf.pages) * 2 if st.session_state.split_mode else len(pdf.pages)
+                    st.session_state.total_pages = total
             except: pass
             
         page_img = get_page_image(file_bytes, file_type, page_idx)
@@ -373,7 +372,9 @@ def extract_text_unified(file_bytes, file_type, page_idx):
             if PLUMBER_AVAILABLE:
                 try:
                     with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
-                        if page_idx < len(pdf.pages): raw_text = pdf.pages[page_idx].extract_text()
+                        # Fallback: 분할 모드 미지원 (Vision이 메인)
+                        target_idx = page_idx // 2 if st.session_state.split_mode else page_idx
+                        if target_idx < len(pdf.pages): raw_text = pdf.pages[target_idx].extract_text()
                 except: pass
     return clean_raw_text(raw_text or "")
 
@@ -383,10 +384,29 @@ def get_page_image(file_bytes, file_type, page_idx):
     if "pdf" in file_type and FITZ_AVAILABLE:
         try:
             doc = fitz.open(stream=file_bytes, filetype="pdf")
-            if page_idx < len(doc): 
-                # PDF 화질 4배
-                pix = doc[page_idx].get_pixmap(matrix=fitz.Matrix(4.0, 4.0))
-                return pix.tobytes("png")
+            
+            # [Update] 분할 모드 로직 적용
+            is_split = st.session_state.split_mode
+            pdf_page_idx = page_idx // 2 if is_split else page_idx
+            is_right_half = (page_idx % 2 == 1)
+            
+            if pdf_page_idx < len(doc): 
+                # PDF 화질 4배 (Vision 정확도용)
+                pix = doc[pdf_page_idx].get_pixmap(matrix=fitz.Matrix(4.0, 4.0))
+                img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                
+                if is_split:
+                    # 반으로 자르기 (Crop)
+                    w, h = img.size
+                    if is_right_half:
+                        img = img.crop((w//2, 0, w, h)) # 오른쪽 반
+                    else:
+                        img = img.crop((0, 0, w//2, h)) # 왼쪽 반
+                
+                # 이미지 다시 바이트로 변환
+                output = io.BytesIO()
+                img.save(output, format="PNG")
+                return output.getvalue()
         except: return None
     return None
 
@@ -600,6 +620,9 @@ elif st.session_state.step == 2:
         st.markdown(f"<div class='info-card'>💾 <b>저장 위치:</b> 현재 작업 중인 내용은 엑셀의 <b>'{actual_p}쪽'</b>으로 기록됩니다.</div>", unsafe_allow_html=True)
 
     if st.session_state.input_type == "PDF":
+        # [New] 분할 모드 체크박스
+        st.session_state.split_mode = st.checkbox("✅ 두 쪽 모아찍기 문서 (좌우 분할 모드)", value=st.session_state.split_mode)
+        
         file = st.file_uploader("PDF 파일 업로드", type=['pdf'])
         effective_file = None
         if file:
@@ -610,11 +633,19 @@ elif st.session_state.step == 2:
                 st.session_state.page_idx = 0
                 if FITZ_AVAILABLE:
                     try: 
-                        with fitz.open(stream=effective_file, filetype="pdf") as doc: st.session_state.total_pages = len(doc)
+                        with fitz.open(stream=effective_file, filetype="pdf") as doc: 
+                            # 분할 모드 반영하여 총 페이지 수 계산
+                            st.session_state.total_pages = len(doc) * 2 if st.session_state.split_mode else len(doc)
                     except: pass
                 st.session_state.extracted_text = extract_text_unified(effective_file, "application/pdf", 0)
         elif st.session_state.file_bytes:
             effective_file = st.session_state.file_bytes
+            # 체크박스 변경 시 페이지 수 재계산 로직
+            if FITZ_AVAILABLE:
+                try:
+                    with fitz.open(stream=effective_file, filetype="pdf") as doc:
+                        st.session_state.total_pages = len(doc) * 2 if st.session_state.split_mode else len(doc)
+                except: pass
 
         if effective_file:
             c1, c2 = st.columns(2)
