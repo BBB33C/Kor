@@ -274,28 +274,6 @@ def api_call_direct(prompt, image_bytes=None):
         return None, f"Error: {res.status_code} - {res.text}"
     except Exception as e: return None, str(e)
 
-def extract_text_unified(file_bytes, file_type, page_idx):
-    # [Fix] TypeError 방지
-    if not file_type: return ""
-    
-    raw_text = ""
-    if "image" in file_type: 
-        raw_text, _ = api_call_direct("이 이미지 속의 텍스트를 모두 추출하세요. 줄바꿈 유지.", file_bytes)
-    elif "pdf" in file_type:
-        if PLUMBER_AVAILABLE:
-            try:
-                with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
-                    st.session_state.total_pages = len(pdf.pages)
-                    if page_idx < len(pdf.pages): raw_text = pdf.pages[page_idx].extract_text()
-            except: pass
-        if (not raw_text or len(raw_text) < 10) and FITZ_AVAILABLE:
-            try:
-                doc = fitz.open(stream=file_bytes, filetype="pdf")
-                st.session_state.total_pages = len(doc)
-                if page_idx < len(doc): raw_text = doc[page_idx].get_text()
-            except: pass
-    return clean_raw_text(raw_text or "")
-
 def get_page_image(file_bytes, file_type, page_idx):
     # [Fix] TypeError 및 NameError 방지
     if not file_bytes or not file_type: return None
@@ -310,6 +288,43 @@ def get_page_image(file_bytes, file_type, page_idx):
                 return pix.tobytes("png")
         except: return None
     return None
+
+def extract_text_unified(file_bytes, file_type, page_idx):
+    # [Fix] TypeError 방지
+    if not file_type: return ""
+    
+    raw_text = ""
+    # 이미지 모드
+    if "image" in file_type: 
+        raw_text, _ = api_call_direct("이 이미지 속의 텍스트를 모두 추출하세요. 줄바꿈 유지.", file_bytes)
+    
+    # [Update] PDF 모드: 텍스트 추출 대신 '이미지 변환 후 AI 분석'으로 변경 (정확도 향상)
+    elif "pdf" in file_type:
+        # 1. 전체 페이지 수 계산 (기존 로직 유지)
+        if FITZ_AVAILABLE:
+            try:
+                doc = fitz.open(stream=file_bytes, filetype="pdf")
+                st.session_state.total_pages = len(doc)
+            except: pass
+        elif PLUMBER_AVAILABLE:
+            try:
+                with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+                    st.session_state.total_pages = len(pdf.pages)
+            except: pass
+            
+        # 2. 해당 페이지를 이미지로 변환하여 AI에게 전송 (Vision Analysis)
+        page_img = get_page_image(file_bytes, file_type, page_idx)
+        if page_img:
+            raw_text, _ = api_call_direct("이 이미지 속의 텍스트를 모두 추출하세요. 줄바꿈 유지.", page_img)
+        else:
+            # 이미지 변환 실패 시 텍스트 추출로 폴백
+            if PLUMBER_AVAILABLE:
+                try:
+                    with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+                        if page_idx < len(pdf.pages): raw_text = pdf.pages[page_idx].extract_text()
+                except: pass
+
+    return clean_raw_text(raw_text or "")
 
 def generate_prompt_from_sheet(sheet_data):
     if not sheet_data: return ""
@@ -440,7 +455,7 @@ elif st.session_state.step == 2:
     st.header(f"📝 {st.session_state.input_type} 분석 자료 입력")
     
     with st.expander("⚙️ 쪽수 및 환경 설정", expanded=True):
-        # [Update] 쪽수 설정 문구 변경
+        # [Update] 쪽수 설정 문구 직관화
         st.session_state.start_offset = st.number_input("현재 작업 중인 페이지의 쪽수 설정 (PDF는 시작 쪽수)", value=st.session_state.start_offset)
         actual_p = st.session_state.page_idx + st.session_state.start_offset
         st.markdown(f"<div class='info-card'>💾 <b>저장 위치:</b> 현재 작업 중인 내용은 엑셀의 <b>'{actual_p}쪽'</b>으로 기록됩니다.</div>", unsafe_allow_html=True)
@@ -449,6 +464,7 @@ elif st.session_state.step == 2:
         file = st.file_uploader("PDF 파일 업로드", type=['pdf'])
         if file:
             fb = file.getvalue()
+            # 파일이 바뀌었을 때만 초기화, 아니면 유지
             if st.session_state.file_bytes != fb:
                 st.session_state.file_bytes = fb; st.session_state.file_type = "application/pdf"
                 st.session_state.page_idx = 0; st.session_state.extracted_text = extract_text_unified(fb, "application/pdf", 0)
@@ -473,7 +489,7 @@ elif st.session_state.step == 2:
         file = st.file_uploader("이미지 파일 업로드", type=['png', 'jpg', 'jpeg'])
         if file:
             fb = file.getvalue()
-            # [Update] 파일이 동일하면 재분석하지 않고 기존 상태 유지 (입력 창 복귀 시 유지됨)
+            # 파일이 바뀌었을 때만 초기화
             if st.session_state.file_bytes != fb:
                 st.session_state.file_bytes = fb; st.session_state.file_type = "image/png"
                 st.session_state.extracted_text = extract_text_unified(fb, "image/png", 0)
@@ -485,7 +501,7 @@ elif st.session_state.step == 2:
                 st.session_state.extracted_text = st.text_area("에디터 (추출 텍스트)", value=st.session_state.extracted_text, height=520)
                 if st.button("🚀 분석 실행", type="primary", use_container_width=True): run_analysis_action(st.session_state.extracted_text, st.session_state.file_bytes)
         
-        # [Update] 입력 창으로 돌아왔을 때 파일 업로더가 비어있어도 세션에 이미지 있으면 표시
+        # [Update] 입력 창 복귀 시 파일 업로더가 비어있어도 기존 세션 이미지 유지
         elif st.session_state.file_bytes and st.session_state.input_type == "IMAGE":
              c1, c2 = st.columns(2)
              with c1:
@@ -510,7 +526,7 @@ elif st.session_state.step == 3:
         st.header("📊 분석 결과 확인")
         st.markdown(f"<p style='color: #2979ff; font-size: 0.95rem; margin-top:-15px;'>📍 현재 작업 내용은 마스터 엑셀의 <b>'{actual_p}쪽'</b>으로 저장될 예정입니다.</p>", unsafe_allow_html=True)
     with cb:
-        # [Update] 입력 창으로 돌아가기 (Step 2로 이동, 데이터 유지)
+        # [Update] 입력 창으로 돌아가기 (데이터 유지)
         if st.button("⬅️ 입력 창으로", use_container_width=True): st.session_state.step = 2; st.rerun()
     
     if st.session_state.input_type in ["PDF", "IMAGE"]:
