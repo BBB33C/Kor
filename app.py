@@ -157,7 +157,7 @@ def save_backup_to_cloud(mode_key, df):
     except: return False
 
 # =========================================================
-# [3] 데이터 병합 및 비교 학습 엔진
+# [3] 데이터 병합 및 비교 학습 엔진 (학습 로직 보존)
 # =========================================================
 def clean_val_for_save(v):
     if isinstance(v, str): 
@@ -204,33 +204,59 @@ def merge_master_data(old_df, new_df):
     return result_df
 
 def save_logic_with_learning():
+    """사용자 수정 사항을 학습 데이터로 전송하고 마스터 데이터를 업데이트함"""
     sheet, _ = get_sheet_data_fresh(st.session_state.mode_key)
     now = datetime.now().isoformat()
     learning_logs = []
+    
     final_results = pd.DataFrame(st.session_state.analysis_result)
     initial_draft = pd.DataFrame(st.session_state.initial_draft)
+    
+    # 1. 교정 및 삭제 학습 (Draft와 Final 비교)
     for _, draft_row in initial_draft.iterrows():
         orig = draft_row['원본']
         match = final_results[final_results['원본'] == orig]
+        
         if match.empty or match.iloc[0]['삭제']:
             learning_logs.append([now, orig, draft_row['원형'], draft_row['분류'], draft_row['품사'], 'delete', 'Engine-Compare', draft_row['원형'], draft_row['분류']])
         else:
             final_row = match.iloc[0]
-            if (draft_row['원형'] != final_row['원형'] or clean_val_for_save(draft_row['분류']) != clean_val_for_save(final_row['분류']) or clean_val_for_save(draft_row['품사']) != clean_val_for_save(final_row['품사'])):
-                learning_logs.append([now, orig, final_row['원형'], clean_val_for_save(final_row['분류']), clean_val_for_save(final_row['품사']), 'modify', 'Engine-Compare', draft_row['원형'], draft_row['분류']])
+            if (draft_row['원형'] != final_row['원형'] or 
+                clean_val_for_save(draft_row['분류']) != clean_val_for_save(final_row['분류']) or 
+                clean_val_for_save(draft_row['품사']) != clean_val_for_save(final_row['품사'])):
+                
+                learning_logs.append([
+                    now, orig, final_row['원형'], 
+                    clean_val_for_save(final_row['분류']), 
+                    clean_val_for_save(final_row['품사']), 
+                    'modify', 'Engine-Compare', 
+                    draft_row['원형'], draft_row['분류']
+                ])
+                
+    # 2. 추가 학습 (새로운 단어)
     draft_originals = initial_draft['원본'].tolist()
     for _, final_row in final_results.iterrows():
         if final_row['원본'] not in draft_originals and not final_row['삭제']:
-            learning_logs.append([now, final_row['원본'], final_row['원형'], clean_val_for_save(final_row['분류']), clean_val_for_save(final_row['품사']), 'add', 'Engine-New', '', ''])
+            learning_logs.append([
+                now, final_row['원본'], final_row['원형'], 
+                clean_val_for_save(final_row['분류']), 
+                clean_val_for_save(final_row['품사']), 
+                'add', 'Engine-New', '', ''
+            ])
+            
     if learning_logs: send_data_with_retry(sheet, learning_logs, True)
+    
+    # 마스터 데이터 업데이트
     valid = final_results[final_results['삭제']==False].copy()
     valid['n_cnt'] = valid['횟수'].apply(lambda x: int(re.sub(r'[^0-9]', '', str(x))) if re.search(r'\d', str(x)) else 1)
     agg = valid.groupby(['원형', '분류', '품사'], as_index=False).agg({'n_cnt': 'sum'})
+    
     p_num = str(st.session_state.page_idx + st.session_state.start_offset)
     temp_rows = []
     for _, item in agg.iterrows():
         val = f"{p_num}_{item['n_cnt']}" if item['n_cnt'] > 1 else p_num
         temp_rows.append({'구분': clean_val_for_save(item['분류']), '자료': item['원형'], '쪽수1': val})
+        
     st.session_state.master_df = merge_master_data(st.session_state.master_df, pd.DataFrame(temp_rows))
     save_backup_to_cloud(st.session_state.mode_key, st.session_state.master_df)
 
@@ -282,11 +308,10 @@ def extract_text_unified(file_bytes, file_type, page_idx):
         raw_text, _ = api_call_direct("이 이미지 속의 텍스트를 모두 추출하세요. 줄바꿈 유지.", file_bytes)
     
     elif "pdf" in file_type:
-        # [Fix] PDF 페이지 이동 시 오류 방지
         if FITZ_AVAILABLE:
             try:
                 doc = fitz.open(stream=file_bytes, filetype="pdf")
-                st.session_state.total_pages = len(doc) # 페이지 수 갱신
+                st.session_state.total_pages = len(doc)
             except: pass
         elif PLUMBER_AVAILABLE:
             try:
@@ -298,7 +323,6 @@ def extract_text_unified(file_bytes, file_type, page_idx):
         if page_img:
             raw_text, _ = api_call_direct("이 이미지 속의 텍스트를 모두 추출하세요. 줄바꿈 유지.", page_img)
         else:
-            # Fallback
             if PLUMBER_AVAILABLE:
                 try:
                     with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
@@ -368,21 +392,16 @@ def run_analysis_action(txt, img_bytes=None):
         """
         
         raw, status = api_call_direct(prompt + f"\n\n[분석 대상]:\n{txt[:5000]}", img_bytes)
-        st.session_state.last_raw_response = raw # 디버깅용 저장
+        st.session_state.last_raw_response = raw
         
         try:
-            # [Fix] JSON 파싱 오류 해결 (정규식 실패 시 안전장치)
             if not raw: raise Exception("API 응답이 비어있습니다.")
             
             clean_json = raw.replace("```json", "").replace("```", "").strip()
             match = re.search(r'\[.*\]', clean_json, re.DOTALL)
             
-            if match:
-                res = json.loads(match.group())
-            else:
-                # 매칭 실패 시 전체를 JSON으로 시도 (가끔 마크다운 없이 줄 때가 있음)
-                try: res = json.loads(clean_json)
-                except: raise Exception("유효한 JSON 패턴을 찾지 못했습니다.")
+            if match: res = json.loads(match.group())
+            else: res = json.loads(clean_json)
 
             proc = []; temp_dict = {}
             om = {'고':'🔵 고', '한':'🟢 한', '외':'🔴 외', '혼':'🟣 혼'}
@@ -395,7 +414,6 @@ def run_analysis_action(txt, img_bytes=None):
                 
                 if re.search(r'[0-9a-zA-Z]', o) or re.search(r'[0-9a-zA-Z]', root): continue
                 if not o or not root: continue
-                # 필터링
                 if pos_v in ['조사', '어미', '의존명사', '의존 명사', '수사']: continue
                 if root in ['것', '수', '데', '바', '지', '리', '개', '번', '명', '쪽', '등', '따름', '뿐']: continue
                 
@@ -496,12 +514,13 @@ elif st.session_state.step == 2:
         file = st.file_uploader("PDF 파일 업로드", type=['pdf'])
         if file:
             fb = file.getvalue()
-            # 파일 로드 및 초기화
             if st.session_state.file_bytes != fb:
                 st.session_state.file_bytes = fb; st.session_state.file_type = "application/pdf"
                 st.session_state.page_idx = 0
                 if FITZ_AVAILABLE:
-                    with fitz.open(stream=fb, filetype="pdf") as doc: st.session_state.total_pages = len(doc)
+                    try: 
+                        with fitz.open(stream=fb, filetype="pdf") as doc: st.session_state.total_pages = len(doc)
+                    except: pass
                 st.session_state.extracted_text = extract_text_unified(fb, "application/pdf", 0)
             
             c1, c2 = st.columns(2)
@@ -509,8 +528,6 @@ elif st.session_state.step == 2:
                 img = get_page_image(st.session_state.file_bytes, "application/pdf", st.session_state.page_idx)
                 if img: st.image(img, use_container_width=True)
                 st.markdown(f"<div style='margin-top:-10px; margin-bottom:10px;'><span class='status-badge'>📄 PDF 상태: {st.session_state.page_idx+1} / {st.session_state.total_pages} 페이지</span></div>", unsafe_allow_html=True)
-                
-                # [Fix] PDF 페이지 이동 버튼 로직 개선
                 j1, j2, j3 = st.columns([1,1,1])
                 with j1: 
                     if st.button("◀ 이전", use_container_width=True, disabled=st.session_state.page_idx<=0):
@@ -534,6 +551,7 @@ elif st.session_state.step == 2:
             if st.session_state.file_bytes != fb:
                 st.session_state.file_bytes = fb; st.session_state.file_type = "image/png"
                 st.session_state.extracted_text = extract_text_unified(fb, "image/png", 0)
+            
             c1, c2 = st.columns(2)
             with c1:
                 st.image(st.session_state.file_bytes, use_container_width=True, caption="이미지 원본")
@@ -549,7 +567,7 @@ elif st.session_state.step == 2:
 
     elif st.session_state.input_type == "DIRECT":
         st.session_state.extracted_text = st.text_area("분석할 텍스트를 입력하세요", value=st.session_state.extracted_text, height=450)
-        # [Fix] 직접 입력 시 이미지 인자 None 전달
+        # [Fix] 직접 입력 시 이미지 없음 명시
         if st.button("🚀 분석 실행", type="primary", use_container_width=True): run_analysis_action(st.session_state.extracted_text, None)
 
 # STEP 3: 결과 확인
@@ -564,7 +582,7 @@ elif st.session_state.step == 3:
         if st.button("⬅️ 입력 창으로", use_container_width=True): st.session_state.step = 2; st.rerun()
     
     if st.session_state.debug_mode:
-        with st.expander("🛠️ [정밀 디버깅] 로그 확인 (JSON 파싱 오류 시 원문 확인)", expanded=True):
+        with st.expander("🛠️ [정밀 디버깅] 로그 확인", expanded=True):
             st.markdown(f"<div class='debug-box'>{st.session_state.get('debug_log', '로그 없음')}</div>", unsafe_allow_html=True)
             if st.session_state.last_raw_response:
                 st.markdown("**AI Raw Response:**")
@@ -620,7 +638,8 @@ elif st.session_state.step == 3:
                 st.rerun()
 
     if not st.session_state.is_finished:
-        if st.session_state.input_type == "DIRECT":
+        if st.session_state.input_type in ["DIRECT", "IMAGE"]:
+            # [Update] 이미지/직접 입력 모드: 3버튼 (저장 완료)
             b1, b2, b3 = st.columns([1, 1, 2])
             with b1: 
                 if st.button("➕ 단어 추가", use_container_width=True): open_add_dialog()
@@ -629,11 +648,16 @@ elif st.session_state.step == 3:
                     st.session_state.analysis_result = [r for r in st.session_state.analysis_result if not r.get('삭제', False)]
                     st.toast("🗑️ 삭제 데이터 정리 중..."); time.sleep(2.0); st.rerun()
             with b3:
+                # 학습 데이터 전송 + 완료 처리
                 if st.button("💾 저장 완료", type="primary", use_container_width=True):
-                    save_logic_with_learning()
-                    st.session_state.is_finished = True
-                    st.rerun()
+                    with st.status("데이터 저장 및 학습 반영 중..."):
+                        save_logic_with_learning()
+                        st.session_state.is_finished = True
+                        st.success("✅ 저장이 완료되었습니다!")
+                        time.sleep(1.0)
+                        st.rerun()
         else:
+            # PDF 모드: 4버튼 (연속 작업 지원)
             b1, b2, b3, b4 = st.columns([1, 1, 1.5, 2])
             with b1: 
                 if st.button("➕ 단어 추가", use_container_width=True): open_add_dialog()
@@ -660,6 +684,7 @@ elif st.session_state.step == 3:
         with c_down: st.download_button(label="📥 엑셀 다운로드", data=buf.getvalue(), file_name=fname, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True, type="primary")
         with c_next:
             if st.button("➡️ 다음 쪽으로 이동 (작업 계속)", use_container_width=True):
+                # PDF는 자동 다음 페이지, 그 외는 초기화 후 입력창 복귀
                 if st.session_state.input_type == "PDF" and st.session_state.page_idx < st.session_state.total_pages - 1:
                     st.session_state.page_idx += 1
                     st.session_state.extracted_text = extract_text_unified(st.session_state.file_bytes, "application/pdf", st.session_state.page_idx)
