@@ -85,7 +85,7 @@ else:
         </style>
     """, unsafe_allow_html=True)
 
-# 라이브러리 로드 확인 (NameError 방지를 위해 전역 배치)
+# 라이브러리 로드 확인 (NameError 방지)
 try:
     import pdfplumber
     PLUMBER_AVAILABLE = True
@@ -98,7 +98,7 @@ except:
     FITZ_AVAILABLE = False
 
 # =========================================================
-# [2] 구글 시트 및 API 엔진 (학습 기능 핵심)
+# [2] 구글 시트 및 API 엔진 (학습 기능 보존)
 # =========================================================
 try:
     if "GEMINI_API_KEY" in st.secrets:
@@ -157,7 +157,7 @@ def save_backup_to_cloud(mode_key, df):
     except: return False
 
 # =========================================================
-# [3] 데이터 병합 및 비교 학습 엔진
+# [3] 데이터 병합 및 비교 학습 엔진 (로직 무삭제)
 # =========================================================
 def clean_val_for_save(v):
     if isinstance(v, str): 
@@ -265,7 +265,7 @@ def save_logic_with_learning():
     save_backup_to_cloud(st.session_state.mode_key, st.session_state.master_df)
 
 # =========================================================
-# [4] AI 분석 및 이미지 최적화 처리 (PIL 무삭제 보존)
+# [4] AI 분석 및 이미지 최적화 처리 (PIL 무삭제)
 # =========================================================
 def clean_raw_text(text):
     text = re.sub(r'.*\.indd.*', '', text)
@@ -345,7 +345,6 @@ def get_page_image(file_bytes, file_type, page_idx):
 def generate_prompt_from_sheet(sheet_data):
     if not sheet_data: return ""
     rules = []
-    # 정확도 향상을 위한 과거 교정 데이터 참조
     for row in sheet_data[-300:]: 
         orig, root, origin, pos, action = row.get('original_word',''), row.get('root_word',''), row.get('origin',''), row.get('pos',''), row.get('action','')
         if action == 'delete': rules.append(f"- '{orig}'는 절대로 분석하지 말고 제외할 것.")
@@ -358,7 +357,6 @@ def run_analysis_action(txt, img_bytes=None):
     
     with st.spinner("AI가 국어학적 관점에서 정밀 분석 중입니다..."):
         s_data = get_sheet_data_fresh(st.session_state.mode_key)[1]
-        # [의존 명사 제외] 강력 프롬프트 지침 복원
         prompt = f"""
         당신은 국립국어원 표준국어대사전 및 한국어 문법 지식에 정통한 언어 분석 전문가입니다.
         제공된 텍스트에서 명사, 동사, 형용사 등의 실질 형태소를 추출하고 아래 지침을 엄격히 준수하십시오.
@@ -404,7 +402,6 @@ def run_analysis_action(txt, img_bytes=None):
                 
                 if re.search(r'[0-9a-zA-Z]', o) or re.search(r'[0-9a-zA-Z]', root): continue
                 if not o or not root: continue
-                # [후처리 필터링] 의존명사 재차 차단
                 if pos_v in ['조사', '어미', '의존명사', '의존 명사', '수사']: continue
                 if root in ['것', '수', '데', '바', '지', '리', '개', '번', '명', '쪽']: continue
 
@@ -437,6 +434,13 @@ with st.sidebar:
 
 # STEP 0: 시작 화면
 if st.session_state.step == 0:
+    # 세션 완전 초기화 로직 (처음 단계로 이동 시 사용)
+    for key in list(st.session_state.keys()):
+        if key not in ['debug_mode']: # 설정값 제외하고 모두 삭제
+            del st.session_state[key]
+    # 필수 변수 즉시 재설정
+    if 'step' not in st.session_state: st.session_state.step = 0
+    
     st.markdown("<h1 style='text-align: center; margin-bottom: 20px;'>📚 국어활동 AI 분석기</h1>", unsafe_allow_html=True)
     st.markdown("<p style='text-align: center; color: #888; margin-bottom: 50px;'>원하는 언어 규범을 선택하여 분석을 시작하세요.</p>", unsafe_allow_html=True)
     _, c_south, c_north, _ = st.columns([1, 4, 4, 1])
@@ -475,7 +479,7 @@ elif st.session_state.step == 2:
     c_t, c_h = st.columns([8, 2])
     with c_t: st.header("📝 분석 자료 입력")
     with c_h:
-        if st.button("🏠 처음으로"): st.session_state.clear(); st.rerun()
+        if st.button("🏠 처음으로"): st.session_state.step = 0; st.rerun()
 
     with st.expander("⚙️ 분석 환경 설정 (페이지 쪽수 설정)", expanded=True):
         st.session_state.start_offset = st.number_input("도서 1쪽의 실제 숫자 (시작 쪽수 설정)", value=st.session_state.start_offset)
@@ -564,6 +568,7 @@ elif st.session_state.step == 3:
 
     df_res = pd.DataFrame(st.session_state.analysis_result)
     if not df_res.empty:
+        # 스크롤 튕김 방지 고유 키
         edited = st.data_editor(
             df_res,
             column_config={
@@ -572,7 +577,7 @@ elif st.session_state.step == 3:
                 "분류": st.column_config.SelectboxColumn("분류", options=["🔵 고", "🟢 한", "🔴 외", "🟣 혼"]),
                 "품사": st.column_config.SelectboxColumn("품사", options=["📦 명사", "🏃 동사", "🎨 형용사", "⚡ 부사", "🔍 관형사", "👤 대명사", "고유명사", "❗ 감탄사"])
             },
-            use_container_width=True, num_rows="dynamic", key="step3_editor_v11_scroll"
+            use_container_width=True, num_rows="dynamic", key="step3_editor_fixed_scroll"
         )
         
         if not edited.equals(df_res):
@@ -619,7 +624,7 @@ elif st.session_state.step == 3:
                 time.sleep(2.2)
                 st.rerun()
         with b_save_only:
-            # [수정] 저장 버튼 클릭 시 3종 선택 메뉴 활성화
+            # [사용자 요청] 저장만 하기 클릭 시 -> 다운로드, 처음으로, 다음쪽으로 3종 버튼 활성화
             if st.button("💾 현재 페이지만 저장", use_container_width=True):
                 with st.status("데이터 통합 및 학습 로직 가동 중..."):
                     save_logic_with_learning()
@@ -643,8 +648,11 @@ elif st.session_state.step == 3:
                         st.session_state.is_finished = True
                         st.balloons(); st.rerun()
     else:
-        # [수정] 저장 완료 후 3개 버튼 UI (다운로드, 처음으로, 다음쪽으로)
+        # [해결책] 저장 완료 후 3개 버튼 UI (Navigation Fixed)
         st.success("✅ 페이지 분석 데이터가 마스터 데이터에 성공적으로 통합되었습니다!")
+        actual_p = st.session_state.page_idx + st.session_state.start_offset
+        st.info(f"📍 '{actual_p}쪽' 작업 결과가 성공적으로 반영되었습니다.")
+        
         fname = f"Result_{st.session_state.mode_key}_{datetime.now().strftime('%m%d_%H%M')}.xlsx"
         buf = io.BytesIO()
         with pd.ExcelWriter(buf, engine='openpyxl') as w: st.session_state.master_df.to_excel(w, index=False)
@@ -653,8 +661,10 @@ elif st.session_state.step == 3:
         with c_down:
             st.download_button(label=f"📥 엑셀 다운로드", data=buf.getvalue(), file_name=fname, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True, type="primary")
         with c_reset:
-            if st.button("🔄 처음 단계로 이동", use_container_width=True):
-                st.session_state.step = 2; st.session_state.is_finished = False; st.rerun()
+            # 완전한 초기 화면(step=0)으로의 강제 이동 구현
+            if st.button("🏛️ 처음 단계로 이동", use_container_width=True):
+                st.session_state.step = 0 
+                st.rerun()
         with c_next:
             can_go_next = st.session_state.file_type == "application/pdf" and st.session_state.page_idx < st.session_state.total_pages - 1
             if st.button("➡️ 다음 쪽으로 이동", use_container_width=True, disabled=not can_go_next):
