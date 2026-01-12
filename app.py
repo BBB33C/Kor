@@ -263,7 +263,7 @@ def api_call_direct(prompt, image_bytes=None):
     headers = {'Content-Type': 'application/json'}
     parts = [{"text": prompt}]
     
-    # [Fix] 이미지 바이트가 존재할 때만 전송 (None이면 텍스트만 전송)
+    # [Fix] 이미지 바이트가 유효할 때만 추가 (직접 입력 시 오류 방지)
     if image_bytes:
         optimized_img = process_image_for_api(image_bytes)
         if optimized_img:
@@ -285,7 +285,6 @@ def extract_text_unified(file_bytes, file_type, page_idx):
         raw_text, _ = api_call_direct("이 이미지 속의 텍스트를 모두 추출하세요. 줄바꿈 유지.", file_bytes)
     
     elif "pdf" in file_type:
-        # PDF 페이지 계산
         if FITZ_AVAILABLE:
             try:
                 doc = fitz.open(stream=file_bytes, filetype="pdf")
@@ -369,6 +368,7 @@ def run_analysis_action(txt, img_bytes=None):
         원본, 원형, 분류(고/한/외/혼), 품사(명사/동사/형용사/부사/관형사/대명사/감탄사)
         """
         
+        # [Fix] 직접 입력 시 img_bytes가 None이어도 안전하게 호출
         raw, status = api_call_direct(prompt + f"\n\n[분석 대상]:\n{txt[:5000]}", img_bytes)
         st.session_state.last_raw_response = raw
         
@@ -378,14 +378,12 @@ def run_analysis_action(txt, img_bytes=None):
             clean_json = raw.replace("```json", "").replace("```", "").strip()
             match = re.search(r'\[.*\]', clean_json, re.DOTALL)
             
-            # [Fix] JSON 매칭 실패 시 fallback 처리 강화
             if match:
                 res = json.loads(match.group())
             else:
                 try: res = json.loads(clean_json)
                 except: 
-                    # 리스트 형식이 아닌 경우 빈 리스트 처리 후 오류 방지
-                    st.warning("분석 결과 형식이 예상과 다릅니다. 재시도하거나 텍스트를 확인해주세요.")
+                    st.warning("분석된 내용이 없습니다. 문장이 너무 짧거나 분석할 단어가 없을 수 있습니다.")
                     res = []
 
             proc = []; temp_dict = {}
@@ -485,7 +483,6 @@ elif st.session_state.step == 1.5:
 elif st.session_state.step == 2:
     st.session_state.is_finished = False
     
-    # [Update] 상단 헤더 및 내비게이션 배치
     c_head, c_nav = st.columns([8, 2])
     with c_head: st.header(f"📝 {st.session_state.input_type} 분석 자료 입력")
     with c_nav:
