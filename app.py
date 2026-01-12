@@ -324,15 +324,28 @@ def run_analysis_action(txt, img_bytes=None):
     if not txt.strip(): st.warning("분석할 내용이 없습니다."); return
     with st.spinner("AI가 국어학적 관점에서 정밀 분석 중입니다..."):
         s_data = get_sheet_data_fresh(st.session_state.mode_key)[1]
+        
+        # [정확도 보강] 동음이의어, 고유명사 판별 지침 강화
         prompt = f"""
         당신은 국어학 및 시맨틱 텍스트 분석 전문가입니다. 아래 지침을 엄격히 준수하십시오.
         {generate_prompt_from_sheet(s_data)}
-        [1. 고유명사 및 동음이의어 판별]
-        - **인명**: 사람 이름 식별 시 원형 뒤에 '(이름)' 표기. (예: 홍길동(이름))
-        - **지명**: 지역 명칭 식별 시 원형 뒤에 '(지명)' 표기. (예: 서울(지명))
-        - **동음이의어**: 문맥에 따른 의미를 괄호에 부연 설명. (예: 배(과일), 배(선박))
-        [2. 제외 대상] 조사, 어미, 수사, 의존명사(것, 수, 데, 바, 만큼, 지 등), 숫자, 로마자.
-        [3. 어종] 고(순우리말), 한(한자어), 외(외래어), 혼.
+        
+        [1. 고유명사(Named Entity) 식별 - 최우선]
+        - **인명(이름)**: 사람 이름으로 판단되면 원형 뒤에 반드시 '(이름)'을 표기. (예: 홍길동(이름))
+        - **지명(장소)**: 국가, 도시, 지역 명칭은 원형 뒤에 반드시 '(지명)'을 표기. (예: 서울(지명), 한라산(지명))
+        
+        [2. 동음이의어(Homonym) 의미 구분]
+        - 단어의 형태가 같으나 뜻이 다른 경우, 문맥상 의미를 괄호에 표기하여 구별.
+        - 예: '배(과일)', '배(선박)', '배(신체)', '눈(기상)', '눈(신체)'.
+        
+        [3. 제외 대상 (필터링)]
+        - 조사, 어미, 수사.
+        - **의존 명사**: 것, 수, 데, 바, 만큼, 지, 리, 개, 명, 번, 쪽, 등 등은 무조건 제외.
+        - 숫자(0-9), 로마자(A-Z), 특수기호.
+        
+        [4. 어종 분류]
+        - 고(순우리말), 한(한자어), 외(외래어), 혼(혼종어).
+        
         [출력 양식: 한글 키 JSON 리스트]
         원본, 원형, 분류(고/한/외/혼), 품사(명사/동사/형용사/부사/관형사/대명사/감탄사)
         """
@@ -350,8 +363,10 @@ def run_analysis_action(txt, img_bytes=None):
                 orig_v, pos_v = str(r.get('분류') or '혼').strip(), str(r.get('품사') or '명사').strip()
                 if re.search(r'[0-9a-zA-Z]', o) or re.search(r'[0-9a-zA-Z]', root): continue
                 if not o or not root: continue
+                # [필터링] 의존명사 및 불용어 이중 차단
                 if pos_v in ['조사', '어미', '의존명사', '의존 명사', '수사']: continue
-                if root in ['것', '수', '데', '바', '지', '리', '개', '번', '명', '쪽']: continue
+                if root in ['것', '수', '데', '바', '지', '리', '개', '번', '명', '쪽', '등', '따름', '뿐']: continue
+                
                 draft_items.append({'원본': o, '원형': root, '분류': orig_v, '품사': pos_v})
                 key = (root, orig_v, pos_v)
                 if key not in temp_dict: temp_dict[key] = []
@@ -524,7 +539,6 @@ elif st.session_state.step == 3:
                     st.session_state.analysis_result = []; st.session_state.step = 2; st.rerun()
                 else: st.session_state.is_finished = True; st.balloons(); st.rerun()
     else:
-        # [수정] 저장 후 2개 버튼 UI (다운로드, 다음쪽으로)
         st.success("✅ 저장이 완료되었습니다!")
         fname = f"Result_{st.session_state.mode_key}_{datetime.now().strftime('%m%d_%H%M')}.xlsx"
         buf = io.BytesIO()
