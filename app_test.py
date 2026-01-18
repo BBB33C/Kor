@@ -85,52 +85,59 @@ def reset_input_buffer():
     st.session_state.split_mode = False
 
 # =========================================================
-# [1] 디자인: CSS 매직 (아이콘 깨짐 방지 + 안전한 넷플릭스 스타일)
+# [1] 디자인: CSS 매직 (최종 강력 버전: 배경/폰트/아이콘 완벽 해결)
 # =========================================================
 def load_global_style():
     st.markdown("""
         <style>
-            /* 1. 폰트 적용 (아이콘 폰트 충돌 방지 버전) */
+            /* [폰트] Pretendard 불러오기 */
             @import url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css");
             
-            /* '*'를 쓰지 않고, 글자가 들어가는 태그만 콕 집어서 적용합니다 */
-            html, body, p, h1, h2, h3, h4, h5, h6, li, input, textarea, button, a {
+            /* [폰트 적용] 모든 텍스트 요소에 적용하되, 아이콘은 제외 */
+            html, body, [class*="css"], font, div, span, p, h1, h2, h3, h4, h5, h6 {
                 font-family: 'Pretendard', sans-serif !important;
             }
             
-            /* 2. 배경 설정 (그라데이션 유지) */
-            [data-testid="stAppViewContainer"] {
-                background-color: #0e1117 !important;
-                background-image: linear-gradient(to bottom, #0e1117, #1a1c24);
+            /* [중요] 화살표 아이콘(Material Icons) 깨짐 방지 */
+            /* arrow_down 글자가 나오는 것을 막기 위해 아이콘 폰트 강제 복구 */
+            [data-testid="stExpander"] svg, 
+            [data-testid="stExpander"] span[aria-hidden="true"],
+            .material-icons,
+            .icon-button {
+                font-family: 'Material Icons', sans-serif !important; 
+            }
+
+            /* [배경] 그라데이션 강제 적용 (.stApp이 가장 강력한 선택자) */
+            .stApp {
+                background: rgb(14,17,23) !important; /* 혹시 그라데이션 안 먹을 때 대비용 단색 */
+                background: linear-gradient(180deg, #0e1117 0%, #1a1c24 100%) !important;
+                background-attachment: fixed !important;
                 color: #ffffff !important;
             }
-            [data-testid="stHeader"] { background-color: rgba(0,0,0,0) !important; }
             
-            /* 마크다운 내부 텍스트 색상 고정 */
-            [data-testid="stMarkdownContainer"] p, 
-            [data-testid="stMarkdownContainer"] h1, 
-            [data-testid="stMarkdownContainer"] h2, 
-            [data-testid="stMarkdownContainer"] h3, 
-            [data-testid="stMarkdownContainer"] span, 
-            [data-testid="stMarkdownContainer"] li { 
-                color: #ffffff !important; 
+            /* 헤더 투명화 */
+            [data-testid="stHeader"] {
+                background-color: rgba(0,0,0,0) !important;
             }
 
-            /* 3. 버튼 스타일 (테두리 및 쫀득한 효과) */
+            /* [버튼] 넷플릭스 스타일 */
             div.stButton > button {
-                transition: all 0.2s ease-in-out !important;
-                border: 1px solid rgba(255,255,255,0.1) !important;
                 background-color: #262730 !important;
                 color: white !important;
+                border: 1px solid rgba(255,255,255,0.1) !important;
+                transition: all 0.2s ease-in-out !important;
+            }
+            div.stButton > button:hover {
+                border-color: #00ffff !important;
+                color: #00ffff !important;
             }
             div.stButton > button:active {
-                transform: scale(0.96) !important;
-                box-shadow: inset 0 3px 5px rgba(0,0,0,0.5) !important;
+                transform: scale(0.98) !important;
             }
 
-            /* 4. 오로라 텍스트 (글자 깨짐 방지 수정) */
+            /* [타이틀] 오로라 텍스트 */
             .aurora-text {
-                background: linear-gradient(to right, #00c6ff, #0072ff, #9b59b6, #ff4b1f);
+                background: linear-gradient(45deg, #00c6ff, #0072ff, #9b59b6, #ff4b1f);
                 background-size: 200% auto;
                 -webkit-background-clip: text;
                 -webkit-text-fill-color: transparent;
@@ -138,33 +145,25 @@ def load_global_style():
                 color: transparent;
                 animation: aurora-text 4s linear infinite;
                 font-weight: 800;
-                /* display: inline-block; <-- 이 부분이 레이아웃 충돌 원인일 수 있어 제거 */
             }
             @keyframes aurora-text {
                 to { background-position: 200% center; }
             }
 
-            /* 5. 입력창 & 구분선 */
+            /* [입력창] 스타일 */
             .stTextArea textarea {
-                background-color: #1a1c24 !important;
+                background-color: #15171e !important;
                 color: #ffffff !important;
                 border: 1px solid #444 !important;
             }
-            hr { border-color: #333 !important; opacity: 0.5; }
 
-            /* 6. 사이드바 숨기기 (유지) */
-            [data-testid="stSidebar"] { display: none !important; }
-            [data-testid="stSidebarCollapsedControl"] { display: none !important; }
+            /* [사이드바] 숨기기 */
+            [data-testid="stSidebar"], [data-testid="stSidebarCollapsedControl"] {
+                display: none !important;
+            }
             
-            /* 7. [수정] 엑셀 업로드 확장(Expander) 제목 겹침 해결 */
-            [data-testid="stExpander"] details summary p {
-                font-weight: 600 !important;
-                font-size: 1.05rem !important;
-            }
-            /* 화살표 아이콘 강제 복구 (혹시 몰라 안전장치 추가) */
-            [data-testid="stExpander"] .icon {
-                font-family: "Material Icons" !important;
-            }
+            /* [기타] 구분선 */
+            hr { border-color: #444 !important; opacity: 0.5; }
         </style>
     """, unsafe_allow_html=True)
 
