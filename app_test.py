@@ -209,37 +209,61 @@ def send_data_with_retry(sheet_obj, data, is_multiple=False):
         except: time.sleep(1)
     return False
 
-# [수정] 언어가 아니라 '사용자 이름'으로 된 시트에 저장하도록 변경
+# [수정] 데이터뿐만 아니라 '파일 정보'와 '언어 모드'도 함께 저장
 def save_backup_to_cloud(mode_key, df):
     client = get_google_sheet_client()
     if not client or df is None or df.empty: return False
     
-    # 사용자가 선택되지 않았다면 기본값(Default) 사용
     target_sheet = st.session_state.get('user_sheet_name', f"Backup_{'South' if mode_key == 'SOUTH' else 'North'}")
     
     try:
         sh = client.open(SHEET_NAME)
-        # 해당 사용자의 시트가 없으면 생성, 있으면 열기
         try: ws = sh.worksheet(target_sheet)
         except: ws = sh.add_worksheet(title=target_sheet, rows=1000, cols=20)
         
         ws.clear()
-        # 데이터프레임 저장 (메타데이터로 모드 정보도 어딘가에 넣으면 좋지만, 일단 데이터부터 저장)
-        ws.update([df.fillna("").astype(str).columns.tolist()] + df.fillna("").astype(str).values.tolist())
+        
+        # [핵심] 1행에 메타데이터(꼬리표) 저장: [언어모드, 파일명(임시), 저장일시]
+        # 파일명이 없으면 '제목_없음' 처리
+        current_file_name = "작업중인_문서" # 나중에 PDF 파일명 변수 연동 필요
+        meta_info = ["METADATA", mode_key, current_file_name, datetime.now().strftime("%Y-%m-%d %H:%M:%S")]
+        
+        # 1행: 메타데이터 / 2행부터: 데이터프레임
+        all_values = [meta_info] + [df.fillna("").astype(str).columns.tolist()] + df.fillna("").astype(str).values.tolist()
+        ws.update(all_values)
         return True
     except: return False
 
-# [추가] 사용자의 백업 데이터를 불러오는 함수
+# [수정] 메타데이터까지 읽어오는 로직
 def load_backup_from_cloud():
     client = get_google_sheet_client()
-    if not client or not st.session_state.user_sheet_name: return None
+    if not client or not st.session_state.user_sheet_name: return None, None
     try:
         sh = client.open(SHEET_NAME)
         ws = sh.worksheet(st.session_state.user_sheet_name)
-        data = ws.get_all_records()
-        if data: return pd.DataFrame(data)
+        data = ws.get_all_values() # 모든 데이터를 리스트로 가져옴
+        
+        if not data: return None, None
+        
+        # 메타데이터 파싱
+        meta = None
+        df_start_idx = 0
+        if data[0][0] == "METADATA":
+            meta = {
+                "mode": data[0][1], 
+                "filename": data[0][2], 
+                "time": data[0][3]
+            }
+            df_start_idx = 1 # 2번째 줄부터가 진짜 데이터
+        
+        # 데이터프레임 변환
+        if len(data) > df_start_idx + 1:
+            headers = data[df_start_idx]
+            rows = data[df_start_idx + 1:]
+            return pd.DataFrame(rows, columns=headers), meta
+            
     except: pass
-    return None
+    return None, None
 
 # =========================================================
 # [3] 데이터 병합 및 비교 학습 엔진
@@ -597,53 +621,78 @@ if st.session_state.step == 0:
         if st.button("👦\n\n동생", use_container_width=True): set_user("동생", "Backup_Bro", "👦")
 
 # =========================================================
-# [Step 0.5] 개인 대시보드 (이어하기 / 목록 / 새로하기)
+# [Step 0.5] 개인 대시보드 (3단 구조: 최근 / 목록 / 신규)
 # =========================================================
 elif st.session_state.step == 0.5:
     st.markdown(f"### 👋 안녕하세요, {st.session_state.current_user}님!")
     
-    # 1. 백업 데이터 확인
-    backup_df = load_backup_from_cloud()
+    # 데이터 로드
+    backup_df, meta_info = load_backup_from_cloud()
     has_backup = backup_df is not None and not backup_df.empty
     
-    col_main, col_side = st.columns([2, 1])
+    col_main, col_side = st.columns([2.5, 1]) # 메인 화면을 좀 더 넓게
     
     with col_main:
-        # [A] 이어하기 카드
-        st.markdown("#### ⏯️ 최근 작업 이어하기")
-        if has_backup:
-            # 마지막 작업 정보 추출 (예시로 쪽수 확인)
-            last_page = "정보 없음"
-            if '쪽수1' in backup_df.columns:
-                last_page = str(backup_df.iloc[-1]['쪽수1'])
+        # [Section 1] 가장 최근 작업 이어하기 (Big Hero Button)
+        st.markdown("#### 🚀 바로 시작하기")
+        if has_backup and meta_info:
+            # 메타데이터 활용
+            last_mode = "🇰🇷 대한민국 표준어" if meta_info['mode'] == 'SOUTH' else "🏔️ 북한 문화어"
+            last_time = meta_info['time']
+            last_file = meta_info['filename']
+            last_page = backup_df.iloc[-1].get('쪽수1', '1') # 마지막 작업 페이지 추적
             
-            st.info(f"💾 **저장된 작업 발견:** 마지막 작업 페이지 ({last_page}쪽) 등 데이터가 있습니다.")
+            btn_label = f"""
+            **📄 {last_file}** 이어서 작업하기
+            \n(마지막 저장: {last_time} | {last_mode} | {last_page}쪽)
+            """
             
-            if st.button("🚀 저장된 내용 불러오기 (이어하기)", type="primary", use_container_width=True):
+            if st.button(btn_label, use_container_width=True, type="primary"):
                 st.session_state.master_df = backup_df
-                # [주의] 여기서 모드(남/북)를 몰라서 일단 남한말로 가정하거나, 
-                # 저장할 때 모드 정보를 같이 저장했어야 함. 임시로 선택창 띄움.
-                st.session_state.step = 0.8 # 언어 모드 확인 단계로 이동
+                st.session_state.mode_key = meta_info['mode'] # 저장된 모드 자동 적용
+                st.toast(f"🔄 '{last_mode}' 모드로 복구되었습니다.", icon="✅")
+                time.sleep(1)
+                st.session_state.step = 1.5 # 언어 선택 건너뛰고 바로 입력창으로!
                 st.rerun()
         else:
-            st.warning("📭 저장된 최근 작업이 없습니다.")
+            st.info("💡 아직 저장된 '최근 작업'이 없습니다. 새 프로젝트를 시작해보세요!")
 
         st.markdown("---")
 
-        # [B] 새 프로젝트
-        st.markdown("#### ✨ 새로운 작업 시작")
-        if st.button("📄 새 프로젝트 만들기 (데이터 초기화)", use_container_width=True):
+        # [Section 2] 지난 작업 목록 불러오기 (지금은 1개지만 확장성 고려)
+        with st.expander("📂 지난 작업 목록에서 불러오기", expanded=False):
+            if has_backup:
+                # 현재는 슬롯이 1개라 하나만 뜨지만, 나중에 리스트로 확장 가능
+                options = [f"📄 {meta_info.get('filename','문서')} ({meta_info.get('time','날짜미상')})"]
+                selected = st.selectbox("복구할 파일을 선택하세요", options)
+                
+                if st.button("선택한 파일 불러오기", use_container_width=True):
+                    st.session_state.master_df = backup_df
+                    st.session_state.mode_key = meta_info.get('mode', 'SOUTH')
+                    st.session_state.step = 1.5
+                    st.rerun()
+            else:
+                st.write("보관된 작업 내역이 없습니다.")
+
+        st.markdown("---")
+
+        # [Section 3] 새 프로젝트 시작
+        st.markdown("#### ✨ 새로운 작업")
+        if st.button("📄 새 프로젝트 시작하기 (초기화)", use_container_width=True):
             reset_input_buffer()
             st.session_state.master_df = None
-            st.session_state.step = 0.8 # 언어 선택으로 이동
+            st.session_state.step = 0.8 # 언어 선택 단계로 이동
             st.rerun()
             
     with col_side:
-        if st.button("🔒 로그아웃 (프로필 다시 선택)", use_container_width=True):
-            reset_input_buffer()
-            st.session_state.current_user = None
-            st.session_state.step = 0
-            st.rerun()
+        st.markdown("<br>"*2, unsafe_allow_html=True) # 여백
+        with st.container(border=True):
+            st.markdown(f"**👤 현재 프로필: {st.session_state.current_user}**")
+            if st.button("🔒 로그아웃", use_container_width=True):
+                reset_input_buffer()
+                st.session_state.current_user = None
+                st.session_state.step = 0
+                st.rerun()
 
 # =========================================================
 # [Step 0.8] 언어 모드 선택 (이어하기/새로하기 공통)
