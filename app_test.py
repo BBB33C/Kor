@@ -670,7 +670,7 @@ elif st.session_state.step == 0.5:
         st.markdown("---")
 
         # ---------------------------------------------------------
-        # [Section 2] 지난 작업 불러오기 (Excel Upload & List)
+        # [Section 2] 지난 작업 불러오기 (엑셀 파일 업로드)
         # ---------------------------------------------------------
         with st.expander("📂 지난 작업 불러오기 (엑셀 파일 업로드)", expanded=True):
             st.markdown("보관해둔 **분석 결과 엑셀 파일(.xlsx)**이 있다면 업로드해주세요.")
@@ -698,16 +698,7 @@ elif st.session_state.step == 0.5:
                 except Exception as e:
                     st.error(f"파일을 읽는 중 오류가 발생했습니다: {str(e)}")
             
-            # [기능 2] 클라우드 목록에서 선택하기 (보조 기능)
-            if has_backup and not uploaded_excel:
-                st.markdown("<div style='text-align: center; color: #555; margin: 10px;'>또는</div>", unsafe_allow_html=True)
-                if st.button("☁️ 클라우드에 저장된 버전 불러오기", use_container_width=True):
-                     st.session_state.master_df = backup_df
-                     st.session_state.mode_key = meta_info.get('mode', 'SOUTH')
-                     st.session_state.step = 1.5
-                     st.rerun()
-
-        # ▼▼▼ [여기!] 구분선이 있어야 디자인이 깔끔합니다 ▼▼▼
+        # 구분선
         st.markdown("---")
 
         # ---------------------------------------------------------
