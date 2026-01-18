@@ -68,6 +68,9 @@ if 'last_raw_response' not in st.session_state: st.session_state.last_raw_respon
 if 'debug_log' not in st.session_state: st.session_state.debug_log = ""
 if 'is_finished' not in st.session_state: st.session_state.is_finished = False
 if 'split_mode' not in st.session_state: st.session_state.split_mode = False # [New] 분할 모드 상태
+if 'current_user' not in st.session_state: st.session_state.current_user = None # 현재 접속자 (아빠/엄마...)
+if 'user_sheet_name' not in st.session_state: st.session_state.user_sheet_name = None # 저장될 시트 이름
+
 
 # [New] 입력 데이터만 초기화하는 안전 함수
 def reset_input_buffer():
@@ -206,16 +209,37 @@ def send_data_with_retry(sheet_obj, data, is_multiple=False):
         except: time.sleep(1)
     return False
 
+# [수정] 언어가 아니라 '사용자 이름'으로 된 시트에 저장하도록 변경
 def save_backup_to_cloud(mode_key, df):
     client = get_google_sheet_client()
     if not client or df is None or df.empty: return False
+    
+    # 사용자가 선택되지 않았다면 기본값(Default) 사용
+    target_sheet = st.session_state.get('user_sheet_name', f"Backup_{'South' if mode_key == 'SOUTH' else 'North'}")
+    
     try:
         sh = client.open(SHEET_NAME)
-        ws = sh.worksheet(f"Backup_{'South' if mode_key == 'SOUTH' else 'North'}")
+        # 해당 사용자의 시트가 없으면 생성, 있으면 열기
+        try: ws = sh.worksheet(target_sheet)
+        except: ws = sh.add_worksheet(title=target_sheet, rows=1000, cols=20)
+        
         ws.clear()
+        # 데이터프레임 저장 (메타데이터로 모드 정보도 어딘가에 넣으면 좋지만, 일단 데이터부터 저장)
         ws.update([df.fillna("").astype(str).columns.tolist()] + df.fillna("").astype(str).values.tolist())
         return True
     except: return False
+
+# [추가] 사용자의 백업 데이터를 불러오는 함수
+def load_backup_from_cloud():
+    client = get_google_sheet_client()
+    if not client or not st.session_state.user_sheet_name: return None
+    try:
+        sh = client.open(SHEET_NAME)
+        ws = sh.worksheet(st.session_state.user_sheet_name)
+        data = ws.get_all_records()
+        if data: return pd.DataFrame(data)
+    except: pass
+    return None
 
 # =========================================================
 # [3] 데이터 병합 및 비교 학습 엔진
@@ -548,68 +572,96 @@ with st.sidebar:
         st.markdown("<br>"*5, unsafe_allow_html=True)
         if st.button("🛠️ 관리자/디버깅 모드 켜기"): st.session_state.debug_mode = True; st.rerun()
 
-# STEP 0: 언어 규범 선택
+# =========================================================
+# [Step 0] 가족 프로필 선택 (넷플릭스 스타일)
+# =========================================================
 if st.session_state.step == 0:
-    st.markdown("<h1 style='text-align: center; margin-bottom: 20px;'>📚 국어활동 AI 분석기</h1>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align: center; color: #888; margin-bottom: 50px;'>원하는 언어 규범을 선택하여 분석을 시작하세요.</p>", unsafe_allow_html=True)
+    st.markdown("<h1 style='text-align: center; margin-bottom: 30px;'>👨‍👩‍👧‍👦 작업자를 선택해주세요</h1>", unsafe_allow_html=True)
     
-    c_left, c_south, c_north, c_right = st.columns([1, 4, 4, 1])
-    with c_south:
-        if st.button("🏛️\n\n대한민국 표준어\n\n(표준국어대사전 기준)", use_container_width=True):
-            reset_input_buffer()
-            st.session_state.mode_key = "SOUTH"; st.session_state.step = 1; st.rerun()
-    with c_north:
-        if st.button("🏔️\n\n북한 문화어\n\n(문화어 규범 기준)", use_container_width=True):
-            reset_input_buffer()
-            st.session_state.mode_key = "NORTH"; st.session_state.step = 1; st.rerun()
+    # 4인 가족 프로필 버튼
+    c1, c2, c3, c4 = st.columns(4)
+    
+    def set_user(name, sheet, icon):
+        st.session_state.current_user = name
+        st.session_state.user_sheet_name = sheet
+        st.session_state.step = 0.5 # 대시보드로 이동
+        st.rerun()
 
-# STEP 1: 데이터 소스 선택
-elif st.session_state.step == 1:
-    c1, c2 = st.columns([8, 2])
-    with c1: st.header("📂 데이터 소스 선택")
-    with c2: 
-        if st.button("⬅️ 모드 선택으로", use_container_width=True): 
-            reset_input_buffer()
-            st.session_state.step = 0; st.rerun()
-
-    col1, col2 = st.columns(2)
-    with col1:
-        with st.container(border=True):
-            st.subheader("📂 이어하기")
-            up_excel = st.file_uploader("기존 분석 엑셀 업로드", type=['xlsx'])
-            if up_excel:
-                try:
-                    st.session_state.master_df = pd.read_excel(up_excel, engine='openpyxl')
-                    st.session_state.step = 1.5; st.rerun()
-                except Exception as e:
-                    st.error(f"엑셀 파일 형식이 올바르지 않습니다. (오류: {str(e)})")
-    with col2:
-        with st.container(border=True):
-            st.subheader("🆕 새로 시작하기")
-            if st.button("새 프로젝트 생성", use_container_width=True): st.session_state.master_df = None; st.session_state.step = 1.5; st.rerun()
-
-# STEP 1.5: 입력 방식 선택
-elif st.session_state.step == 1.5:
-    c1, c2 = st.columns([8, 2])
-    with c1: st.header("📝 입력 방식 선택")
-    with c2: 
-        if st.button("⬅️ 소스 선택으로", use_container_width=True): 
-            reset_input_buffer()
-            st.session_state.step = 1; st.rerun()
-
-    c1, c2, c3 = st.columns(3)
     with c1:
-        if st.button("📄\n\nPDF 문서 분석\n\n(쪽수 관리 지원)", use_container_width=True):
-            reset_input_buffer()
-            st.session_state.input_type = "PDF"; st.session_state.step = 2; st.rerun()
+        if st.button("👨\n\n아빠", use_container_width=True): set_user("아빠", "Backup_Dad", "👨")
     with c2:
-        if st.button("🖼️\n\n이미지 분석\n\n(단일 사진 전용)", use_container_width=True):
-            reset_input_buffer()
-            st.session_state.input_type = "IMAGE"; st.session_state.step = 2; st.rerun()
+        if st.button("👩\n\n엄마", use_container_width=True): set_user("엄마", "Backup_Mom", "👩")
     with c3:
-        if st.button("✍️\n\n텍스트 직접 입력\n\n(복사한 글 분석)", use_container_width=True):
+        if st.button("👧\n\n누나", use_container_width=True): set_user("누나", "Backup_Sis", "👧")
+    with c4:
+        if st.button("👦\n\n동생", use_container_width=True): set_user("동생", "Backup_Bro", "👦")
+
+# =========================================================
+# [Step 0.5] 개인 대시보드 (이어하기 / 목록 / 새로하기)
+# =========================================================
+elif st.session_state.step == 0.5:
+    st.markdown(f"### 👋 안녕하세요, {st.session_state.current_user}님!")
+    
+    # 1. 백업 데이터 확인
+    backup_df = load_backup_from_cloud()
+    has_backup = backup_df is not None and not backup_df.empty
+    
+    col_main, col_side = st.columns([2, 1])
+    
+    with col_main:
+        # [A] 이어하기 카드
+        st.markdown("#### ⏯️ 최근 작업 이어하기")
+        if has_backup:
+            # 마지막 작업 정보 추출 (예시로 쪽수 확인)
+            last_page = "정보 없음"
+            if '쪽수1' in backup_df.columns:
+                last_page = str(backup_df.iloc[-1]['쪽수1'])
+            
+            st.info(f"💾 **저장된 작업 발견:** 마지막 작업 페이지 ({last_page}쪽) 등 데이터가 있습니다.")
+            
+            if st.button("🚀 저장된 내용 불러오기 (이어하기)", type="primary", use_container_width=True):
+                st.session_state.master_df = backup_df
+                # [주의] 여기서 모드(남/북)를 몰라서 일단 남한말로 가정하거나, 
+                # 저장할 때 모드 정보를 같이 저장했어야 함. 임시로 선택창 띄움.
+                st.session_state.step = 0.8 # 언어 모드 확인 단계로 이동
+                st.rerun()
+        else:
+            st.warning("📭 저장된 최근 작업이 없습니다.")
+
+        st.markdown("---")
+
+        # [B] 새 프로젝트
+        st.markdown("#### ✨ 새로운 작업 시작")
+        if st.button("📄 새 프로젝트 만들기 (데이터 초기화)", use_container_width=True):
             reset_input_buffer()
-            st.session_state.input_type = "DIRECT"; st.session_state.step = 2; st.rerun()
+            st.session_state.master_df = None
+            st.session_state.step = 0.8 # 언어 선택으로 이동
+            st.rerun()
+            
+    with col_side:
+        if st.button("🔒 로그아웃 (프로필 다시 선택)", use_container_width=True):
+            reset_input_buffer()
+            st.session_state.current_user = None
+            st.session_state.step = 0
+            st.rerun()
+
+# =========================================================
+# [Step 0.8] 언어 모드 선택 (이어하기/새로하기 공통)
+# =========================================================
+elif st.session_state.step == 0.8:
+    st.markdown(f"### 🌐 분석할 언어 규범을 선택하세요 ({st.session_state.current_user}님)")
+    
+    c_south, c_north = st.columns(2)
+    with c_south:
+        if st.button("🏛️ 대한민국 표준어", use_container_width=True):
+            st.session_state.mode_key = "SOUTH"
+            st.session_state.step = 1.5 # 바로 입력 방식 선택으로 점프
+            st.rerun()
+    with c_north:
+        if st.button("🏔️ 북한 문화어", use_container_width=True):
+            st.session_state.mode_key = "NORTH"
+            st.session_state.step = 1.5 # 바로 입력 방식 선택으로 점프
+            st.rerun()
 
 # STEP 2: 자료 입력
 elif st.session_state.step == 2:
