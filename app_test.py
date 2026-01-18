@@ -85,47 +85,34 @@ def reset_input_buffer():
     st.session_state.split_mode = False
 
 # =========================================================
-# [1] 디자인: CSS 매직 (넷플릭스 스타일 통합팩)
-# =========================================================
-# =========================================================
-# [1] 디자인: CSS 매직 (강력한 덮어쓰기 버전)
+# [1] 디자인: CSS 매직 (사이드바 제거 + 넷플릭스 스타일)
 # =========================================================
 def load_global_style():
     st.markdown("""
         <style>
-            /* 1. 폰트 강제 적용 (모든 요소인 *에 적용) */
+            /* 1. 폰트 강제 적용 */
             @import url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css");
-            
-            * {
-                font-family: 'Pretendard', sans-serif !important;
-            }
+            * { font-family: 'Pretendard', sans-serif !important; }
 
-            /* 2. 배경 설정: 더 구체적인 주소(data-testid) 사용 */
+            /* 2. 배경 설정 */
             [data-testid="stAppViewContainer"] {
                 background-color: #0e1117 !important;
-                background-image: linear-gradient(to bottom, #0e1117, #1a1c24); /* 살짝 그라데이션 추가 */
+                background-image: linear-gradient(to bottom, #0e1117, #1a1c24);
             }
-            
-            [data-testid="stHeader"] {
-                background-color: rgba(0,0,0,0) !important; /* 상단 헤더 투명하게 */
-            }
+            [data-testid="stHeader"] { background-color: rgba(0,0,0,0) !important; }
+            [data-testid="stMarkdownContainer"] p, h1, h2, h3, h4, h5, h6, li, span { color: #ffffff !important; }
 
-            /* 기본 텍스트 색상 하얗게 */
-            [data-testid="stMarkdownContainer"] p, h1, h2, h3, h4, h5, h6, li, span {
-                color: #ffffff !important;
-            }
-
-            /* 3. [마이크로 인터랙션] 버튼 쫀득 효과 */
+            /* 3. 버튼 스타일 */
             div.stButton > button {
                 transition: transform 0.1s ease-in-out, box-shadow 0.2s !important;
-                border: 1px solid rgba(255,255,255,0.1) !important; /* 미세한 테두리 */
+                border: 1px solid rgba(255,255,255,0.1) !important;
             }
             div.stButton > button:active {
                 transform: scale(0.96) !important;
                 box-shadow: inset 0 3px 5px rgba(0,0,0,0.5) !important;
             }
 
-            /* 4. [오로라 타이틀] 클래스 지정 방식 (.aurora-text) */
+            /* 4. 오로라 텍스트 */
             .aurora-text {
                 background: linear-gradient(to right, #00c6ff, #0072ff, #9b59b6, #ff4b1f);
                 background-size: 300% 300%;
@@ -135,24 +122,25 @@ def load_global_style():
                 color: transparent;
                 animation: aurora-text 5s ease infinite;
                 font-weight: 800;
-                display: inline-block; /* 중요: 그라데이션 짤림 방지 */
+                display: inline-block;
             }
-            
             @keyframes aurora-text {
                 0% { background-position: 0% 50%; }
                 50% { background-position: 100% 50%; }
                 100% { background-position: 0% 50%; }
             }
 
-            /* 5. 입력창 스타일링 */
+            /* 5. 입력창 & 구분선 */
             .stTextArea textarea {
                 background-color: #1a1c24 !important;
                 color: #ffffff !important;
                 border: 1px solid #444 !important;
             }
-            
-            /* 6. 구분선 */
             hr { border-color: #333 !important; opacity: 0.5; }
+
+            /* ▼▼▼ [추가된 부분] 사이드바 완전 숨기기 ▼▼▼ */
+            [data-testid="stSidebar"] { display: none !important; }
+            [data-testid="stSidebarCollapsedControl"] { display: none !important; }
         </style>
     """, unsafe_allow_html=True)
 
@@ -599,18 +587,6 @@ def run_analysis_action(txt, img_bytes=None):
             st.session_state.debug_log = f"Error: {str(e)}\nRaw Response:\n{raw}"
 
 # =========================================================
-# [5] UI: 메인 루프 (Wizard)
-# =========================================================
-
-with st.sidebar:
-    st.markdown("### ⚙️ 시스템 설정")
-    if st.session_state.debug_mode:
-        if st.button("🐞 디버깅 모드 끄기"): st.session_state.debug_mode = False; st.rerun()
-    else:
-        st.markdown("<br>"*5, unsafe_allow_html=True)
-        if st.button("🛠️ 관리자/디버깅 모드 켜기"): st.session_state.debug_mode = True; st.rerun()
-
-# =========================================================
 # [Step 0] 가족 프로필 선택 (2x2 그리드 + 360도 회전 엣지 효과)
 # =========================================================
 if st.session_state.step == 0:
@@ -715,7 +691,7 @@ if st.session_state.step == 0:
         if st.button("👧\n누나", key="btn_sis", use_container_width=True): set_user("누나", "Backup_Sis")
     with c4:
         if st.button("👦\n동생", key="btn_bro", use_container_width=True): set_user("동생", "Backup_Bro")
-        
+
 # =========================================================
 # [Step 0.5] 개인 대시보드 (3단 구조: 최근 / 파일불러오기 / 신규)
 # =========================================================
@@ -1110,3 +1086,16 @@ elif st.session_state.step == 3:
                     st.session_state.step = 2
                     st.session_state.is_finished = False
                     st.rerun()
+
+# =========================================================
+# [Footer] 관리자 모드 버튼 (화면 맨 아래 우측 구석)
+# =========================================================
+st.markdown("<br><br><br>", unsafe_allow_html=True)
+_, c_footer = st.columns([9, 0.5])
+with c_footer:
+    if st.button("🛠️", key="admin_toggle", help="관리자/디버깅 모드 전환"):
+        st.session_state.debug_mode = not st.session_state.debug_mode
+        st.rerun()
+
+if st.session_state.debug_mode:
+    st.info("🐞 현재 '디버깅 모드'가 켜져 있습니다.")
