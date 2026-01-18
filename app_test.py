@@ -620,9 +620,9 @@ if st.session_state.step == 0:
         st.rerun()
 
     with c1:
-        if st.button("👨\n\n아빠", use_container_width=True): set_user("아빠", "Backup_Dad", "👨")
+        if st.button("👨\n\n좋은날", use_container_width=True): set_user("좋은날", "Backup_Dad", "👨")
     with c2:
-        if st.button("👩\n\n엄마", use_container_width=True): set_user("엄마", "Backup_Mom", "👩")
+        if st.button("👩\n\n별랑", use_container_width=True): set_user("별랑", "Backup_Mom", "👩")
     with c3:
         if st.button("👧\n\n누나", use_container_width=True): set_user("누나", "Backup_Sis", "👧")
     with c4:
