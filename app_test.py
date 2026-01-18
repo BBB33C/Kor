@@ -678,6 +678,8 @@ elif st.session_state.step == 0.5:
             # [기능 1] 파일 업로드 (Drag & Drop)
             uploaded_excel = st.file_uploader("엑셀 파일 끌어다 놓기", type=['xlsx'], label_visibility="collapsed")
             
+            # [수정 전 코드 위치를 찾아 아래 코드로 덮어쓰세요]
+
             if uploaded_excel:
                 try:
                     # 엑셀 읽기
@@ -685,10 +687,18 @@ elif st.session_state.step == 0.5:
                     st.session_state.master_df = df
                     st.success(f"✅ '{uploaded_excel.name}' 파일을 성공적으로 읽었습니다!")
                     
-                    # [중요] 엑셀만 보고는 남/북 모드를 알 수 없으므로, 사용자에게 물어보기 위해 이동
-                    if st.button("이 데이터로 작업 시작하기 (모드 선택으로 이동)", use_container_width=True):
-                        st.session_state.step = 0.8 # 언어 선택 단계로 이동
+                    # ▼▼▼▼▼▼▼ [수정된 부분] ▼▼▼▼▼▼▼
+                    # 버튼 클릭 시: 0.8(언어선택) 건너뛰고 -> 1.5(입력방식)로 직행
+                    if st.button("🚀 이 데이터로 작업 계속하기 (입력 방식 선택)", use_container_width=True):
+                        # [안전장치] 만약 언어 모드가 선택 안 된 상태라면 기본값(남한말) 설정
+                        # (엑셀만 보고는 알 수 없으므로, 오류 방지용)
+                        if not st.session_state.mode_key:
+                            st.session_state.mode_key = "SOUTH" 
+                        
+                        st.session_state.step = 1.5 # 입력 방식 선택으로 점프!
                         st.rerun()
+                    # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
+                        
                 except Exception as e:
                     st.error(f"파일을 읽는 중 오류가 발생했습니다: {str(e)}")
             
