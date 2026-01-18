@@ -728,8 +728,19 @@ elif st.session_state.step == 0.5:
 # [Step 0.8] 언어 모드 선택 (이어하기/새로하기 공통)
 # =========================================================
 elif st.session_state.step == 0.8:
-    st.markdown(f"### 🌐 분석할 언어 규범을 선택하세요 ({st.session_state.current_user}님)")
-    
+    # 상단 헤더 + 뒤로가기 버튼 배치
+    c_head, c_btn = st.columns([8, 2])
+    with c_head:
+        st.markdown(f"### 🌐 분석할 언어 규범을 선택하세요 ({st.session_state.current_user}님)")
+    with c_btn:
+        # [수정] 대시보드(0.5)로 돌아가는 뒤로가기 버튼 추가
+        if st.button("⬅️ 뒤로가기", use_container_width=True):
+            st.session_state.step = 0.5 
+            st.rerun()
+
+    st.markdown("<br>", unsafe_allow_html=True) # 약간의 여백 추가
+
+    # 기존 언어 선택 버튼들
     c_south, c_north = st.columns(2)
     with c_south:
         if st.button("🏛️ 대한민국 표준어", use_container_width=True):
