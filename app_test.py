@@ -692,9 +692,9 @@ if st.session_state.step == 0:
         </style>
     """, unsafe_allow_html=True)
 
-    # class='aurora-text'를 추가해서 CSS와 연결합니다.
-        st.markdown("<h1 style='text-align: center; margin-bottom: 40px;'><span class='aurora-text'>👨‍👩‍👧‍👦 작업자를 선택해주세요</span></h1>", unsafe_allow_html=True)
-        
+    # ▼▼▼ [수정된 부분] 들여쓰기가 정확하게 맞춰져 있습니다 ▼▼▼
+    st.markdown("<h1 style='text-align: center; margin-bottom: 40px;'><span class='aurora-text'>👨‍👩‍👧‍👦 작업자를 선택해주세요</span></h1>", unsafe_allow_html=True)
+    
     def set_user(name, sheet):
         st.session_state.current_user = name
         st.session_state.user_sheet_name = sheet
@@ -715,7 +715,7 @@ if st.session_state.step == 0:
         if st.button("👧\n누나", key="btn_sis", use_container_width=True): set_user("누나", "Backup_Sis")
     with c4:
         if st.button("👦\n동생", key="btn_bro", use_container_width=True): set_user("동생", "Backup_Bro")
-
+        
 # =========================================================
 # [Step 0.5] 개인 대시보드 (3단 구조: 최근 / 파일불러오기 / 신규)
 # =========================================================
