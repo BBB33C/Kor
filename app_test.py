@@ -621,7 +621,7 @@ if st.session_state.step == 0:
         if st.button("👦\n\n동생", use_container_width=True): set_user("동생", "Backup_Bro", "👦")
 
 # =========================================================
-# [Step 0.5] 개인 대시보드 (3단 구조: 최근 / 목록 / 신규)
+# [Step 0.5] 개인 대시보드 (3단 구조: 최근 / 파일불러오기 / 신규)
 # =========================================================
 elif st.session_state.step == 0.5:
     st.markdown(f"### 👋 안녕하세요, {st.session_state.current_user}님!")
@@ -630,22 +630,23 @@ elif st.session_state.step == 0.5:
     backup_df, meta_info = load_backup_from_cloud()
     has_backup = backup_df is not None and not backup_df.empty
     
-    col_main, col_side = st.columns([2.5, 1]) # 메인 화면을 좀 더 넓게
+    col_main, col_side = st.columns([2.5, 1])
     
     with col_main:
-        # [Section 1] 가장 최근 작업 이어하기 (Big Hero Button)
+        # ---------------------------------------------------------
+        # [Section 1] 가장 최근 작업 바로 이어하기 (Smart Resume)
+        # ---------------------------------------------------------
         st.markdown("#### 🚀 바로 시작하기")
+        
+        # 최근 작업 정보가 있으면 버튼 활성화
         if has_backup and meta_info:
-            # 메타데이터 활용
             last_mode = "🇰🇷 대한민국 표준어" if meta_info['mode'] == 'SOUTH' else "🏔️ 북한 문화어"
             last_time = meta_info['time']
-            last_file = meta_info['filename']
+            last_file = meta_info.get('filename', '작업중인_문서')
             last_page = backup_df.iloc[-1].get('쪽수1', '1') # 마지막 작업 페이지 추적
             
-            btn_label = f"""
-            **📄 {last_file}** 이어서 작업하기
-            \n(마지막 저장: {last_time} | {last_mode} | {last_page}쪽)
-            """
+            # 정보 카드 스타일의 버튼
+            btn_label = f"📄 **{last_file}** 이어서 작업하기\n\n(🕒 {last_time} 저장 | {last_mode} | 📍 {last_page}쪽)"
             
             if st.button(btn_label, use_container_width=True, type="primary"):
                 st.session_state.master_df = backup_df
@@ -655,28 +656,49 @@ elif st.session_state.step == 0.5:
                 st.session_state.step = 1.5 # 언어 선택 건너뛰고 바로 입력창으로!
                 st.rerun()
         else:
-            st.info("💡 아직 저장된 '최근 작업'이 없습니다. 새 프로젝트를 시작해보세요!")
+            # 최근 작업이 없을 때 보여줄 안내 메시지
+            st.info("💡 아직 클라우드에 저장된 '최근 작업'이 없습니다. 아래에서 파일을 업로드하거나 새 프로젝트를 시작하세요!")
 
         st.markdown("---")
 
-        # [Section 2] 지난 작업 목록 불러오기 (지금은 1개지만 확장성 고려)
-        with st.expander("📂 지난 작업 목록에서 불러오기", expanded=False):
-            if has_backup:
-                # 현재는 슬롯이 1개라 하나만 뜨지만, 나중에 리스트로 확장 가능
-                options = [f"📄 {meta_info.get('filename','문서')} ({meta_info.get('time','날짜미상')})"]
-                selected = st.selectbox("복구할 파일을 선택하세요", options)
-                
-                if st.button("선택한 파일 불러오기", use_container_width=True):
-                    st.session_state.master_df = backup_df
-                    st.session_state.mode_key = meta_info.get('mode', 'SOUTH')
-                    st.session_state.step = 1.5
-                    st.rerun()
-            else:
-                st.write("보관된 작업 내역이 없습니다.")
+        # ---------------------------------------------------------
+        # [Section 2] 지난 작업 불러오기 (Excel Upload & List)
+        # ---------------------------------------------------------
+        with st.expander("📂 지난 작업 불러오기 (엑셀 파일 업로드)", expanded=True):
+            st.markdown("보관해둔 **분석 결과 엑셀 파일(.xlsx)**이 있다면 업로드해주세요.")
+            
+            # [기능 1] 파일 업로드 (Drag & Drop)
+            uploaded_excel = st.file_uploader("엑셀 파일 끌어다 놓기", type=['xlsx'], label_visibility="collapsed")
+            
+            if uploaded_excel:
+                try:
+                    # 엑셀 읽기
+                    df = pd.read_excel(uploaded_excel, engine='openpyxl')
+                    st.session_state.master_df = df
+                    st.success(f"✅ '{uploaded_excel.name}' 파일을 성공적으로 읽었습니다!")
+                    
+                    # [중요] 엑셀만 보고는 남/북 모드를 알 수 없으므로, 사용자에게 물어보기 위해 이동
+                    if st.button("이 데이터로 작업 시작하기 (모드 선택으로 이동)", use_container_width=True):
+                        st.session_state.step = 0.8 # 언어 선택 단계로 이동
+                        st.rerun()
+                except Exception as e:
+                    st.error(f"파일을 읽는 중 오류가 발생했습니다: {str(e)}")
+            
+            # [기능 2] (선택사항) 클라우드 목록에서 선택하기 
+            # (지금은 백업이 1개라 큰 의미 없지만, 나중에 확장 가능)
+            if has_backup and not uploaded_excel:
+                st.markdown("<div style='text-align: center; color: #555; margin: 10px;'>또는</div>", unsafe_allow_html=True)
+                if st.button("☁️ 클라우드에 저장된 버전 불러오기", use_container_width=True):
+                     st.session_state.master_df = backup_df
+                     st.session_state.mode_key = meta_info.get('mode', 'SOUTH')
+                     st.session_state.step = 1.5
+                     st.rerun()
 
         st.markdown("---")
 
+        # ---------------------------------------------------------
         # [Section 3] 새 프로젝트 시작
+        # ---------------------------------------------------------
         st.markdown("#### ✨ 새로운 작업")
         if st.button("📄 새 프로젝트 시작하기 (초기화)", use_container_width=True):
             reset_input_buffer()
@@ -685,7 +707,7 @@ elif st.session_state.step == 0.5:
             st.rerun()
             
     with col_side:
-        st.markdown("<br>"*2, unsafe_allow_html=True) # 여백
+        st.markdown("<br>"*2, unsafe_allow_html=True) 
         with st.container(border=True):
             st.markdown(f"**👤 현재 프로필: {st.session_state.current_user}**")
             if st.button("🔒 로그아웃", use_container_width=True):
