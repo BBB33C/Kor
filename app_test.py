@@ -605,29 +605,77 @@ with st.sidebar:
         if st.button("🛠️ 관리자/디버깅 모드 켜기"): st.session_state.debug_mode = True; st.rerun()
 
 # =========================================================
-# [Step 0] 가족 프로필 선택 (넷플릭스 스타일)
+# [Step 0] 가족 프로필 선택 (2x2 그리드 + 엣지 라이팅 효과)
 # =========================================================
 if st.session_state.step == 0:
-    st.markdown("<h1 style='text-align: center; margin-bottom: 30px;'>👨‍👩‍👧‍👦 작업자를 선택해주세요</h1>", unsafe_allow_html=True)
+    # -----------------------------------------------------
+    # [스타일] 갤럭시 엣지 라이팅 효과 CSS 주입
+    # -----------------------------------------------------
+    st.markdown("""
+        <style>
+            /* 프로필 선택 화면의 버튼 스타일 지정 */
+            div.stButton > button {
+                width: 100%;
+                height: 140px;  /* 버튼을 카드처럼 큼직하게 */
+                background-color: #1e1e1e !important;
+                border: 2px solid #333 !important;
+                border-radius: 20px !important;
+                color: #ffffff !important;
+                font-size: 1.5rem !important;
+                font-weight: 700 !important;
+                transition: all 0.3s ease-in-out !important; /* 부드러운 애니메이션 */
+                position: relative;
+                overflow: hidden;
+            }
+
+            /* [핵심] 마우스 올렸을 때 (Hover) - 엣지 라이팅 효과 */
+            div.stButton > button:hover {
+                transform: translateY(-5px) scale(1.02); /* 살짝 떠오르며 커짐 */
+                border-color: transparent !important;
+                /* 갤럭시아이즈 핏: 청록색(Cyan)과 보라색(Purple)의 그라데이션 빛 */
+                box-shadow: 
+                    0 0 15px rgba(0, 255, 255, 0.6), 
+                    0 0 30px rgba(138, 43, 226, 0.4),
+                    inset 0 0 10px rgba(0, 255, 255, 0.1); 
+                color: #00ffff !important; /* 글자색도 네온으로 변경 */
+            }
+            
+            /* 이모지 크기 키우기 */
+            .profile-icon { font-size: 3rem; display: block; margin-bottom: 10px; }
+        </style>
+    """, unsafe_allow_html=True)
+
+    st.markdown("<h1 style='text-align: center; margin-bottom: 40px;'>👨‍👩‍👧‍👦 작업자를 선택해주세요</h1>", unsafe_allow_html=True)
     
-    # 4인 가족 프로필 버튼
-    c1, c2, c3, c4 = st.columns(4)
-    
-    def set_user(name, sheet, icon):
+    # 공통 함수: 선택 시 대시보드로 이동
+    def set_user(name, sheet):
         st.session_state.current_user = name
         st.session_state.user_sheet_name = sheet
-        st.session_state.step = 0.5 # 대시보드로 이동
+        st.session_state.step = 0.5
         st.rerun()
 
+    # -----------------------------------------------------
+    # [레이아웃] 2x2 그리드 배치 (아빠|엄마, 누나|동생)
+    # -----------------------------------------------------
+    
+    # 첫 번째 줄 (아빠 | 엄마)
+    c1, c2 = st.columns(2)
     with c1:
-        if st.button("👨\n\n아빠", use_container_width=True): set_user("아빠", "Backup_Dad", "👨")
+        if st.button("👨\n아빠", key="btn_dad", use_container_width=True): 
+            set_user("아빠", "Backup_Dad")
     with c2:
-        if st.button("👩\n\n엄마", use_container_width=True): set_user("엄마", "Backup_Mom", "👩")
-    with c3:
-        if st.button("👧\n\n누나", use_container_width=True): set_user("누나", "Backup_Sis", "👧")
-    with c4:
-        if st.button("👦\n\n동생", use_container_width=True): set_user("동생", "Backup_Bro", "👦")
+        if st.button("👩\n엄마", key="btn_mom", use_container_width=True): 
+            set_user("엄마", "Backup_Mom")
 
+    # 두 번째 줄 (누나 | 동생) -> 약간의 간격을 위해 container 사용 가능하지만 바로 붙여도 됨
+    c3, c4 = st.columns(2)
+    with c3:
+        if st.button("👧\n누나", key="btn_sis", use_container_width=True): 
+            set_user("누나", "Backup_Sis")
+    with c4:
+        if st.button("👦\n동생", key="btn_bro", use_container_width=True): 
+            set_user("동생", "Backup_Bro")
+            
 # =========================================================
 # [Step 0.5] 개인 대시보드 (3단 구조: 최근 / 파일불러오기 / 신규)
 # =========================================================
