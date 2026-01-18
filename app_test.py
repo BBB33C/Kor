@@ -1088,14 +1088,55 @@ elif st.session_state.step == 3:
                     st.rerun()
 
 # =========================================================
-# [Footer] 관리자 모드 버튼 (화면 맨 아래 우측 구석)
+# [Footer] 관리자 모드 버튼 (플로팅 버튼 스타일)
 # =========================================================
-st.markdown("<br><br><br>", unsafe_allow_html=True)
-_, c_footer = st.columns([9, 0.5])
-with c_footer:
-    if st.button("🛠️", key="admin_toggle", help="관리자/디버깅 모드 전환"):
-        st.session_state.debug_mode = not st.session_state.debug_mode
-        st.rerun()
 
+# 1. 버튼을 먼저 만듭니다. (위치는 상관없음, CSS로 옮길 것이므로)
+# help 속성은 CSS가 이 버튼을 찾기 위한 '이름표' 역할을 합니다.
+toggle_btn = st.button("🛠️", key="admin_toggle", help="관리자모드스위치")
+
+# 2. 버튼이 눌렸을 때의 동작
+if toggle_btn:
+    st.session_state.debug_mode = not st.session_state.debug_mode
+    st.rerun()
+
+# 3. [CSS 매직] 이 버튼을 화면 우측 하단으로 강제 이동시킵니다.
+st.markdown("""
+    <style>
+    /* '관리자모드스위치'라는 도움말(help)을 가진 버튼만 골라냅니다 */
+    button[title="관리자모드스위치"] {
+        position: fixed !important;
+        bottom: 20px !important;
+        right: 20px !important;
+        z-index: 9999 !important; /* 다른 요소보다 무조건 위에 */
+        
+        /* 예쁜 원형 디자인 적용 */
+        border-radius: 50% !important;
+        width: 50px !important;
+        height: 50px !important;
+        padding: 0 !important;
+        box-shadow: 0 4px 10px rgba(0,0,0,0.4) !important; /* 그림자 효과 */
+        background-color: #262730 !important;
+        border: 1px solid #444 !important;
+        font-size: 20px !important;
+        transition: transform 0.2s !important;
+    }
+    
+    /* 마우스 올렸을 때 살짝 커짐 */
+    button[title="관리자모드스위치"]:hover {
+        transform: scale(1.1) !important;
+        background-color: #333 !important;
+        border-color: #00ffff !important; /* 엣지 라이팅 느낌 */
+    }
+    </style>
+""", unsafe_allow_html=True)
+
+# 4. 관리자 모드 상태 알림 (화면 중앙 하단에 작게 표시)
 if st.session_state.debug_mode:
-    st.info("🐞 현재 '디버깅 모드'가 켜져 있습니다.")
+    st.markdown("""
+        <div style='position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); 
+                    background-color: rgba(255, 75, 75, 0.9); color: white; padding: 5px 15px; 
+                    border-radius: 20px; font-size: 0.8rem; z-index: 9998; pointer-events: none;'>
+            🐞 디버깅 모드 ON
+        </div>
+    """, unsafe_allow_html=True)
