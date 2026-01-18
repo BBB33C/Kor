@@ -734,6 +734,31 @@ elif st.session_state.step == 0.8:
             st.session_state.step = 1.5 # 바로 입력 방식 선택으로 점프
             st.rerun()
 
+# =========================================================
+# [Step 1.5] 입력 방식 선택 (PDF / 이미지 / 텍스트)
+# =========================================================
+elif st.session_state.step == 1.5:
+    c1, c2 = st.columns([8, 2])
+    with c1: st.header("📝 입력 방식 선택")
+    with c2: 
+        # 뒤로가기: 다시 언어 선택 화면으로
+        if st.button("⬅️ 뒤로가기", use_container_width=True): 
+            st.session_state.step = 0.8; st.rerun()
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        if st.button("📄\n\nPDF 문서 분석\n\n(쪽수 관리 지원)", use_container_width=True):
+            reset_input_buffer()
+            st.session_state.input_type = "PDF"; st.session_state.step = 2; st.rerun()
+    with c2:
+        if st.button("🖼️\n\n이미지 분석\n\n(단일 사진 전용)", use_container_width=True):
+            reset_input_buffer()
+            st.session_state.input_type = "IMAGE"; st.session_state.step = 2; st.rerun()
+    with c3:
+        if st.button("✍️\n\n텍스트 직접 입력\n\n(복사한 글 분석)", use_container_width=True):
+            reset_input_buffer()
+            st.session_state.input_type = "DIRECT"; st.session_state.step = 2; st.rerun()
+
 # STEP 2: 자료 입력
 elif st.session_state.step == 2:
     st.session_state.is_finished = False
