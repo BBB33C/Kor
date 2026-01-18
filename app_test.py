@@ -209,39 +209,47 @@ def send_data_with_retry(sheet_obj, data, is_multiple=False):
         except: time.sleep(1)
     return False
 
-# [수정] 데이터뿐만 아니라 '파일 정보'와 '언어 모드'도 함께 저장
+# [수정] 테스트 서버용 저장 함수 (시트 이름 뒤에 _TEST 강제 추가)
 def save_backup_to_cloud(mode_key, df):
     client = get_google_sheet_client()
     if not client or df is None or df.empty: return False
     
-    target_sheet = st.session_state.get('user_sheet_name', f"Backup_{'South' if mode_key == 'SOUTH' else 'North'}")
+    # 1. 원래 이름 가져오기 (예: Backup_Dad)
+    base_name = st.session_state.get('user_sheet_name', f"Backup_{'South' if mode_key == 'SOUTH' else 'North'}")
+    
+    # 2. [핵심] 테스트 서버용 이름으로 변경 (예: Backup_Dad_TEST)
+    target_sheet = f"{base_name}_TEST"
     
     try:
         sh = client.open(SHEET_NAME)
+        # 해당 시트가 없으면 생성, 있으면 열기
         try: ws = sh.worksheet(target_sheet)
         except: ws = sh.add_worksheet(title=target_sheet, rows=1000, cols=20)
         
         ws.clear()
         
-        # [핵심] 1행에 메타데이터(꼬리표) 저장: [언어모드, 파일명(임시), 저장일시]
-        # 파일명이 없으면 '제목_없음' 처리
-        current_file_name = "작업중인_문서" # 나중에 PDF 파일명 변수 연동 필요
+        # 메타데이터 준비 (파일명 등)
+        current_file_name = "작업중인_문서" # 추후 PDF 파일명 변수 연동 가능
         meta_info = ["METADATA", mode_key, current_file_name, datetime.now().strftime("%Y-%m-%d %H:%M:%S")]
         
-        # 1행: 메타데이터 / 2행부터: 데이터프레임
+        # 데이터 저장 (1행: 메타데이터, 2행: 헤더, 3행~: 데이터)
         all_values = [meta_info] + [df.fillna("").astype(str).columns.tolist()] + df.fillna("").astype(str).values.tolist()
         ws.update(all_values)
         return True
     except: return False
 
-# [수정] 메타데이터까지 읽어오는 로직
+# [수정] 테스트 서버용 불러오기 함수 (_TEST 시트만 조회)
 def load_backup_from_cloud():
     client = get_google_sheet_client()
     if not client or not st.session_state.user_sheet_name: return None, None
+    
+    # 1. [핵심] 읽을 때도 _TEST 붙은 시트만 찾음
+    target_sheet = f"{st.session_state.user_sheet_name}_TEST"
+    
     try:
         sh = client.open(SHEET_NAME)
-        ws = sh.worksheet(st.session_state.user_sheet_name)
-        data = ws.get_all_values() # 모든 데이터를 리스트로 가져옴
+        ws = sh.worksheet(target_sheet)
+        data = ws.get_all_values()
         
         if not data: return None, None
         
@@ -254,7 +262,7 @@ def load_backup_from_cloud():
                 "filename": data[0][2], 
                 "time": data[0][3]
             }
-            df_start_idx = 1 # 2번째 줄부터가 진짜 데이터
+            df_start_idx = 1 # 2번째 줄부터 데이터임
         
         # 데이터프레임 변환
         if len(data) > df_start_idx + 1:
@@ -262,7 +270,7 @@ def load_backup_from_cloud():
             rows = data[df_start_idx + 1:]
             return pd.DataFrame(rows, columns=headers), meta
             
-    except: pass
+    except: pass # 시트가 없거나 오류 나면 빈 값 반환
     return None, None
 
 # =========================================================
