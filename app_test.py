@@ -678,32 +678,27 @@ elif st.session_state.step == 0.5:
             # [기능 1] 파일 업로드 (Drag & Drop)
             uploaded_excel = st.file_uploader("엑셀 파일 끌어다 놓기", type=['xlsx'], label_visibility="collapsed")
             
-            # [수정 전 코드 위치를 찾아 아래 코드로 덮어쓰세요]
-
+            # [수정] 파일이 올라오면 -> 0.5초 뒤 언어 선택(0.8)으로 자동 이동
             if uploaded_excel:
                 try:
-                    # 엑셀 읽기
+                    # 1. 엑셀 읽기
                     df = pd.read_excel(uploaded_excel, engine='openpyxl')
                     st.session_state.master_df = df
-                    st.success(f"✅ '{uploaded_excel.name}' 파일을 성공적으로 읽었습니다!")
                     
-                    # ▼▼▼▼▼▼▼ [수정된 부분] ▼▼▼▼▼▼▼
-                    # 버튼 클릭 시: 0.8(언어선택) 건너뛰고 -> 1.5(입력방식)로 직행
-                    if st.button("🚀 이 데이터로 작업 계속하기 (입력 방식 선택)", use_container_width=True):
-                        # [안전장치] 만약 언어 모드가 선택 안 된 상태라면 기본값(남한말) 설정
-                        # (엑셀만 보고는 알 수 없으므로, 오류 방지용)
-                        if not st.session_state.mode_key:
-                            st.session_state.mode_key = "SOUTH" 
-                        
-                        st.session_state.step = 1.5 # 입력 방식 선택으로 점프!
-                        st.rerun()
-                    # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
-                        
+                    # 2. 알림 메시지
+                    st.toast(f"✅ '{uploaded_excel.name}' 파일 확인! 언어 선택 화면으로 이동합니다...", icon="🚀")
+                    
+                    # 3. 딜레이 (사용자 인식용)
+                    time.sleep(0.5)
+                    
+                    # 4. 언어 선택 단계(0.8)로 이동
+                    st.session_state.step = 0.8 
+                    st.rerun()
+                    
                 except Exception as e:
                     st.error(f"파일을 읽는 중 오류가 발생했습니다: {str(e)}")
             
-            # [기능 2] (선택사항) 클라우드 목록에서 선택하기 
-            # (지금은 백업이 1개라 큰 의미 없지만, 나중에 확장 가능)
+            # [기능 2] 클라우드 목록에서 선택하기 (보조 기능)
             if has_backup and not uploaded_excel:
                 st.markdown("<div style='text-align: center; color: #555; margin: 10px;'>또는</div>", unsafe_allow_html=True)
                 if st.button("☁️ 클라우드에 저장된 버전 불러오기", use_container_width=True):
@@ -712,6 +707,7 @@ elif st.session_state.step == 0.5:
                      st.session_state.step = 1.5
                      st.rerun()
 
+        # ▼▼▼ [여기!] 구분선이 있어야 디자인이 깔끔합니다 ▼▼▼
         st.markdown("---")
 
         # ---------------------------------------------------------
