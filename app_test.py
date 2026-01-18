@@ -87,68 +87,72 @@ def reset_input_buffer():
 # =========================================================
 # [1] 디자인: CSS 매직 (넷플릭스 스타일 통합팩)
 # =========================================================
+# =========================================================
+# [1] 디자인: CSS 매직 (강력한 덮어쓰기 버전)
+# =========================================================
 def load_global_style():
     st.markdown("""
         <style>
-            /* 1. 폰트 혁명: 'Pretendard' (애플/토스 스타일) 적용 */
+            /* 1. 폰트 강제 적용 (모든 요소인 *에 적용) */
             @import url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css");
             
-            html, body, [class*="css"] {
-                font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, system-ui, Roboto, sans-serif !important;
+            * {
+                font-family: 'Pretendard', sans-serif !important;
             }
 
-            /* 2. 배경 설정: 아주 깊은 다크 네이비 (고급스러움) */
-            .stApp {
+            /* 2. 배경 설정: 더 구체적인 주소(data-testid) 사용 */
+            [data-testid="stAppViewContainer"] {
                 background-color: #0e1117 !important;
+                background-image: linear-gradient(to bottom, #0e1117, #1a1c24); /* 살짝 그라데이션 추가 */
+            }
+            
+            [data-testid="stHeader"] {
+                background-color: rgba(0,0,0,0) !important; /* 상단 헤더 투명하게 */
+            }
+
+            /* 기본 텍스트 색상 하얗게 */
+            [data-testid="stMarkdownContainer"] p, h1, h2, h3, h4, h5, h6, li, span {
                 color: #ffffff !important;
             }
 
-            /* 3. [마이크로 인터랙션] 모든 버튼에 '쫀득한' 클릭 효과 적용 */
+            /* 3. [마이크로 인터랙션] 버튼 쫀득 효과 */
             div.stButton > button {
                 transition: transform 0.1s ease-in-out, box-shadow 0.2s !important;
+                border: 1px solid rgba(255,255,255,0.1) !important; /* 미세한 테두리 */
             }
             div.stButton > button:active {
-                transform: scale(0.96) !important; /* 클릭 시 살짝 작아짐 */
-                box-shadow: inset 0 3px 5px rgba(0,0,0,0.2) !important; /* 눌린 느낌 */
+                transform: scale(0.96) !important;
+                box-shadow: inset 0 3px 5px rgba(0,0,0,0.5) !important;
             }
 
-            /* 4. [타이틀] 움직이는 그라데이션 텍스트 (Aurora Effect) */
-            h1 {
+            /* 4. [오로라 타이틀] 클래스 지정 방식 (.aurora-text) */
+            .aurora-text {
                 background: linear-gradient(to right, #00c6ff, #0072ff, #9b59b6, #ff4b1f);
                 background-size: 300% 300%;
                 -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+                background-clip: text;
                 color: transparent;
-                animation: aurora-text 5s ease infinite; /* 5초마다 색이 흐름 */
-                font-weight: 800 !important;
-                letter-spacing: -1px;
+                animation: aurora-text 5s ease infinite;
+                font-weight: 800;
+                display: inline-block; /* 중요: 그라데이션 짤림 방지 */
             }
+            
             @keyframes aurora-text {
                 0% { background-position: 0% 50%; }
                 50% { background-position: 100% 50%; }
                 100% { background-position: 0% 50%; }
             }
 
-            /* 5. [입력창] 텍스트 에디터도 세련되게 */
+            /* 5. 입력창 스타일링 */
             .stTextArea textarea {
                 background-color: #1a1c24 !important;
-                border: 1px solid #333 !important;
-                border-radius: 10px !important;
-                color: #eee !important;
-                font-size: 16px !important;
-                line-height: 1.6 !important;
-            }
-            .stTextArea textarea:focus {
-                border-color: #0072ff !important; /* 포커스 시 파란빛 */
-                box-shadow: 0 0 10px rgba(0, 114, 255, 0.3) !important;
+                color: #ffffff !important;
+                border: 1px solid #444 !important;
             }
             
-            /* 6. 구분선(hr) 스타일링 */
-            hr {
-                border: 0;
-                height: 1px;
-                background-image: linear-gradient(to right, rgba(0, 0, 0, 0), rgba(255, 255, 255, 0.2), rgba(0, 0, 0, 0));
-                margin: 30px 0;
-            }
+            /* 6. 구분선 */
+            hr { border-color: #333 !important; opacity: 0.5; }
         </style>
     """, unsafe_allow_html=True)
 
@@ -688,8 +692,9 @@ if st.session_state.step == 0:
         </style>
     """, unsafe_allow_html=True)
 
-    st.markdown("<h1 style='text-align: center; margin-bottom: 40px;'>👨‍👩‍👧‍👦 작업자를 선택해주세요</h1>", unsafe_allow_html=True)
-    
+    # class='aurora-text'를 추가해서 CSS와 연결합니다.
+        st.markdown("<h1 style='text-align: center; margin-bottom: 40px;'><span class='aurora-text'>👨‍👩‍👧‍👦 작업자를 선택해주세요</span></h1>", unsafe_allow_html=True)
+        
     def set_user(name, sheet):
         st.session_state.current_user = name
         st.session_state.user_sheet_name = sheet
