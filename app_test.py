@@ -85,73 +85,75 @@ def reset_input_buffer():
     st.session_state.split_mode = False
 
 # =========================================================
-# [1] 디자인: CSS 매직
+# [1] 디자인: CSS 매직 (넷플릭스 스타일 통합팩)
 # =========================================================
-if st.session_state.step in [0, 1.5]:
+def load_global_style():
     st.markdown("""
         <style>
-            .stApp { background-color: #0e1117 !important; color: #ffffff !important; }
-            div.block-container div[data-testid="column"] div.stButton > button {
-                width: 100%; height: 280px;
-                background-image: none !important;
-                background-color: #262730 !important;
-                border: 2px solid rgba(255,255,255,0.1) !important;
-                border-radius: 20px !important;
-                color: #eeeeee !important;
-                font-size: 1.4rem !important; font-weight: 700 !important;
-                transition: all 0.3s ease !important;
-                box-shadow: 0 4px 15px rgba(0,0,0,0.4) !important;
-                white-space: pre-wrap !important;
+            /* 1. 폰트 혁명: 'Pretendard' (애플/토스 스타일) 적용 */
+            @import url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css");
+            
+            html, body, [class*="css"] {
+                font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, system-ui, Roboto, sans-serif !important;
             }
-            div.block-container div[data-testid="column"] div.stButton > button:hover {
-                transform: translateY(-10px);
-                background-color: #2b2c36 !important;
-                border-color: #2979ff !important;
+
+            /* 2. 배경 설정: 아주 깊은 다크 네이비 (고급스러움) */
+            .stApp {
+                background-color: #0e1117 !important;
+                color: #ffffff !important;
             }
-        </style>
-    """, unsafe_allow_html=True)
-elif st.session_state.step == 1:
-    st.markdown("""
-        <style>
-            .stApp { background-color: #0e1117 !important; color: #ffffff !important; }
-            div[data-testid="stVerticalBlockBorderWrapper"] {
-                height: 350px !important;
-                display: flex !important; 
-                flex-direction: column !important; 
-                justify-content: center !important;
-            }
+
+            /* 3. [마이크로 인터랙션] 모든 버튼에 '쫀득한' 클릭 효과 적용 */
             div.stButton > button {
-                width: 100%;
-                background-image: none !important;
-                background-color: #262730 !important;
-                border: 2px solid rgba(255,255,255,0.1) !important;
-                color: white !important;
-                border-radius: 10px;
-                height: 60px; font-size: 1.2rem; font-weight: bold;
-                box-shadow: none !important;
+                transition: transform 0.1s ease-in-out, box-shadow 0.2s !important;
             }
-            div.stButton > button:hover {
-                background-color: #2b2c36 !important;
-                border-color: #2979ff !important;
-                transform: translateY(-2px);
+            div.stButton > button:active {
+                transform: scale(0.96) !important; /* 클릭 시 살짝 작아짐 */
+                box-shadow: inset 0 3px 5px rgba(0,0,0,0.2) !important; /* 눌린 느낌 */
+            }
+
+            /* 4. [타이틀] 움직이는 그라데이션 텍스트 (Aurora Effect) */
+            h1 {
+                background: linear-gradient(to right, #00c6ff, #0072ff, #9b59b6, #ff4b1f);
+                background-size: 300% 300%;
+                -webkit-background-clip: text;
+                color: transparent;
+                animation: aurora-text 5s ease infinite; /* 5초마다 색이 흐름 */
+                font-weight: 800 !important;
+                letter-spacing: -1px;
+            }
+            @keyframes aurora-text {
+                0% { background-position: 0% 50%; }
+                50% { background-position: 100% 50%; }
+                100% { background-position: 0% 50%; }
+            }
+
+            /* 5. [입력창] 텍스트 에디터도 세련되게 */
+            .stTextArea textarea {
+                background-color: #1a1c24 !important;
+                border: 1px solid #333 !important;
+                border-radius: 10px !important;
+                color: #eee !important;
+                font-size: 16px !important;
+                line-height: 1.6 !important;
+            }
+            .stTextArea textarea:focus {
+                border-color: #0072ff !important; /* 포커스 시 파란빛 */
+                box-shadow: 0 0 10px rgba(0, 114, 255, 0.3) !important;
+            }
+            
+            /* 6. 구분선(hr) 스타일링 */
+            hr {
+                border: 0;
+                height: 1px;
+                background-image: linear-gradient(to right, rgba(0, 0, 0, 0), rgba(255, 255, 255, 0.2), rgba(0, 0, 0, 0));
+                margin: 30px 0;
             }
         </style>
     """, unsafe_allow_html=True)
-else:
-    st.markdown("""
-        <style>
-            .stApp { background-color: #0e1117 !important; color: #ffffff !important; }
-            .stTextArea textarea { font-family: 'Malgun Gothic', sans-serif !important; font-size: 16px !important; line-height: 1.6 !important; }
-            .stButton button { border-radius: 8px; font-weight: bold; height: auto; }
-            .control-card { background-color: #1e2129; padding: 20px; border-radius: 15px; border: 1px solid #3d4251; margin-bottom: 20px; }
-            .status-badge { background-color: #2979ff; padding: 4px 12px; border-radius: 20px; font-size: 0.9rem; font-weight: 600; color: white !important; }
-            .info-card { background-color: rgba(41, 121, 255, 0.1); border-left: 5px solid #2979ff; padding: 15px; border-radius: 5px; margin-top: 15px; }
-            .debug-box { background-color: #222; color: #00ff00; font-family: monospace; padding: 15px; border-radius: 5px; font-size: 0.85rem; overflow-x: auto; border: 1px solid #444; margin-top: 10px; white-space: pre-wrap; word-break: break-all; }
-            .section-divider { border-bottom: 2px solid #3d4251; margin: 25px 0; }
-            .guide-text { color: #888888; font-size: 0.85rem; font-weight: normal; margin-left: 10px; }
-            [data-testid="stImage"] { margin-bottom: -15px !important; }
-        </style>
-    """, unsafe_allow_html=True)
+
+# CSS 로드 실행
+load_global_style()
 
 # =========================================================
 # [2] 구글 시트 및 API 엔진
