@@ -605,49 +605,89 @@ with st.sidebar:
         if st.button("🛠️ 관리자/디버깅 모드 켜기"): st.session_state.debug_mode = True; st.rerun()
 
 # =========================================================
-# [Step 0] 가족 프로필 선택 (2x2 그리드 + 엣지 라이팅 효과)
+# [Step 0] 가족 프로필 선택 (2x2 그리드 + 360도 회전 엣지 효과)
 # =========================================================
 if st.session_state.step == 0:
     # -----------------------------------------------------
-    # [스타일] 갤럭시 엣지 라이팅 효과 CSS 주입
+    # [CSS 매직] 회전하는 빛무리 효과 (Moving Border)
     # -----------------------------------------------------
     st.markdown("""
         <style>
-            /* 프로필 선택 화면의 버튼 스타일 지정 */
-            div.stButton > button {
-                width: 100%;
-                height: 140px;  /* 버튼을 카드처럼 큼직하게 */
-                background-color: #1e1e1e !important;
-                border: 2px solid #333 !important;
-                border-radius: 20px !important;
-                color: #ffffff !important;
-                font-size: 1.5rem !important;
-                font-weight: 700 !important;
-                transition: all 0.3s ease-in-out !important; /* 부드러운 애니메이션 */
-                position: relative;
-                overflow: hidden;
+            /* 1. 회전 애니메이션 정의 (360도 뺑글뺑글) */
+            @keyframes rotate-border {
+                0% { transform: translate(-50%, -50%) rotate(0deg); }
+                100% { transform: translate(-50%, -50%) rotate(360deg); }
             }
 
-            /* [핵심] 마우스 올렸을 때 (Hover) - 엣지 라이팅 효과 */
+            /* 2. 버튼 기본 껍데기 설정 */
+            div.stButton > button {
+                position: relative;
+                width: 100%;
+                height: 150px;       /* 큼직하게 */
+                background: transparent !important; /* 배경 투명 (뒤에 빛이 보이게) */
+                border: none !important; /* 기본 테두리 삭제 */
+                color: white !important;
+                font-size: 1.6rem !important;
+                font-weight: 800 !important;
+                border-radius: 20px !important;
+                overflow: hidden;    /* 튀어나온 빛 자르기 */
+                transition: transform 0.3s ease;
+                z-index: 1;
+            }
+
+            /* 3. [핵심] 뒤에서 회전하는 거대한 빛 (::before) */
+            div.stButton > button::before {
+                content: "";
+                position: absolute;
+                top: 50%; left: 50%;
+                width: 250%; height: 250%; /* 버튼보다 훨씬 크게 */
+                
+                /* 빛의 꼬리 만들기 (투명 -> 투명 -> Cyan -> Purple) */
+                background: conic-gradient(
+                    transparent, 
+                    transparent, 
+                    transparent, 
+                    transparent,
+                    #00ffff,  /* 사이안(청록) */
+                    #8a2be2,  /* 보라 */
+                    #00ffff   /* 한바퀴 연결 */
+                );
+                
+                transform: translate(-50%, -50%);
+                z-index: -2; /* 맨 뒤로 */
+                opacity: 0;  /* 평소엔 안 보임 */
+                transition: opacity 0.3s;
+            }
+
+            /* 4. [핵심] 가운데를 가리는 검은 덮개 (::after) */
+            div.stButton > button::after {
+                content: "";
+                position: absolute;
+                inset: 4px; /* 테두리 두께 (4px 만큼 남기고 덮음) */
+                background: #1e1e1e; /* 버튼 원래 색상 */
+                border-radius: 16px; /* 부모보다 살짝 작게 */
+                z-index: -1; /* 빛보다는 위, 글자보다는 아래 */
+            }
+
+            /* 5. 마우스 올렸을 때 동작 (Hover) */
             div.stButton > button:hover {
-                transform: translateY(-5px) scale(1.02); /* 살짝 떠오르며 커짐 */
-                border-color: transparent !important;
-                /* 갤럭시아이즈 핏: 청록색(Cyan)과 보라색(Purple)의 그라데이션 빛 */
-                box-shadow: 
-                    0 0 15px rgba(0, 255, 255, 0.6), 
-                    0 0 30px rgba(138, 43, 226, 0.4),
-                    inset 0 0 10px rgba(0, 255, 255, 0.1); 
-                color: #00ffff !important; /* 글자색도 네온으로 변경 */
+                transform: scale(1.03);      /* 버튼 살짝 커짐 */
+                color: #00ffff !important;   /* 글자색도 형광으로 */
             }
             
-            /* 이모지 크기 키우기 */
-            .profile-icon { font-size: 3rem; display: block; margin-bottom: 10px; }
+            /* 마우스 올리면 빛이 켜지고 회전 시작 */
+            div.stButton > button:hover::before {
+                opacity: 1; 
+                animation: rotate-border 2.5s linear infinite; /* 2.5초에 한 바퀴 */
+            }
+
+            /* 이모지 스타일 */
+            .profile-icon { font-size: 3rem; margin-bottom: 10px; }
         </style>
     """, unsafe_allow_html=True)
 
     st.markdown("<h1 style='text-align: center; margin-bottom: 40px;'>👨‍👩‍👧‍👦 작업자를 선택해주세요</h1>", unsafe_allow_html=True)
     
-    # 공통 함수: 선택 시 대시보드로 이동
     def set_user(name, sheet):
         st.session_state.current_user = name
         st.session_state.user_sheet_name = sheet
@@ -655,27 +695,20 @@ if st.session_state.step == 0:
         st.rerun()
 
     # -----------------------------------------------------
-    # [레이아웃] 2x2 그리드 배치 (아빠|엄마, 누나|동생)
+    # [레이아웃] 2x2 그리드
     # -----------------------------------------------------
-    
-    # 첫 번째 줄 (아빠 | 엄마)
     c1, c2 = st.columns(2)
     with c1:
-        if st.button("👨\n아빠", key="btn_dad", use_container_width=True): 
-            set_user("아빠", "Backup_Dad")
+        if st.button("👨\n아빠", key="btn_dad", use_container_width=True): set_user("아빠", "Backup_Dad")
     with c2:
-        if st.button("👩\n엄마", key="btn_mom", use_container_width=True): 
-            set_user("엄마", "Backup_Mom")
+        if st.button("👩\n엄마", key="btn_mom", use_container_width=True): set_user("엄마", "Backup_Mom")
 
-    # 두 번째 줄 (누나 | 동생) -> 약간의 간격을 위해 container 사용 가능하지만 바로 붙여도 됨
     c3, c4 = st.columns(2)
     with c3:
-        if st.button("👧\n누나", key="btn_sis", use_container_width=True): 
-            set_user("누나", "Backup_Sis")
+        if st.button("👧\n누나", key="btn_sis", use_container_width=True): set_user("누나", "Backup_Sis")
     with c4:
-        if st.button("👦\n동생", key="btn_bro", use_container_width=True): 
-            set_user("동생", "Backup_Bro")
-            
+        if st.button("👦\n동생", key="btn_bro", use_container_width=True): set_user("동생", "Backup_Bro")
+
 # =========================================================
 # [Step 0.5] 개인 대시보드 (3단 구조: 최근 / 파일불러오기 / 신규)
 # =========================================================
