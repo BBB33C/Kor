@@ -463,6 +463,52 @@ def generate_prompt_from_sheet(sheet_data):
             
     return "\n[사용자 교정 데이터 (최우선 준수)]:\n" + "\n".join(rules) + "\n"
 
+    # ▼▼▼ [누락된 함수 추가] AI 결과를 DB 규칙대로 강제 교정하는 함수 ▼▼▼
+def apply_strict_rules(analysis_result, mode_key):
+    # 1. 시트에서 저장된 규칙을 가져옵니다.
+    db_rules = fetch_all_rules_from_db(mode_key)
+    if not db_rules: return analysis_result
+
+    # 2. 검색 속도를 위해 족보(Dictionary) 생성
+    rule_map = {}
+    for row in db_rules:
+        root = str(row.get('root_word', '')).strip()
+        if root:
+            rule_map[root] = {
+                'origin': row.get('origin', ''),
+                'pos': row.get('pos', ''),
+                'action': row.get('action', '')
+            }
+
+    # 3. 하나씩 검사하며 교체
+    final_result = []
+    origin_map = {'고':'🔵 고', '한':'🟢 한', '외':'🔴 외', '혼':'🟣 혼'}
+    pos_map = {'명사':'📦 명사', '동사':'🏃 동사', '형용사':'🎨 형용사', '부사':'⚡ 부사', '관형사':'🔍 관형사', '대명사':'👤 대명사', '감탄사':'❗ 감탄사'}
+
+    for item in analysis_result:
+        root = item.get('원형', '').strip()
+        
+        # 족보에 있는 단어라면?
+        if root in rule_map:
+            rule = rule_map[root]
+            
+            # '삭제' 규칙이면 결과에서 뺌
+            if rule['action'] == 'delete':
+                continue 
+            
+            # '수정' 규칙이면 DB 내용으로 덮어씌움
+            if rule['origin']: 
+                db_val = rule['origin'].replace("🔵 ", "").replace("🟢 ", "").replace("🔴 ", "").replace("🟣 ", "").strip()
+                item['분류'] = origin_map.get(db_val, db_val)
+                
+            if rule['pos']:
+                db_val = rule['pos'].replace("📦 ", "").replace("🏃 ", "").replace("🎨 ", "").replace("⚡ ", "").replace("🔍 ", "").replace("👤 ", "").replace("❗ ", "").strip()
+                item['품사'] = pos_map.get(db_val, db_val)
+        
+        final_result.append(item)
+        
+    return final_result
+
 # [수정] 분석 실행 함수 (에러 원인 정밀 포착 버전)
 def run_analysis_action(txt, img_bytes=None):
     if not txt.strip(): st.warning("내용이 없습니다."); return
