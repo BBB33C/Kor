@@ -326,64 +326,58 @@ def process_image_for_api(image_bytes):
     except Exception as e: return None
 
 # [수정] Pro 모델을 우선 쓰되, 막히면 Flash로 자동 전환하는 함수
+# [최종] 유료 사용자용 Pro 전용 코드 (속도 제한 걱정 없음)
 def api_call_direct(prompt, image_bytes=None):
     if not API_KEY: return None, "API Key Missing"
     
-    # 1순위: 가장 똑똑한 Pro 모델
-    primary_model = "gemini-1.5-pro"
-    # 2순위: 횟수 제한 없는 Flash 모델 (비상용)
-    fallback_model = "gemini-1.5-flash"
+    # 1. 모델명: 가장 똑똑하고 안정적인 최신 정식 버전
+    # (이 이름은 실험용이 아니라서 404 오류가 절대 안 뜹니다)
+    target_model = "gemini-1.5-pro"
     
-    # 공통 헤더 및 안전 설정
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{target_model}:generateContent?key={API_KEY.strip()}"
     headers = {'Content-Type': 'application/json'}
-    safety_settings = [
-        {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-        {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-        {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-        {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
-    ]
-
-    # 데이터 구성 (이미지 포함 여부)
+    
+    # 데이터 구성
     parts = [{"text": prompt}]
     if image_bytes:
         optimized_img = process_image_for_api(image_bytes)
         if optimized_img:
             b64_img = base64.b64encode(optimized_img).decode('utf-8')
             parts.append({"inline_data": {"mime_type": "image/png", "data": b64_img}})
-    
+
+    # 2. 안전 필터 해제 (필수)
+    # 이걸 안 하면 AI가 "이 문장은 좀..." 하면서 뜬금없이 빈 응답(None)을 줄 수 있습니다.
+    safety_settings = [
+        {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
+    ]
+            
     payload = {
         "contents": [{"parts": parts}],
         "safetySettings": safety_settings
     }
-
-    # --- [1단계] Pro 모델로 시도 ---
-    url_pro = f"https://generativelanguage.googleapis.com/v1beta/models/{primary_model}:generateContent?key={API_KEY.strip()}"
-    try:
-        res = requests.post(url_pro, headers=headers, json=payload, timeout=300)
-        if res.status_code == 200:
-            return res.json()['candidates'][0]['content']['parts'][0]['text'], "Success (Pro)"
-        elif res.status_code == 429:
-            # 429 에러 = 횟수 초과 -> 플랜 B로 넘어감
-            print("⚠️ Pro 모델 횟수 초과! Flash 모델로 전환합니다.")
-            pass # 아래 플랜 B 로직으로 이동
-        else:
-            return None, f"Error (Pro): {res.status_code} - {res.text}"
-    except Exception as e:
-        print(f"⚠️ Pro 모델 연결 실패: {e}")
-        pass # 에러 나면 일단 플랜 B 시도
-
-    # --- [2단계] Flash 모델로 전환 (플랜 B) ---
-    url_flash = f"https://generativelanguage.googleapis.com/v1beta/models/{fallback_model}:generateContent?key={API_KEY.strip()}"
-    try:
-        # 잠시 대기 (서버 진정 시간)
-        time.sleep(1)
-        res = requests.post(url_flash, headers=headers, json=payload, timeout=300)
-        if res.status_code == 200:
-            return res.json()['candidates'][0]['content']['parts'][0]['text'], "Success (Flash - Backup)"
-        else:
-            return None, f"Error (Flash): {res.status_code} - {res.text}"
-    except Exception as e:
-        return None, f"Final Error: {str(e)}"
+    
+    # 3. 단순 호출 (재시도 로직만 포함)
+    for attempt in range(3):
+        try:
+            res = requests.post(url, headers=headers, json=payload, timeout=300)
+            
+            if res.status_code == 200:
+                return res.json()['candidates'][0]['content']['parts'][0]['text'], "Success"
+            
+            # 혹시라도 서버가 바빠서 에러나면 2초 쉬고 재시도
+            elif res.status_code in [429, 500, 503]:
+                time.sleep(2)
+                continue
+                
+            else:
+                return None, f"Error: {res.status_code} - {res.text}"
+        except Exception as e:
+            time.sleep(1)
+            
+    return None, "Error: 3회 재시도 실패 (서버 응답 없음)"
 
 def extract_text_unified(file_bytes, file_type, page_idx):
     if not file_type: return ""
