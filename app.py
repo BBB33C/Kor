@@ -325,57 +325,65 @@ def process_image_for_api(image_bytes):
         return output.getvalue()
     except Exception as e: return None
 
-# [수정] API 호출 함수 (안전 필터 완전 해제 버전)
+# [수정] Pro 모델을 우선 쓰되, 막히면 Flash로 자동 전환하는 함수
 def api_call_direct(prompt, image_bytes=None):
     if not API_KEY: return None, "API Key Missing"
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={API_KEY.strip()}"
-    headers = {'Content-Type': 'application/json'}
-    parts = [{"text": prompt}]
     
-    # 이미지 처리
-    if image_bytes:
-        optimized_img = process_image_for_api(image_bytes)
-        if optimized_img:
-            b64_img = base64.b64encode(optimized_img).decode('utf-8')
-            parts.append({"inline_data": {"mime_type": "image/png", "data": b64_img}})
-
-    # ▼▼▼ [핵심] 안전 설정 (Safety Settings) 추가: 모든 필터 'BLOCK_NONE' ▼▼▼
-    # 이 설정이 없으면 조금만 의심스러운 단어가 나와도 AI가 대답을 거부합니다.
+    # 1순위: 가장 똑똑한 Pro 모델
+    primary_model = "gemini-1.5-pro"
+    # 2순위: 횟수 제한 없는 Flash 모델 (비상용)
+    fallback_model = "gemini-1.5-flash"
+    
+    # 공통 헤더 및 안전 설정
+    headers = {'Content-Type': 'application/json'}
     safety_settings = [
         {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
         {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
         {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
         {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
     ]
-            
+
+    # 데이터 구성 (이미지 포함 여부)
+    parts = [{"text": prompt}]
+    if image_bytes:
+        optimized_img = process_image_for_api(image_bytes)
+        if optimized_img:
+            b64_img = base64.b64encode(optimized_img).decode('utf-8')
+            parts.append({"inline_data": {"mime_type": "image/png", "data": b64_img}})
+    
+    payload = {
+        "contents": [{"parts": parts}],
+        "safetySettings": safety_settings
+    }
+
+    # --- [1단계] Pro 모델로 시도 ---
+    url_pro = f"https://generativelanguage.googleapis.com/v1beta/models/{primary_model}:generateContent?key={API_KEY.strip()}"
     try:
-        # 요청 본문(Payload)에 safetySettings를 같이 포장해서 보냅니다.
-        payload = {
-            "contents": [{"parts": parts}],
-            "safetySettings": safety_settings
-        }
-        
-        # 3번 재시도 로직 (일시적 오류 방지)
-        for attempt in range(3):
-            try:
-                res = requests.post(url, headers=headers, json=payload, timeout=300)
-                
-                if res.status_code == 200:
-                    # 정상 응답
-                    return res.json()['candidates'][0]['content']['parts'][0]['text'], "Success"
-                else:
-                    # 429(너무 많이 요청함)나 500(서버 오류)일 때는 잠시 쉬었다가 재시도
-                    if res.status_code in [429, 500, 503]:
-                        time.sleep(2)
-                        continue
-                    # 그 외 오류(400 등)는 즉시 반환 (여기서 필터링 걸리면 finishReason을 볼 수 있음)
-                    return None, f"Error: {res.status_code} - {res.text}"
-            except:
-                time.sleep(1)
-        
-        return None, "Error: 3회 재시도 실패 (응답 없음)"
-        
-    except Exception as e: return None, str(e)
+        res = requests.post(url_pro, headers=headers, json=payload, timeout=300)
+        if res.status_code == 200:
+            return res.json()['candidates'][0]['content']['parts'][0]['text'], "Success (Pro)"
+        elif res.status_code == 429:
+            # 429 에러 = 횟수 초과 -> 플랜 B로 넘어감
+            print("⚠️ Pro 모델 횟수 초과! Flash 모델로 전환합니다.")
+            pass # 아래 플랜 B 로직으로 이동
+        else:
+            return None, f"Error (Pro): {res.status_code} - {res.text}"
+    except Exception as e:
+        print(f"⚠️ Pro 모델 연결 실패: {e}")
+        pass # 에러 나면 일단 플랜 B 시도
+
+    # --- [2단계] Flash 모델로 전환 (플랜 B) ---
+    url_flash = f"https://generativelanguage.googleapis.com/v1beta/models/{fallback_model}:generateContent?key={API_KEY.strip()}"
+    try:
+        # 잠시 대기 (서버 진정 시간)
+        time.sleep(1)
+        res = requests.post(url_flash, headers=headers, json=payload, timeout=300)
+        if res.status_code == 200:
+            return res.json()['candidates'][0]['content']['parts'][0]['text'], "Success (Flash - Backup)"
+        else:
+            return None, f"Error (Flash): {res.status_code} - {res.text}"
+    except Exception as e:
+        return None, f"Final Error: {str(e)}"
 
 def extract_text_unified(file_bytes, file_type, page_idx):
     if not file_type: return ""
