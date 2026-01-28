@@ -325,23 +325,56 @@ def process_image_for_api(image_bytes):
         return output.getvalue()
     except Exception as e: return None
 
+# [수정] API 호출 함수 (안전 필터 완전 해제 버전)
 def api_call_direct(prompt, image_bytes=None):
     if not API_KEY: return None, "API Key Missing"
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={API_KEY.strip()}"
     headers = {'Content-Type': 'application/json'}
     parts = [{"text": prompt}]
     
+    # 이미지 처리
     if image_bytes:
         optimized_img = process_image_for_api(image_bytes)
         if optimized_img:
             b64_img = base64.b64encode(optimized_img).decode('utf-8')
             parts.append({"inline_data": {"mime_type": "image/png", "data": b64_img}})
+
+    # ▼▼▼ [핵심] 안전 설정 (Safety Settings) 추가: 모든 필터 'BLOCK_NONE' ▼▼▼
+    # 이 설정이 없으면 조금만 의심스러운 단어가 나와도 AI가 대답을 거부합니다.
+    safety_settings = [
+        {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
+    ]
             
     try:
-        res = requests.post(url, headers=headers, json={"contents": [{"parts": parts}]}, timeout=300)
-        if res.status_code == 200: 
-            return res.json()['candidates'][0]['content']['parts'][0]['text'], "Success"
-        return None, f"Error: {res.status_code} - {res.text}"
+        # 요청 본문(Payload)에 safetySettings를 같이 포장해서 보냅니다.
+        payload = {
+            "contents": [{"parts": parts}],
+            "safetySettings": safety_settings
+        }
+        
+        # 3번 재시도 로직 (일시적 오류 방지)
+        for attempt in range(3):
+            try:
+                res = requests.post(url, headers=headers, json=payload, timeout=300)
+                
+                if res.status_code == 200:
+                    # 정상 응답
+                    return res.json()['candidates'][0]['content']['parts'][0]['text'], "Success"
+                else:
+                    # 429(너무 많이 요청함)나 500(서버 오류)일 때는 잠시 쉬었다가 재시도
+                    if res.status_code in [429, 500, 503]:
+                        time.sleep(2)
+                        continue
+                    # 그 외 오류(400 등)는 즉시 반환 (여기서 필터링 걸리면 finishReason을 볼 수 있음)
+                    return None, f"Error: {res.status_code} - {res.text}"
+            except:
+                time.sleep(1)
+        
+        return None, "Error: 3회 재시도 실패 (응답 없음)"
+        
     except Exception as e: return None, str(e)
 
 def extract_text_unified(file_bytes, file_type, page_idx):
