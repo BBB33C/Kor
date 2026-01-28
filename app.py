@@ -738,6 +738,23 @@ elif st.session_state.step == 2:
     elif st.session_state.input_type == "DIRECT":
         st.session_state.extracted_text = st.text_area("분석할 텍스트를 입력하세요", value=st.session_state.extracted_text, height=450)
         if st.button("🚀 분석 실행", type="primary", use_container_width=True): run_analysis_action(st.session_state.extracted_text, None)
+        # 에러가 났을 때 입력 화면(Step 2)에서도 로그를 보여주는 코드
+        
+if st.session_state.debug_mode:
+        st.markdown("---")
+        st.markdown("### 🐞 디버그 로그 (관리자용 - 입력 화면)")
+        
+        # 1. 파이썬 내부 에러 로그
+        if st.session_state.debug_log:
+            st.error("💥 상세 에러 내용:")
+            st.code(st.session_state.debug_log, language="text")
+        else:
+            st.info("기록된 에러 로그가 없습니다.")
+            
+        # 2. 구글 AI가 보낸 원본 메시지 (이걸 봐야 거절 사유를 알 수 있음)
+        if st.session_state.last_raw_response:
+            st.warning("🤖 AI가 보낸 원본 응답 (Raw Response):")
+            st.code(st.session_state.last_raw_response, language="json")
 
 # STEP 3: 결과 확인
 elif st.session_state.step == 3:
