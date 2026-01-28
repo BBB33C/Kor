@@ -149,7 +149,7 @@ try:
     else: API_KEY = ""
 except: API_KEY = ""
 
-MODEL_NAME = "gemini-2.0-flash-exp"
+MODEL_NAME = "gemini-2.5-pro"
 SHEET_NAME = "Korean_DB"
 
 @st.cache_resource
@@ -325,19 +325,19 @@ def process_image_for_api(image_bytes):
         return output.getvalue()
     except Exception as e: return None
 
-# [수정] Pro 모델을 우선 쓰되, 막히면 Flash로 자동 전환하는 함수
-# [최종] 유료 사용자용 Pro 전용 코드 (속도 제한 걱정 없음)
+# [최종 수정] 전역 변수(MODEL_NAME)를 따르는 깔끔한 코드
 def api_call_direct(prompt, image_bytes=None):
     if not API_KEY: return None, "API Key Missing"
     
-    # 1. 모델명: 가장 똑똑하고 안정적인 최신 정식 버전
-    # (이 이름은 실험용이 아니라서 404 오류가 절대 안 뜹니다)
-    target_model = "gemini-1.5-pro"
+    # ❌ [삭제] 함수 안에서 또 정하지 마세요 (하극상 금지!)
+    # target_model = "gemini-1.5-pro"  <-- 이 줄 지우기
     
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{target_model}:generateContent?key={API_KEY.strip()}"
+    # ✅ [변경] 맨 위에서 정한 MODEL_NAME을 그대로 사용합니다.
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={API_KEY.strip()}"
+    
     headers = {'Content-Type': 'application/json'}
     
-    # 데이터 구성
+    # (아래 내용은 그대로 유지...)
     parts = [{"text": prompt}]
     if image_bytes:
         optimized_img = process_image_for_api(image_bytes)
@@ -345,8 +345,7 @@ def api_call_direct(prompt, image_bytes=None):
             b64_img = base64.b64encode(optimized_img).decode('utf-8')
             parts.append({"inline_data": {"mime_type": "image/png", "data": b64_img}})
 
-    # 2. 안전 필터 해제 (필수)
-    # 이걸 안 하면 AI가 "이 문장은 좀..." 하면서 뜬금없이 빈 응답(None)을 줄 수 있습니다.
+    # 안전 필터 설정 (필수)
     safety_settings = [
         {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
         {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
@@ -359,25 +358,22 @@ def api_call_direct(prompt, image_bytes=None):
         "safetySettings": safety_settings
     }
     
-    # 3. 단순 호출 (재시도 로직만 포함)
+    # 재시도 로직
     for attempt in range(3):
         try:
             res = requests.post(url, headers=headers, json=payload, timeout=300)
             
             if res.status_code == 200:
                 return res.json()['candidates'][0]['content']['parts'][0]['text'], "Success"
-            
-            # 혹시라도 서버가 바빠서 에러나면 2초 쉬고 재시도
             elif res.status_code in [429, 500, 503]:
                 time.sleep(2)
                 continue
-                
             else:
                 return None, f"Error: {res.status_code} - {res.text}"
         except Exception as e:
             time.sleep(1)
             
-    return None, "Error: 3회 재시도 실패 (서버 응답 없음)"
+    return None, "Error: 3회 재시도 실패"
 
 def extract_text_unified(file_bytes, file_type, page_idx):
     if not file_type: return ""
@@ -582,6 +578,11 @@ with st.sidebar:
     else:
         st.markdown("<br>"*5, unsafe_allow_html=True)
         if st.button("🛠️ 관리자/디버깅 모드 켜기"): st.session_state.debug_mode = True; st.rerun()
+        # [추가] 내 계정에서 사용 가능한 모델 목록 확인하기
+    if st.button("📋 사용 가능한 모델 목록 보기"):
+        url = f"https://generativelanguage.googleapis.com/v1beta/models?key={API_KEY}"
+        r = requests.get(url); st.code(r.text) # 화면에 JSON으로 쫙 보여줍니다
+
 
 # STEP 0: 언어 규범 선택
 if st.session_state.step == 0:
