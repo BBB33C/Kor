@@ -325,19 +325,16 @@ def process_image_for_api(image_bytes):
         return output.getvalue()
     except Exception as e: return None
 
-# [최종 수정] 전역 변수(MODEL_NAME)를 따르는 깔끔한 코드
-def api_call_direct(prompt, image_bytes=None):
+# [수정 1] 모델 선택 기능이 추가된 호출 함수
+def api_call_direct(prompt, image_bytes=None, model_name=None):
     if not API_KEY: return None, "API Key Missing"
     
-    # ❌ [삭제] 함수 안에서 또 정하지 마세요 (하극상 금지!)
-    # target_model = "gemini-1.5-pro"  <-- 이 줄 지우기
+    # 모델 이름이 들어오면 그걸 쓰고(Flash), 없으면 기본값(Pro) 사용
+    target_model = model_name if model_name else MODEL_NAME
     
-    # ✅ [변경] 맨 위에서 정한 MODEL_NAME을 그대로 사용합니다.
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={API_KEY.strip()}"
-    
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{target_model}:generateContent?key={API_KEY.strip()}"
     headers = {'Content-Type': 'application/json'}
     
-    # (아래 내용은 그대로 유지...)
     parts = [{"text": prompt}]
     if image_bytes:
         optimized_img = process_image_for_api(image_bytes)
@@ -345,7 +342,6 @@ def api_call_direct(prompt, image_bytes=None):
             b64_img = base64.b64encode(optimized_img).decode('utf-8')
             parts.append({"inline_data": {"mime_type": "image/png", "data": b64_img}})
 
-    # 안전 필터 설정 (필수)
     safety_settings = [
         {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
         {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
@@ -358,34 +354,33 @@ def api_call_direct(prompt, image_bytes=None):
         "safetySettings": safety_settings
     }
     
-    # 재시도 로직
     for attempt in range(3):
         try:
             res = requests.post(url, headers=headers, json=payload, timeout=300)
-            
             if res.status_code == 200:
                 return res.json()['candidates'][0]['content']['parts'][0]['text'], "Success"
             elif res.status_code in [429, 500, 503]:
-                time.sleep(2)
-                continue
+                time.sleep(2); continue
             else:
                 return None, f"Error: {res.status_code} - {res.text}"
-        except Exception as e:
-            time.sleep(1)
+        except Exception as e: time.sleep(1)
             
     return None, "Error: 3회 재시도 실패"
 
+# [수정 2] 텍스트 추출(OCR)은 저렴한 Flash로 처리
 def extract_text_unified(file_bytes, file_type, page_idx):
     if not file_type: return ""
     raw_text = ""
     
+    # 💰 비용 절감의 핵심: 읽기는 싸고 빠른 2.5 Flash가 담당
+    ocr_model = "gemini-2.5-flash"
+    
     if "image" in file_type: 
-        raw_text, _ = api_call_direct("이 이미지 속의 텍스트를 모두 추출하세요. 줄바꿈 유지.", file_bytes)
+        raw_text, _ = api_call_direct("이 이미지 속의 텍스트를 모두 추출하세요. 줄바꿈 유지.", file_bytes, model_name=ocr_model)
     elif "pdf" in file_type:
         if FITZ_AVAILABLE:
             try:
                 doc = fitz.open(stream=file_bytes, filetype="pdf")
-                # [Update] 분할 모드일 때 페이지 수 처리
                 total = len(doc) * 2 if st.session_state.split_mode else len(doc)
                 st.session_state.total_pages = total
             except: pass
@@ -398,12 +393,11 @@ def extract_text_unified(file_bytes, file_type, page_idx):
             
         page_img = get_page_image(file_bytes, file_type, page_idx)
         if page_img:
-            raw_text, _ = api_call_direct("이 이미지 속의 텍스트를 모두 추출하세요. 줄바꿈 유지.", page_img)
+            raw_text, _ = api_call_direct("이 이미지 속의 텍스트를 모두 추출하세요. 줄바꿈 유지.", page_img, model_name=ocr_model)
         else:
             if PLUMBER_AVAILABLE:
                 try:
                     with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
-                        # Fallback: 분할 모드 미지원 (Vision이 메인)
                         target_idx = page_idx // 2 if st.session_state.split_mode else page_idx
                         if target_idx < len(pdf.pages): raw_text = pdf.pages[target_idx].extract_text()
                 except: pass
