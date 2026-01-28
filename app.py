@@ -465,48 +465,22 @@ def generate_prompt_from_sheet(sheet_data):
             
     return "\n[사용자 교정 데이터 (최우선 준수)]:\n" + "\n".join(rules) + "\n"
 
+# [수정] 분석 실행 함수 (에러 원인 정밀 포착 버전)
 def run_analysis_action(txt, img_bytes=None):
     if not txt.strip(): st.warning("내용이 없습니다."); return
     
     with st.spinner("AI가 국어학적 관점에서 정밀 분석 중입니다..."):
         s_data = fetch_all_rules_from_db(st.session_state.mode_key)
         
-        # [Update] 과잉 교정 방지 프롬프트 (Transcription First)
+        # 프롬프트 구성 (기존과 동일)
         prompt = f"""
         당신은 국어학 및 시맨틱 텍스트 분석 전문가입니다. 
-        
         [절대 규칙 - Transcription First]
         1. **'원본'**은 이미지나 텍스트에 있는 **'어절(Word Segment)'**을 토씨 하나 틀리지 말고 그대로 옮겨 적으십시오.
-        2. 오타, 띄어쓰기 오류, 활용된 어미, 조사 모두 **보이는 그대로** 적어야 합니다. 절대 임의로 수정하거나 기본형으로 바꾸지 마십시오.
+        2. 오타, 띄어쓰기 오류, 활용된 어미, 조사 모두 **보이는 그대로** 적어야 합니다.
         3. **'원형'**과 **'품사'**는 그 '원본'을 보고 언어학적으로 분석하여 채우십시오.
         
         {generate_prompt_from_sheet(s_data)}
-        
-        [예시 - 반드시 이 형식을 따를 것]
-        * 텍스트: "선생님께서 말씀하셨습니다."
-          -> {{ "원본": "말씀하셨습니다", "원형": "말씀하다", "품사": "동사", "분류": "고" }}
-        * 텍스트: "친구랑 학교에 갔다"
-          -> {{ "원본": "친구랑", "원형": "친구", "품사": "명사", "분류": "고" }}
-          -> {{ "원본": "갔다", "원형": "가다", "품사": "동사", "분류": "고" }}
-        * 텍스트: "시작합니다"
-          -> {{ "원본": "시작합니다", "원형": "시작하다", "품사": "동사", "분류": "한" }} (O)
-          -> {{ "원본": "시작하다", "원형": "시작하다", ... }} (X - 원본 변형 금지)
-
-        [1. 고유명사(Named Entity) 처리]
-        - **인명, 지명 등 고유명사**는 특별한 표시 없이 원형 그대로 출력하십시오.
-        - 품사는 반드시 **'명사'**로 통일하십시오.
-        
-        [2. 동음이의어(Homonym) 구분]
-        - 단어의 형태가 같으나 뜻이 다른 경우만 괄호로 구분. (예: 배(과일), 배(선박))
-        
-        [3. 용언(동사/형용사) 기본형]
-        - 반드시 어미 '다'를 붙일 것. (예: 했다 -> 하다, 예쁜 -> 예쁘다)
-        
-        [4. 제외 대상]
-        - 조사, 어미, 수사, 숫자, 특수기호.
-        - **의존 명사**: 것, 수, 데, 바, 만큼, 지, 등, 뿐, 따름 등 제외.
-        
-        [5. 어종] 고(순우리말), 한(한자어), 외(외래어), 혼(혼종어).
         
         [출력 양식: JSON 리스트]
         [
@@ -515,11 +489,20 @@ def run_analysis_action(txt, img_bytes=None):
         ]
         """
         
+        # API 호출
         raw, status = api_call_direct(prompt + f"\n\n[분석 대상]:\n{txt[:5000]}", img_bytes)
-        st.session_state.last_raw_response = raw
+        
+        # ▼▼▼ [핵심 수정] 에러가 났을 때 'status(이유)'를 로그에 기록함 ▼▼▼
+        if raw:
+            st.session_state.last_raw_response = raw
+        else:
+            # 실패했다면 'None' 대신 '실패 이유'를 저장!
+            st.session_state.last_raw_response = f"🚨 API 호출 실패! 이유: {status}"
+        # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
         
         try:
-            if not raw: raise Exception("API 응답이 비어있습니다.")
+            if not raw: raise Exception(f"API 응답 실패: {status}")
+            
             clean_json = raw.replace("```json", "").replace("```", "").strip()
             match = re.search(r'\[.*\]', clean_json, re.DOTALL)
             
@@ -527,14 +510,13 @@ def run_analysis_action(txt, img_bytes=None):
             else:
                 try: res = json.loads(clean_json)
                 except: 
-                    st.warning("텍스트가 인식되지 않았습니다. 다시 한번 시도해주세요.")
+                    st.warning("형식에 맞지 않는 응답입니다.")
                     res = []
 
-            proc = []; temp_dict = {}
-            om = {'고':'🔵 고', '한':'🟢 한', '외':'🔴 외', '혼':'🟣 혼'}
-            pm = {'명사':'📦 명사', '동사':'🏃 동사', '형용사':'🎨 형용사', '부사':'⚡ 부사', '관형사':'🔍 관형사', '대명사':'👤 대명사', '감탄사':'❗ 감탄사'}
-            
+            # [수정된 로직]
             draft_items = []
+            
+            # 1. 1차 가공
             for r in res:
                 o, root = str(r.get('원본') or '').strip(), str(r.get('원형') or '').strip()
                 orig_v, pos_v = str(r.get('분류') or '혼').strip(), str(r.get('품사') or '명사').strip()
@@ -545,20 +527,47 @@ def run_analysis_action(txt, img_bytes=None):
                 if root in ['것', '수', '데', '바', '지', '리', '개', '번', '명', '쪽', '등', '따름', '뿐']: continue
                 
                 draft_items.append({'원본': o, '원형': root, '분류': orig_v, '품사': pos_v})
-                key = (root, orig_v, pos_v)
+
+            # 2. [핵심] DB 규칙 강제 적용 (후처리)
+            draft_items = apply_strict_rules(draft_items, st.session_state.mode_key)
+            st.session_state.initial_draft = draft_items
+
+            # 3. 최종 집계
+            proc = []
+            temp_dict = {}
+            for item in draft_items:
+                root = item['원형']
+                origin = item['분류']
+                pos = item['품사']
+                o = item['원본']
+                
+                key = (root, origin, pos)
                 if key not in temp_dict: temp_dict[key] = []
                 temp_dict[key].append(o)
-                
-            st.session_state.initial_draft = draft_items
+
+            # 4. 결과 리스트 생성
+            om = {'고':'🔵 고', '한':'🟢 한', '외':'🔴 외', '혼':'🟣 혼'}
+            pm = {'명사':'📦 명사', '동사':'🏃 동사', '형용사':'🎨 형용사', '부사':'⚡ 부사', '관형사':'🔍 관형사', '대명사':'👤 대명사', '감탄사':'❗ 감탄사'}
+
             for (root, origin, pos), origs in temp_dict.items():
                 cnts = Counter(origs)
-                proc.append({"삭제": False, "횟수": f"{sum(cnts.values())}회", "원본": ", ".join([f"{w}({c})" for w, c in cnts.items()]), "원형": root, "분류": om.get(origin, origin), "품사": pm.get(pos, pos)})
+                final_origin = origin if any(x in origin for x in ['🔵','🟢','🔴','🟣']) else om.get(origin, origin)
+                final_pos = pos if any(x in pos for x in ['📦','🏃','🎨','⚡','🔍','👤','❗']) else pm.get(pos, pos)
+                
+                proc.append({
+                    "삭제": False, 
+                    "횟수": f"{sum(cnts.values())}회", 
+                    "원본": ", ".join([f"{w}({c})" for w, c in cnts.items()]), 
+                    "원형": root, 
+                    "분류": final_origin, 
+                    "품사": final_pos
+                })
             
             st.session_state.analysis_result = proc; st.session_state.step = 3; st.rerun()
             
         except Exception as e:
             st.error(f"파싱 오류: {str(e)}")
-            st.session_state.debug_log = f"Error: {str(e)}\nRaw Response:\n{raw}"
+            st.session_state.debug_log = f"Error: {str(e)}\nRaw Response Logged."
 
 # =========================================================
 # [5] UI: 메인 루프 (Wizard)
