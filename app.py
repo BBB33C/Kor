@@ -13,7 +13,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime, timedelta # 시간 계산용 timedelta 추가
 from collections import Counter
 import traceback
-from PIL import Im age # 이미지 검증 및 재인코딩용 필수 라이브러리
+from PIL import Image # 이미지 검증 및 재인코딩용 필수 라이브러리
 
 # =========================================================
 # [0] 기본 설정 및 라이브러리 초기화
