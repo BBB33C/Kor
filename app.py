@@ -231,10 +231,14 @@ def calc_freq(row):
             elif v not in ['nan', '', 'None']: total += 1
     return total
 
-# [수정] 병합 함수 (쪽수 유실 방지를 위한 강력한 로직)
+# [수정] 병합 함수 (인덱스 충돌 방지 및 안정성 강화)
 def merge_master_data(old_df, new_df):
-    if new_df.empty: return old_df
+    # 둘 다 비었으면 빈 거 반환
+    if new_df.empty and old_df.empty: return pd.DataFrame()
+    # 새것만 있으면 새것 반환 (단, 구조가 완벽해야 함)
     if old_df.empty: return new_df
+    # 옛날것만 있으면 옛날것 반환
+    if new_df.empty: return old_df
     
     # 1. 쪽수 컬럼 미리 찾기 및 이름 변경 (충돌 방지)
     page_cols_old = [c for c in old_df.columns if str(c).startswith('쪽수')]
@@ -247,14 +251,22 @@ def merge_master_data(old_df, new_df):
     new_df_renamed = new_df.rename(columns=rename_dict_new)
 
     # 2. 병합 (Outer Join) - 키: 자료, 구분
+    # 자료형 불일치 방지를 위해 string으로 변환 후 병합
+    old_df_renamed['자료'] = old_df_renamed['자료'].astype(str)
+    new_df_renamed['자료'] = new_df_renamed['자료'].astype(str)
+    
     key_cols = ['자료', '구분']
     merged = pd.merge(old_df_renamed, new_df_renamed, on=key_cols, how='outer')
+
+    # [중요] 인덱스를 리셋해야 iterrows와 at 접근 시 충돌이 안 납니다.
+    merged = merged.reset_index(drop=True)
 
     # 3. 쪽수 데이터 합치기
     p_cols_old_mapped = list(rename_dict_old.values())
     p_cols_new_mapped = list(rename_dict_new.values())
     
-    merged['temp_pages'] = [[] for _ in range(len(merged))]
+    # 빈 리스트로 초기화 (객체 타입)
+    merged['temp_pages'] = np.empty((len(merged), 0)).tolist()
 
     for idx, row in merged.iterrows():
         pages = set()
@@ -287,13 +299,14 @@ def merge_master_data(old_df, new_df):
         
     return pd.DataFrame(result_rows)
 
-# [수정] DB 호환성 유지(품사 자리에 '-') + 마스터 데이터 품사 제외
+# [수정] 데이터 생성 시 '출연횟수' 누락 방지
 def save_logic_with_learning():
     sheet = get_sheet_object_for_write(st.session_state.mode_key)
     now = datetime.now().isoformat()
     learning_logs = []
     final_results = pd.DataFrame(st.session_state.analysis_result)
     
+    # 1. 학습 데이터 적재 (DB 전송용)
     if not final_results.empty:
         for _, row in final_results.iterrows():
             if not row['삭제']:
@@ -302,7 +315,7 @@ def save_logic_with_learning():
                     row['원본'].split('(')[0],
                     row['원형'], 
                     clean_val_for_save(row['분류']), 
-                    "-", # 품사 대신 '-' 입력
+                    "-", 
                     'add', 
                     'Engine-New-NoPOS', '', ''
                 ])
@@ -311,6 +324,7 @@ def save_logic_with_learning():
         send_data_with_retry(sheet, learning_logs, True)
         fetch_all_rules_from_db.clear()
     
+    # 2. 엑셀 마스터 데이터 생성
     if not final_results.empty:
         valid = final_results[final_results['삭제']==False].copy()
         valid['n_cnt'] = valid['횟수'].apply(lambda x: int(re.sub(r'[^0-9]', '', str(x))) if re.search(r'\d', str(x)) else 1)
@@ -321,13 +335,20 @@ def save_logic_with_learning():
         temp_rows = []
         for _, item in agg.iterrows():
             val = f"{p_num}_{item['n_cnt']}" if item['n_cnt'] > 1 else p_num
-            temp_rows.append({'구분': clean_val_for_save(item['분류']), '자료': item['원형'], '쪽수1': val})
+            # [중요] 여기서 '출연횟수'를 미리 넣어줘야 첫 저장 시 오류가 안 납니다.
+            temp_rows.append({
+                '구분': clean_val_for_save(item['분류']), 
+                '자료': item['원형'], 
+                '출연횟수': item['n_cnt'], # 누락되었던 부분 추가
+                '쪽수1': val
+            })
         
         st.session_state.master_df = merge_master_data(st.session_state.master_df, pd.DataFrame(temp_rows))
         
         st.success("저장 완료!")
         st.session_state.analysis_result = [] 
         
+        # 다음 페이지 이동 로직
         if st.session_state.pdf_doc and st.session_state.page_idx < len(st.session_state.pdf_doc) - 1:
             st.session_state.page_idx += 1
             st.session_state.step = 2
