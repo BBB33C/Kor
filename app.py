@@ -211,14 +211,16 @@ def save_backup_to_cloud(mode_key, df):
     except: return False
 
 # =========================================================
-# [3] 데이터 병합 및 비교 학습 엔진
+# [3] 데이터 병합 및 비교 학습 엔진 (수정됨)
 # =========================================================
 def clean_val_for_save(v):
-    if isinstance(v, str): 
-        chars_to_remove = ['🔵 ', '🟢 ', '🔴 ', '🟣 ', '📦 ', '🏃 ', '🎨 ', '⚡ ', '🔍 ', '👤 ', '❗ ']
-        for char in chars_to_remove: v = v.replace(char, '')
-        return v.strip()
-    return v
+    try:
+        if isinstance(v, str): 
+            chars_to_remove = ['🔵 ', '🟢 ', '🔴 ', '🟣 ', '📦 ', '🏃 ', '🎨 ', '⚡ ', '🔍 ', '👤 ', '❗ ']
+            for char in chars_to_remove: v = v.replace(char, '')
+            return v.strip()
+        return str(v)
+    except: return ""
 
 def calc_freq(row):
     total = 0
@@ -231,88 +233,59 @@ def calc_freq(row):
             elif v not in ['nan', '', 'None']: total += 1
     return total
 
-# [수정] 병합 함수 (인덱스 충돌 방지 및 안정성 강화)
 def merge_master_data(old_df, new_df):
-    # 둘 다 비었으면 빈 거 반환
-    if new_df.empty and old_df.empty: return pd.DataFrame()
-    # 새것만 있으면 새것 반환 (단, 구조가 완벽해야 함)
-    if old_df.empty: return new_df
-    # 옛날것만 있으면 옛날것 반환
-    if new_df.empty: return old_df
+    # 1. 빈 데이터 방어 (빈 껍데기라도 반환해야 엑셀 에러 안 남)
+    if (old_df is None or old_df.empty) and (new_df is None or new_df.empty):
+        return pd.DataFrame(columns=['구분', '자료', '출연횟수', '쪽수1'])
     
-    # 1. 쪽수 컬럼 미리 찾기 및 이름 변경 (충돌 방지)
-    page_cols_old = [c for c in old_df.columns if str(c).startswith('쪽수')]
-    page_cols_new = [c for c in new_df.columns if str(c).startswith('쪽수')]
+    # 2. 하나만 있으면 그거 반환
+    if old_df is None or old_df.empty: return new_df
+    if new_df is None or new_df.empty: return old_df
     
-    rename_dict_old = {c: f"old_{c}" for c in page_cols_old}
-    rename_dict_new = {c: f"new_{c}" for c in page_cols_new}
-    
-    old_df_renamed = old_df.rename(columns=rename_dict_old)
-    new_df_renamed = new_df.rename(columns=rename_dict_new)
+    try:
+        # 3. 안전한 병합을 위해 문자열로 변환
+        old_df['자료'] = old_df['자료'].astype(str)
+        new_df['자료'] = new_df['자료'].astype(str)
+        old_df['구분'] = old_df['구분'].astype(str)
+        new_df['구분'] = new_df['구분'].astype(str)
 
-    # 2. 병합 (Outer Join) - 키: 자료, 구분
-    # 자료형 불일치 방지를 위해 string으로 변환 후 병합
-    old_df_renamed['자료'] = old_df_renamed['자료'].astype(str)
-    new_df_renamed['자료'] = new_df_renamed['자료'].astype(str)
-    
-    key_cols = ['자료', '구분']
-    merged = pd.merge(old_df_renamed, new_df_renamed, on=key_cols, how='outer')
-
-    # [중요] 인덱스를 리셋해야 iterrows와 at 접근 시 충돌이 안 납니다.
-    merged = merged.reset_index(drop=True)
-
-    # 3. 쪽수 데이터 합치기
-    p_cols_old_mapped = list(rename_dict_old.values())
-    p_cols_new_mapped = list(rename_dict_new.values())
-    
-    # 빈 리스트로 초기화 (객체 타입)
-    merged['temp_pages'] = np.empty((len(merged), 0)).tolist()
-
-    for idx, row in merged.iterrows():
-        pages = set()
-        # Old 쪽수 수집
-        for c in p_cols_old_mapped:
-            if c in row and pd.notna(row[c]):
-                pages.add(str(row[c]).strip())
-        # New 쪽수 수집
-        for c in p_cols_new_mapped:
-            if c in row and pd.notna(row[c]):
-                pages.add(str(row[c]).strip())
+        # 4. Melt & Concat 방식 (인덱스 충돌 방지)
+        page_cols_old = [c for c in old_df.columns if str(c).startswith('쪽수')]
+        page_cols_new = [c for c in new_df.columns if str(c).startswith('쪽수')]
         
-        merged.at[idx, 'temp_pages'] = sorted(list(pages))
-
-    # 4. 최종 데이터프레임 생성
-    max_len = merged['temp_pages'].apply(len).max()
-    if pd.isna(max_len) or max_len == 0: max_len = 1
-    
-    result_rows = []
-    for _, row in merged.iterrows():
-        pages = row['temp_pages']
-        base_data = {
-            '구분': row['구분'],
-            '자료': row['자료'],
-            '출연횟수': len(pages) # 쪽수 개수로 갱신
-        }
-        for i, p in enumerate(pages):
-            base_data[f'쪽수{i+1}'] = p
-        result_rows.append(base_data)
+        melted_old = old_df.melt(id_vars=['자료', '구분'], value_vars=page_cols_old, value_name='page').dropna()
+        melted_new = new_df.melt(id_vars=['자료', '구분'], value_vars=page_cols_new, value_name='page').dropna()
         
-    return pd.DataFrame(result_rows)
+        combined = pd.concat([melted_old, melted_new], ignore_index=True)
+        
+        # 5. 쪽수 정제
+        combined['page'] = combined['page'].astype(str).str.strip()
+        combined = combined[~combined['page'].isin(['nan', '', 'None'])]
+        
+        # 6. GroupBy로 합치기
+        grouped = combined.groupby(['자료', '구분'])['page'].apply(lambda x: sorted(list(set(x)))).reset_index()
+        
+        # 7. 결과 생성
+        result_rows = []
+        for _, row in grouped.iterrows():
+            pages = row['page']
+            base_data = {
+                '구분': row['구분'],
+                '자료': row['자료'],
+                '출연횟수': len(pages)
+            }
+            for i, p in enumerate(pages):
+                base_data[f'쪽수{i+1}'] = p
+            result_rows.append(base_data)
+            
+        return pd.DataFrame(result_rows)
 
-# [수정] 함수 인식 오류 해결 및 병합 로직 안정화
+    except Exception as e:
+        print(f"Merge Error: {e}")
+        return new_df
+
 def save_logic_with_learning():
-    
-    # [핵심] 도우미 함수를 내부에 정의 (NameError 원천 차단)
-    def clean_func(v):
-        try:
-            if isinstance(v, str): 
-                chars = ['🔵 ', '🟢 ', '🔴 ', '🟣 ', '📦 ', '🏃 ', '🎨 ', '⚡ ', '🔍 ', '👤 ', '❗ ']
-                for c in chars: v = v.replace(c, '')
-                return v.strip()
-            return str(v)
-        except: return ""
-
-    # 1. 구글 시트 저장 (실패 시 무시하고 넘어감)
+    # A. 구글 시트 저장 (실패 시 무시)
     try:
         sheet = get_sheet_object_for_write(st.session_state.mode_key)
         now = datetime.now().isoformat()
@@ -326,27 +299,26 @@ def save_logic_with_learning():
                         now, 
                         str(row.get('원본', '')).split('(')[0],
                         str(row.get('원형', '')), 
-                        clean_func(row.get('분류', '')), # 내부 함수 사용
+                        clean_val_for_save(row.get('분류', '')), 
                         "-", 
                         'add', 
-                        'Engine-Fixed', '', ''
+                        'Engine-Final', '', ''
                     ])
         if learning_logs and sheet: 
             send_data_with_retry(sheet, learning_logs, True)
             fetch_all_rules_from_db.clear()
-    except Exception as e:
-        print(f"구글 시트 저장 건너뜀: {e}")
+    except: pass
 
-    # 2. 엑셀 마스터 데이터 생성 (여기가 진짜 핵심)
+    # B. 엑셀 마스터 데이터 생성
     try:
         final_results = pd.DataFrame(st.session_state.analysis_result)
-        if not final_results.empty:
+        
+        # 데이터가 없어도 빈 프레임 생성
+        if final_results.empty:
+            temp_df = pd.DataFrame(columns=['구분', '자료', '출연횟수', '쪽수1'])
+        else:
             valid = final_results[final_results['삭제']==False].copy()
-            
-            # 횟수 계산 (숫자만 추출)
             valid['n_cnt'] = valid['횟수'].apply(lambda x: int(re.sub(r'[^0-9]', '', str(x))) if re.search(r'\d', str(x)) else 1)
-            
-            # 같은 단어 합산
             agg = valid.groupby(['원형', '분류'], as_index=False).agg({'n_cnt': 'sum'})
             
             p_num = str(st.session_state.page_idx + st.session_state.start_offset)
@@ -354,34 +326,97 @@ def save_logic_with_learning():
             
             for _, item in agg.iterrows():
                 val = f"{p_num}_{item['n_cnt']}" if item['n_cnt'] > 1 else p_num
-                
                 temp_rows.append({
-                    '구분': clean_func(item['분류']), # 내부 함수 사용
+                    '구분': clean_val_for_save(item['분류']), 
                     '자료': item['원형'], 
-                    '출연횟수': item['n_cnt'], # [중요] 출연횟수 필수 포함
+                    '출연횟수': item['n_cnt'], 
                     '쪽수1': val
                 })
+            temp_df = pd.DataFrame(temp_rows)
             
-            # 병합 실행
-            st.session_state.master_df = merge_master_data(st.session_state.master_df, pd.DataFrame(temp_rows))
-            
-            st.success("✅ 저장 완료!")
-            st.session_state.analysis_result = [] 
-            
-            # 다음 페이지 이동
-            if st.session_state.pdf_doc and st.session_state.page_idx < len(st.session_state.pdf_doc) - 1:
-                st.session_state.page_idx += 1
-                st.session_state.step = 2
-                st.rerun()
-            else:
-                st.balloons()
-                st.info("모든 페이지 분석 완료!")
+        # 병합 및 저장
+        st.session_state.master_df = merge_master_data(st.session_state.master_df, temp_df)
+        st.toast("✅ 데이터 병합 완료!")
                 
     except Exception as e:
-        st.error(f"저장 중 오류 발생: {str(e)}")
-        # 에러 로그를 화면에 출력해서 디버깅 돕기
-        st.code(str(e))
+        st.error(f"Save Logic Error: {str(e)}")
+
+# [수정 2] 저장 로직 (함수 인식 오류 해결 + 데이터 무결성 보장)
+def save_logic_with_learning():
+    
+    # [핵심] 도우미 함수 내장 (NameError 해결)
+    def clean_func(v):
+        try:
+            if isinstance(v, str): 
+                chars = ['🔵 ', '🟢 ', '🔴 ', '🟣 ', '📦 ', '🏃 ', '🎨 ', '⚡ ', '🔍 ', '👤 ', '❗ ']
+                for c in chars: v = v.replace(c, '')
+                return v.strip()
+            return str(v)
+        except: return ""
+
+    # A. 구글 시트 저장 (실패 시 무시)
+    try:
+        sheet = get_sheet_object_for_write(st.session_state.mode_key)
+        now = datetime.now().isoformat()
+        learning_logs = []
+        final_results = pd.DataFrame(st.session_state.analysis_result)
         
+        if not final_results.empty:
+            for _, row in final_results.iterrows():
+                if not row.get('삭제', False):
+                    learning_logs.append([
+                        now, 
+                        str(row.get('원본', '')).split('(')[0],
+                        str(row.get('원형', '')), 
+                        clean_func(row.get('분류', '')), 
+                        "-", 
+                        'add', 
+                        'Engine-Final', '', ''
+                    ])
+        if learning_logs and sheet: 
+            send_data_with_retry(sheet, learning_logs, True)
+            fetch_all_rules_from_db.clear()
+    except Exception as e:
+        print(f"Google Sheet Save Error: {e}")
+
+    # B. 엑셀 마스터 데이터 생성 (핵심)
+    try:
+        final_results = pd.DataFrame(st.session_state.analysis_result)
+        
+        # 분석 결과가 없어도 빈 데이터프레임이라도 만들어야 함
+        if final_results.empty:
+            temp_df = pd.DataFrame(columns=['구분', '자료', '출연횟수', '쪽수1'])
+        else:
+            valid = final_results[final_results['삭제']==False].copy()
+            # 횟수 계산
+            valid['n_cnt'] = valid['횟수'].apply(lambda x: int(re.sub(r'[^0-9]', '', str(x))) if re.search(r'\d', str(x)) else 1)
+            
+            # 합산
+            agg = valid.groupby(['원형', '분류'], as_index=False).agg({'n_cnt': 'sum'})
+            
+            p_num = str(st.session_state.page_idx + st.session_state.start_offset)
+            temp_rows = []
+            
+            for _, item in agg.iterrows():
+                val = f"{p_num}_{item['n_cnt']}" if item['n_cnt'] > 1 else p_num
+                temp_rows.append({
+                    '구분': clean_func(item['분류']), 
+                    '자료': item['원형'], 
+                    '출연횟수': item['n_cnt'], 
+                    '쪽수1': val
+                })
+            temp_df = pd.DataFrame(temp_rows)
+            
+        # 병합 실행 (여기서 master_df가 None이 되지 않게 갱신)
+        st.session_state.master_df = merge_master_data(st.session_state.master_df, temp_df)
+        
+        # [중요] 저장 완료 후 상태값 변경은 여기서 하지 않음 (버튼 클릭 이벤트 내에서 처리)
+        st.toast("✅ 데이터가 내부 저장소에 안전하게 기록되었습니다!")
+                
+    except Exception as e:
+        st.error(f"Save Logic Error: {str(e)}")
+        st.code(traceback.format_exc())
+
 # =========================================================
 # [4] AI 분석 및 이미지 최적화 처리
 # =========================================================
@@ -999,65 +1034,64 @@ elif st.session_state.step == 3:
                 st.rerun()
 
     if not st.session_state.is_finished:
-        if st.session_state.input_type in ["DIRECT", "IMAGE"]:
-            b1, b2, b3 = st.columns([1, 1, 2])
-            with b1: 
-                if st.button("➕ 단어 추가", use_container_width=True): open_add_dialog()
-            with b2:
-                if st.button("⛔ 선택 삭제", use_container_width=True):
-                    st.session_state.analysis_result = [r for r in st.session_state.analysis_result if not r.get('삭제', False)]
-                    st.toast("🗑️ 삭제 데이터 정리 중..."); time.sleep(2.0); st.rerun()
-            with b3:
-                if st.button("💾 결과 저장 및 학습", type="primary", use_container_width=True):
-                    with st.status("데이터 저장 및 학습 반영 중..."):
-                        save_logic_with_learning()
-                        st.session_state.is_finished = True
-                        st.success("✅ 저장이 완료되었습니다!")
-                        time.sleep(1.0)
-                        st.rerun()
-        else:
-            b1, b2, b3, b4 = st.columns([1, 1, 1.5, 2])
-            with b1: 
-                if st.button("➕ 단어 추가", use_container_width=True): open_add_dialog()
-            with b2:
-                if st.button("⛔ 선택 삭제", use_container_width=True):
-                    st.session_state.analysis_result = [r for r in st.session_state.analysis_result if not r.get('삭제', False)]
-                    st.toast("🗑️ 삭제 데이터 정리 중..."); time.sleep(2.0); st.rerun()
-            with b3:
-                if st.button("💾 현재 페이지만 저장", use_container_width=True):
-                    save_logic_with_learning(); st.session_state.is_finished = True; st.rerun()
-            with b4:
-                if st.button("🚀 저장하고 다음 쪽 가기", type="primary", use_container_width=True):
-                    save_logic_with_learning()
-                    if st.session_state.input_type == "PDF" and st.session_state.page_idx < st.session_state.total_pages - 1:
-                        st.toast("⏳ 다음 페이지 분석 중...", icon="📄")
-                        st.session_state.page_idx += 1; st.session_state.extracted_text = extract_text_unified(st.session_state.file_bytes, "application/pdf", st.session_state.page_idx)
-                        st.session_state.analysis_result = []; st.session_state.step = 2; st.rerun()
-                    else: st.session_state.is_finished = True; st.balloons(); st.rerun()
+        # 버튼 3개 배치 (추가 / 삭제 / 저장)
+        b1, b2, b3 = st.columns([1, 1, 2])
+        
+        with b1: 
+            if st.button("➕ 단어 추가", use_container_width=True): open_add_dialog()
+            
+        with b2:
+            if st.button("⛔ 선택 삭제", use_container_width=True):
+                st.session_state.analysis_result = [r for r in st.session_state.analysis_result if not r.get('삭제', False)]
+                st.toast("🗑️ 삭제 완료")
+                time.sleep(1.0)
+                st.rerun()
+                
+        with b3:
+            # [저장 버튼] 클릭 시 저장하고 -> 상태 변경(is_finished=True) -> 리런
+            if st.button("💾 이 페이지 결과 저장", type="primary", use_container_width=True):
+                save_logic_with_learning()
+                st.session_state.is_finished = True
+                st.rerun() # 즉시 새로고침하여 아래 'else' 블록을 보여줌
+
     else:
-        st.success("✅ 저장이 완료되었습니다!")
-        kst_now = datetime.utcnow() + timedelta(hours=9)
-        fname = f"KR 분석 결과 {kst_now.strftime('%m%d_%H%M')}.xlsx"
+        # 저장 완료 상태: [성공 메시지] + [엑셀 다운로드] + [다음 쪽 이동]
+        st.success("✅ 저장이 완료되었습니다! 엑셀을 다운로드하거나 다음 쪽으로 이동하세요.")
+        
+        # 엑셀 생성 (빈 데이터 방어 포함)
         buf = io.BytesIO()
         try:
             with pd.ExcelWriter(buf, engine='openpyxl') as w: 
-                st.session_state.master_df.astype(str).to_excel(w, index=False)
-        except:
-            with pd.ExcelWriter(buf, engine='openpyxl') as w: 
-                st.session_state.master_df.to_excel(w, index=False)
-        
+                if st.session_state.master_df is not None and not st.session_state.master_df.empty:
+                    st.session_state.master_df.to_excel(w, index=False)
+                else:
+                    pd.DataFrame(columns=['구분','자료','출연횟수']).to_excel(w, index=False)
+        except Exception as e:
+            st.error(f"엑셀 생성 오류: {e}")
+
         c_down, c_next = st.columns([1, 1])
-        with c_down:
-            st.download_button(label=f"📥 엑셀 다운로드", data=buf.getvalue(), file_name=fname, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True, type="primary")
         
+        with c_down:
+            st.download_button(
+                label="📥 엑셀 다운로드", 
+                data=buf.getvalue(), 
+                file_name=f"분석결과_{datetime.now().strftime('%m%d_%H%M')}.xlsx", 
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", 
+                use_container_width=True, 
+                type="primary"
+            )
+        
+        # PDF일 때만 다음 쪽 이동 버튼 표시
         if st.session_state.input_type == "PDF":
             with c_next:
-                can_go_next = st.session_state.file_type and "pdf" in st.session_state.file_type and st.session_state.page_idx < st.session_state.total_pages - 1
-                if st.button("➡️ 다음 쪽으로 이동", use_container_width=True, disabled=not can_go_next):
-                    st.toast("⏳ 다음 페이지 분석 중...", icon="📄")
-                    st.session_state.page_idx += 1
-                    st.session_state.extracted_text = extract_text_unified(st.session_state.file_bytes, st.session_state.file_type, st.session_state.page_idx)
-                    st.session_state.analysis_result = []
-                    st.session_state.step = 2
-                    st.session_state.is_finished = False
-                    st.rerun()
+                # 마지막 페이지가 아닐 때만 활성화
+                if st.session_state.page_idx < st.session_state.total_pages - 1:
+                    if st.button("➡️ 다음 쪽으로 이동", use_container_width=True):
+                        st.session_state.page_idx += 1
+                        st.session_state.extracted_text = extract_text_unified(st.session_state.file_bytes, "application/pdf", st.session_state.page_idx)
+                        st.session_state.analysis_result = []
+                        st.session_state.step = 2
+                        st.session_state.is_finished = False
+                        st.rerun()
+                else:
+                    st.info("마지막 페이지입니다.")
