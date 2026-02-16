@@ -703,10 +703,7 @@ def run_analysis_action(txt, img_bytes=None):
                     "분류": final_origin
                     # 품사 필드 삭제됨
                 })
-            
-            # 메모리 청소
-            if 'file_bytes' in st.session_state: del st.session_state.file_bytes
-            
+
             st.session_state.analysis_result = proc; st.session_state.step = 3; st.rerun()
             
         except Exception as e:
@@ -1034,64 +1031,65 @@ elif st.session_state.step == 3:
                 st.rerun()
 
     if not st.session_state.is_finished:
-        # 버튼 3개 배치 (추가 / 삭제 / 저장)
-        b1, b2, b3 = st.columns([1, 1, 2])
-        
-        with b1: 
-            if st.button("➕ 단어 추가", use_container_width=True): open_add_dialog()
-            
-        with b2:
-            if st.button("⛔ 선택 삭제", use_container_width=True):
-                st.session_state.analysis_result = [r for r in st.session_state.analysis_result if not r.get('삭제', False)]
-                st.toast("🗑️ 삭제 완료")
-                time.sleep(1.0)
-                st.rerun()
-                
-        with b3:
-            # [저장 버튼] 클릭 시 저장하고 -> 상태 변경(is_finished=True) -> 리런
-            if st.button("💾 이 페이지 결과 저장", type="primary", use_container_width=True):
-                save_logic_with_learning()
-                st.session_state.is_finished = True
-                st.rerun() # 즉시 새로고침하여 아래 'else' 블록을 보여줌
-
+        if st.session_state.input_type in ["DIRECT", "IMAGE"]:
+            b1, b2, b3 = st.columns([1, 1, 2])
+            with b1: 
+                if st.button("➕ 단어 추가", use_container_width=True): open_add_dialog()
+            with b2:
+                if st.button("⛔ 선택 삭제", use_container_width=True):
+                    st.session_state.analysis_result = [r for r in st.session_state.analysis_result if not r.get('삭제', False)]
+                    st.toast("🗑️ 삭제 데이터 정리 중..."); time.sleep(2.0); st.rerun()
+            with b3:
+                if st.button("💾 결과 저장 및 학습", type="primary", use_container_width=True):
+                    with st.status("데이터 저장 및 학습 반영 중..."):
+                        save_logic_with_learning()
+                        st.session_state.is_finished = True
+                        st.success("✅ 저장이 완료되었습니다!")
+                        time.sleep(1.0)
+                        st.rerun()
+        else:
+            b1, b2, b3, b4 = st.columns([1, 1, 1.5, 2])
+            with b1: 
+                if st.button("➕ 단어 추가", use_container_width=True): open_add_dialog()
+            with b2:
+                if st.button("⛔ 선택 삭제", use_container_width=True):
+                    st.session_state.analysis_result = [r for r in st.session_state.analysis_result if not r.get('삭제', False)]
+                    st.toast("🗑️ 삭제 데이터 정리 중..."); time.sleep(2.0); st.rerun()
+            with b3:
+                if st.button("💾 현재 페이지만 저장", use_container_width=True):
+                    save_logic_with_learning(); st.session_state.is_finished = True; st.rerun()
+            with b4:
+                if st.button("🚀 저장하고 다음 쪽 가기", type="primary", use_container_width=True):
+                    save_logic_with_learning()
+                    if st.session_state.input_type == "PDF" and st.session_state.page_idx < st.session_state.total_pages - 1:
+                        st.toast("⏳ 다음 페이지 분석 중...", icon="📄")
+                        st.session_state.page_idx += 1; st.session_state.extracted_text = extract_text_unified(st.session_state.file_bytes, "application/pdf", st.session_state.page_idx)
+                        st.session_state.analysis_result = []; st.session_state.step = 2; st.rerun()
+                    else: st.session_state.is_finished = True; st.balloons(); st.rerun()
     else:
-        # 저장 완료 상태: [성공 메시지] + [엑셀 다운로드] + [다음 쪽 이동]
-        st.success("✅ 저장이 완료되었습니다! 엑셀을 다운로드하거나 다음 쪽으로 이동하세요.")
-        
-        # 엑셀 생성 (빈 데이터 방어 포함)
+        st.success("✅ 저장이 완료되었습니다!")
+        kst_now = datetime.utcnow() + timedelta(hours=9)
+        fname = f"KR 분석 결과 {kst_now.strftime('%m%d_%H%M')}.xlsx"
         buf = io.BytesIO()
         try:
             with pd.ExcelWriter(buf, engine='openpyxl') as w: 
-                if st.session_state.master_df is not None and not st.session_state.master_df.empty:
-                    st.session_state.master_df.to_excel(w, index=False)
-                else:
-                    pd.DataFrame(columns=['구분','자료','출연횟수']).to_excel(w, index=False)
-        except Exception as e:
-            st.error(f"엑셀 생성 오류: {e}")
-
+                st.session_state.master_df.astype(str).to_excel(w, index=False)
+        except:
+            with pd.ExcelWriter(buf, engine='openpyxl') as w: 
+                st.session_state.master_df.to_excel(w, index=False)
+        
         c_down, c_next = st.columns([1, 1])
-        
         with c_down:
-            st.download_button(
-                label="📥 엑셀 다운로드", 
-                data=buf.getvalue(), 
-                file_name=f"분석결과_{datetime.now().strftime('%m%d_%H%M')}.xlsx", 
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", 
-                use_container_width=True, 
-                type="primary"
-            )
+            st.download_button(label=f"📥 엑셀 다운로드", data=buf.getvalue(), file_name=fname, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True, type="primary")
         
-        # PDF일 때만 다음 쪽 이동 버튼 표시
         if st.session_state.input_type == "PDF":
             with c_next:
-                # 마지막 페이지가 아닐 때만 활성화
-                if st.session_state.page_idx < st.session_state.total_pages - 1:
-                    if st.button("➡️ 다음 쪽으로 이동", use_container_width=True):
-                        st.session_state.page_idx += 1
-                        st.session_state.extracted_text = extract_text_unified(st.session_state.file_bytes, "application/pdf", st.session_state.page_idx)
-                        st.session_state.analysis_result = []
-                        st.session_state.step = 2
-                        st.session_state.is_finished = False
-                        st.rerun()
-                else:
-                    st.info("마지막 페이지입니다.")
+                can_go_next = st.session_state.file_type and "pdf" in st.session_state.file_type and st.session_state.page_idx < st.session_state.total_pages - 1
+                if st.button("➡️ 다음 쪽으로 이동", use_container_width=True, disabled=not can_go_next):
+                    st.toast("⏳ 다음 페이지 분석 중...", icon="📄")
+                    st.session_state.page_idx += 1
+                    st.session_state.extracted_text = extract_text_unified(st.session_state.file_bytes, st.session_state.file_type, st.session_state.page_idx)
+                    st.session_state.analysis_result = []
+                    st.session_state.step = 2
+                    st.session_state.is_finished = False
+                    st.rerun()
