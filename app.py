@@ -299,63 +299,86 @@ def merge_master_data(old_df, new_df):
         
     return pd.DataFrame(result_rows)
 
-# [수정] 데이터 생성 시 '출연횟수' 누락 방지
+# [최종 수정] 함수 인식 오류 해결 및 저장 로직 안정화
 def save_logic_with_learning():
-    sheet = get_sheet_object_for_write(st.session_state.mode_key)
-    now = datetime.now().isoformat()
-    learning_logs = []
-    final_results = pd.DataFrame(st.session_state.analysis_result)
-    
-    # 1. 학습 데이터 적재 (DB 전송용)
-    if not final_results.empty:
-        for _, row in final_results.iterrows():
-            if not row['삭제']:
-                learning_logs.append([
-                    now, 
-                    row['원본'].split('(')[0],
-                    row['원형'], 
-                    clean_val_for_save(row['분류']), 
-                    "-", 
-                    'add', 
-                    'Engine-New-NoPOS', '', ''
-                ])
-    
-    if learning_logs and sheet: 
-        send_data_with_retry(sheet, learning_logs, True)
-        fetch_all_rules_from_db.clear()
-    
-    # 2. 엑셀 마스터 데이터 생성
-    if not final_results.empty:
-        valid = final_results[final_results['삭제']==False].copy()
-        valid['n_cnt'] = valid['횟수'].apply(lambda x: int(re.sub(r'[^0-9]', '', str(x))) if re.search(r'\d', str(x)) else 1)
+    # [1] 내부 도우미 함수 정의 (NameError 원천 차단)
+    def clean_func(v):
+        try:
+            if isinstance(v, str): 
+                chars = ['🔵 ', '🟢 ', '🔴 ', '🟣 ', '📦 ', '🏃 ', '🎨 ', '⚡ ', '🔍 ', '👤 ', '❗ ']
+                for c in chars: v = v.replace(c, '')
+                return v.strip()
+            return str(v)
+        except: return ""
+
+    # A. 구글 시트 저장 (실패 시 무시)
+    try:
+        sheet = get_sheet_object_for_write(st.session_state.mode_key)
+        now = datetime.now().isoformat()
+        learning_logs = []
+        final_results = pd.DataFrame(st.session_state.analysis_result)
         
-        agg = valid.groupby(['원형', '분류'], as_index=False).agg({'n_cnt': 'sum'})
-        
-        p_num = str(st.session_state.page_idx + st.session_state.start_offset)
-        temp_rows = []
-        for _, item in agg.iterrows():
-            val = f"{p_num}_{item['n_cnt']}" if item['n_cnt'] > 1 else p_num
-            # [중요] 여기서 '출연횟수'를 미리 넣어줘야 첫 저장 시 오류가 안 납니다.
-            temp_rows.append({
-                '구분': clean_val_for_save(item['분류']), 
-                '자료': item['원형'], 
-                '출연횟수': item['n_cnt'], # 누락되었던 부분 추가
-                '쪽수1': val
-            })
-        
-        st.session_state.master_df = merge_master_data(st.session_state.master_df, pd.DataFrame(temp_rows))
-        
-        st.success("저장 완료!")
-        st.session_state.analysis_result = [] 
-        
-        # 다음 페이지 이동 로직
-        if st.session_state.pdf_doc and st.session_state.page_idx < len(st.session_state.pdf_doc) - 1:
-            st.session_state.page_idx += 1
-            st.session_state.step = 2
-            st.rerun()
-        else:
-            st.balloons()
-            st.info("완료되었습니다.")
+        if not final_results.empty:
+            for _, row in final_results.iterrows():
+                if not row.get('삭제', False): # .get()으로 안전하게 접근
+                    learning_logs.append([
+                        now, 
+                        str(row.get('원본', '')).split('(')[0],
+                        str(row.get('원형', '')), 
+                        clean_func(row.get('분류', '')), # 내장 함수 사용
+                        "-", 
+                        'add', 
+                        'Engine-Fixed', '', ''
+                    ])
+        if learning_logs and sheet: 
+            send_data_with_retry(sheet, learning_logs, True)
+            fetch_all_rules_from_db.clear()
+    except Exception as e:
+        print(f"구글 시트 저장 건너뜀: {e}")
+
+    # B. 엑셀 마스터 데이터 생성 (핵심)
+    try:
+        final_results = pd.DataFrame(st.session_state.analysis_result)
+        if not final_results.empty:
+            valid = final_results[final_results['삭제']==False].copy()
+            # 횟수 계산 (숫자만 추출)
+            valid['n_cnt'] = valid['횟수'].apply(lambda x: int(re.sub(r'[^0-9]', '', str(x))) if re.search(r'\d', str(x)) else 1)
+            
+            # 같은 단어 합산
+            agg = valid.groupby(['원형', '분류'], as_index=False).agg({'n_cnt': 'sum'})
+            
+            p_num = str(st.session_state.page_idx + st.session_state.start_offset)
+            temp_rows = []
+            
+            for _, item in agg.iterrows():
+                val = f"{p_num}_{item['n_cnt']}" if item['n_cnt'] > 1 else p_num
+                
+                temp_rows.append({
+                    '구분': clean_func(item['분류']), # 내장 함수 사용
+                    '자료': item['원형'], 
+                    '출연횟수': item['n_cnt'], # 출연횟수 필수 포함
+                    '쪽수1': val
+                })
+            
+            # 병합 실행 (기존 merge_master_data 함수 사용)
+            st.session_state.master_df = merge_master_data(st.session_state.master_df, pd.DataFrame(temp_rows))
+            
+            st.success("✅ 저장 완료!")
+            st.session_state.analysis_result = [] 
+            
+            # 다음 페이지 이동
+            if st.session_state.pdf_doc and st.session_state.page_idx < len(st.session_state.pdf_doc) - 1:
+                st.session_state.page_idx += 1
+                st.session_state.step = 2
+                st.rerun()
+            else:
+                st.balloons()
+                st.info("모든 페이지 분석 완료!")
+                
+    except Exception as e:
+        st.error(f"저장 중 치명적 오류 발생: {str(e)}")
+        # 에러 발생 시 상세 내용을 화면에 출력하여 디버깅 돕기
+        st.code(str(e))
 
 # =========================================================
 # [4] AI 분석 및 이미지 최적화 처리
