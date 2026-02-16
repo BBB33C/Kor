@@ -299,9 +299,10 @@ def merge_master_data(old_df, new_df):
         
     return pd.DataFrame(result_rows)
 
-# [최종 수정] 함수 인식 오류 해결 및 저장 로직 안정화
+# [수정] 함수 인식 오류 해결 및 병합 로직 안정화
 def save_logic_with_learning():
-    # [1] 내부 도우미 함수 정의 (NameError 원천 차단)
+    
+    # [핵심] 도우미 함수를 내부에 정의 (NameError 원천 차단)
     def clean_func(v):
         try:
             if isinstance(v, str): 
@@ -311,7 +312,7 @@ def save_logic_with_learning():
             return str(v)
         except: return ""
 
-    # A. 구글 시트 저장 (실패 시 무시)
+    # 1. 구글 시트 저장 (실패 시 무시하고 넘어감)
     try:
         sheet = get_sheet_object_for_write(st.session_state.mode_key)
         now = datetime.now().isoformat()
@@ -320,12 +321,12 @@ def save_logic_with_learning():
         
         if not final_results.empty:
             for _, row in final_results.iterrows():
-                if not row.get('삭제', False): # .get()으로 안전하게 접근
+                if not row.get('삭제', False):
                     learning_logs.append([
                         now, 
                         str(row.get('원본', '')).split('(')[0],
                         str(row.get('원형', '')), 
-                        clean_func(row.get('분류', '')), # 내장 함수 사용
+                        clean_func(row.get('분류', '')), # 내부 함수 사용
                         "-", 
                         'add', 
                         'Engine-Fixed', '', ''
@@ -336,11 +337,12 @@ def save_logic_with_learning():
     except Exception as e:
         print(f"구글 시트 저장 건너뜀: {e}")
 
-    # B. 엑셀 마스터 데이터 생성 (핵심)
+    # 2. 엑셀 마스터 데이터 생성 (여기가 진짜 핵심)
     try:
         final_results = pd.DataFrame(st.session_state.analysis_result)
         if not final_results.empty:
             valid = final_results[final_results['삭제']==False].copy()
+            
             # 횟수 계산 (숫자만 추출)
             valid['n_cnt'] = valid['횟수'].apply(lambda x: int(re.sub(r'[^0-9]', '', str(x))) if re.search(r'\d', str(x)) else 1)
             
@@ -354,13 +356,13 @@ def save_logic_with_learning():
                 val = f"{p_num}_{item['n_cnt']}" if item['n_cnt'] > 1 else p_num
                 
                 temp_rows.append({
-                    '구분': clean_func(item['분류']), # 내장 함수 사용
+                    '구분': clean_func(item['분류']), # 내부 함수 사용
                     '자료': item['원형'], 
-                    '출연횟수': item['n_cnt'], # 출연횟수 필수 포함
+                    '출연횟수': item['n_cnt'], # [중요] 출연횟수 필수 포함
                     '쪽수1': val
                 })
             
-            # 병합 실행 (기존 merge_master_data 함수 사용)
+            # 병합 실행
             st.session_state.master_df = merge_master_data(st.session_state.master_df, pd.DataFrame(temp_rows))
             
             st.success("✅ 저장 완료!")
@@ -376,10 +378,10 @@ def save_logic_with_learning():
                 st.info("모든 페이지 분석 완료!")
                 
     except Exception as e:
-        st.error(f"저장 중 치명적 오류 발생: {str(e)}")
-        # 에러 발생 시 상세 내용을 화면에 출력하여 디버깅 돕기
+        st.error(f"저장 중 오류 발생: {str(e)}")
+        # 에러 로그를 화면에 출력해서 디버깅 돕기
         st.code(str(e))
-
+        
 # =========================================================
 # [4] AI 분석 및 이미지 최적화 처리
 # =========================================================
