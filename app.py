@@ -1117,18 +1117,28 @@ elif st.session_state.step == 3:
                     st.toast(f"✅ '{o}' 추가됨!")
                     time.sleep(0.5); st.rerun()
 
+    # -------------------------------------------------------------------------
+    # [수정] 팝업창 정의 (빠진 단어 추가 기능 포함)
+    # -------------------------------------------------------------------------
     @st.dialog("🔀 동음이의어 의미 구분")
     def open_homonym_dialog(target_word, current_count):
-        st.info(f"단어 **'{target_word}'**는 원문에서 총 **{current_count}번** 발견되었습니다.")
+        # [핵심] 팝업창 내부 상태 관리를 위한 키 생성
+        # 다이얼로그가 리런될 때 개수를 기억하기 위함
+        dialog_key = f"h_slots_{target_word}"
+        if dialog_key not in st.session_state:
+            st.session_state[dialog_key] = current_count
+
+        st.info(f"단어 **'{target_word}'**는 현재 **{st.session_state[dialog_key]}개**로 인식되었습니다.")
         
-        # [핵심] 기억해둔 의미 목록 가져오기
+        # 기억해둔 의미 목록 가져오기
         known_meanings = st.session_state.homonym_dict.get(target_word, [])
         options = known_meanings + ["+ 직접 입력"]
         
         st.caption(f"학습된 의미: {', '.join(known_meanings) if known_meanings else '없음'}")
         
+        # [기능 1] 슬롯 렌더링 (동적으로 늘어난 개수만큼 표시)
         selections = []
-        for i in range(current_count):
+        for i in range(st.session_state[dialog_key]):
             col_sel, col_val = st.columns([1, 2])
             with col_sel:
                 sel = st.selectbox(f"{i+1}번째 의미", options, key=f"h_sel_{i}")
@@ -1139,35 +1149,47 @@ elif st.session_state.step == 3:
                     val = sel
                     st.text_input(f"선택됨 ({i+1})", value=sel, disabled=True, key=f"h_disp_{i}")
             selections.append(val)
-            
-        if st.button("적용 및 분리하기", type="primary"):
-            # 1. 학습 (새로운 의미가 있다면 기억장소에 저장)
-            updated = False
-            if target_word not in st.session_state.homonym_dict:
-                st.session_state.homonym_dict[target_word] = []
-            
-            for s in selections:
-                if s and s not in st.session_state.homonym_dict[target_word]:
-                    st.session_state.homonym_dict[target_word].append(s)
-                    updated = True
-            
-            if updated: print(f"[System] '{target_word}'의 새로운 의미 학습 완료")
-            
-            # 2. 리스트 쪼개기
-            st.session_state.analysis_result = [
-                r for r in st.session_state.analysis_result 
-                if r['원형'] != target_word
-            ]
-            
-            for mean in selections:
-                if not mean: continue
-                st.session_state.analysis_result.append({
-                    "삭제": False, "구분아이콘": "🔀", "횟수": "1회", 
-                    "원본": f"{target_word}({mean})", "원형": f"{target_word}({mean})", 
-                    "분류": "🔵 고" 
-                })
-            
-            st.toast("✅ 의미 분리 및 학습 완료!"); time.sleep(0.5); st.rerun()
+        
+        st.markdown("---")
+        
+        # [기능 2] 빠진 단어 추가 버튼
+        col_add, col_apply = st.columns([1, 1])
+        with col_add:
+            if st.button("➕ 빠진 단어(슬롯) 추가", use_container_width=True):
+                st.session_state[dialog_key] += 1
+                st.rerun() # 슬롯 늘리기 위해 팝업 리런
+        
+        with col_apply:
+            if st.button("✅ 적용 및 분리하기", type="primary", use_container_width=True):
+                # 1. 학습 (새로운 의미 저장)
+                updated = False
+                if target_word not in st.session_state.homonym_dict:
+                    st.session_state.homonym_dict[target_word] = []
+                
+                for s in selections:
+                    if s and s not in st.session_state.homonym_dict[target_word]:
+                        st.session_state.homonym_dict[target_word].append(s)
+                        updated = True
+                
+                if updated: print(f"[System] '{target_word}'의 새로운 의미 학습 완료")
+                
+                # 2. 리스트 쪼개기 (기존 뭉텅이 삭제 -> 개별 추가)
+                st.session_state.analysis_result = [
+                    r for r in st.session_state.analysis_result 
+                    if r['원형'] != target_word
+                ]
+                
+                for mean in selections:
+                    if not mean: continue
+                    st.session_state.analysis_result.append({
+                        "삭제": False, "구분아이콘": "🔀", "횟수": "1회", 
+                        "원본": f"{target_word}({mean})", "원형": f"{target_word}({mean})", 
+                        "분류": "🔵 고" 
+                    })
+                
+                # 사용 완료된 임시 키 삭제 (청소)
+                del st.session_state[dialog_key]
+                st.toast("✅ 의미 분리 및 학습 완료!"); time.sleep(0.5); st.rerun()
 
     # -------------------------------------------------------------------------
     # [4] 메인 버튼 UI
