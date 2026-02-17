@@ -1017,7 +1017,9 @@ if st.session_state.debug_mode:
             st.warning("🤖 AI가 보낸 원본 응답 (Raw Response):")
             st.code(st.session_state.last_raw_response, language="json")
 
-# STEP 3: 결과 확인
+# =========================================================
+# STEP 3: 결과 확인 및 편집 (최종 수정본)
+# =========================================================
 elif st.session_state.step == 3:
     actual_p = st.session_state.page_idx + st.session_state.start_offset
     
@@ -1028,20 +1030,19 @@ elif st.session_state.step == 3:
     with cb:
         if st.button("⬅️ 입력 \n 창으로", use_container_width=True): st.session_state.step = 2; st.rerun()
     
+    # 디버그 모드 (생략 가능하나 유지)
     if st.session_state.debug_mode:
         with st.expander("🛠️ [정밀 디버깅] 로그 확인", expanded=True):
             st.markdown(f"<div class='debug-box'>{st.session_state.get('debug_log', '로그 없음')}</div>", unsafe_allow_html=True)
-            if st.session_state.last_raw_response:
-                st.markdown("**AI Raw Response:**")
-                st.code(st.session_state.last_raw_response)
 
+    # 상단 미리보기 (PDF/이미지/텍스트)
     if st.session_state.input_type in ["PDF", "IMAGE"]:
         c1, c2 = st.columns([1, 1])
         with c1:
             try:
                 img = get_page_image(st.session_state.file_bytes, st.session_state.file_type, st.session_state.page_idx)
                 if img:
-                    cap = f"📄 PDF 총 {st.session_state.total_pages}쪽 중 현재 {st.session_state.page_idx+1}쪽 (📍 엑셀에 '{actual_p}쪽' 저장 예정)" if st.session_state.input_type=="PDF" else "이미지 미리보기"
+                    cap = f"📄 PDF 총 {st.session_state.total_pages}쪽 중 현재 {st.session_state.page_idx+1}쪽" if st.session_state.input_type=="PDF" else "이미지 미리보기"
                     st.image(img, use_container_width=True, caption=cap)
             except: pass
         with c2:
@@ -1056,20 +1057,17 @@ elif st.session_state.step == 3:
     df_res = pd.DataFrame(st.session_state.analysis_result)
     
     if not df_res.empty:
-        # [핵심] 구분 아이콘(🔀) 자동 표시 로직
-        # 이미 학습된 단어(homonym_dict에 키가 있는 경우)는 아이콘을 띄움
+        # 구분 아이콘(🔀) 자동 표시
         if '구분아이콘' not in df_res.columns:
-            df_res['구분아이콘'] = df_res['원형'].apply(
-                lambda x: "🔀" if x in st.session_state.homonym_dict else ""
-            )
+            df_res['구분아이콘'] = df_res['원형'].apply(lambda x: "🔀" if x in st.session_state.homonym_dict else "")
 
-        # [2] 데이터 에디터 설정
+        # 데이터 에디터 설정
         edited = st.data_editor(
             df_res, 
             column_config={
                 "삭제": st.column_config.CheckboxColumn("삭제", width="small"),
                 "구분아이콘": st.column_config.TextColumn("구분", width="small", disabled=True, help="이전에 의미를 구분했던 단어입니다."),
-                "횟수": st.column_config.TextColumn("횟수", disabled=False, help="숫자만 입력하세요 (예: 3, 3회)"), 
+                "횟수": st.column_config.TextColumn("횟수", disabled=False, help="숫자만 입력하세요"), 
                 "원본": st.column_config.TextColumn("원본", disabled=True),
                 "원형": st.column_config.TextColumn("원형", disabled=True), 
                 "분류": st.column_config.SelectboxColumn("분류", options=["🔵 고", "🟢 한", "🔴 외", "🟣 혼"], width="medium")
@@ -1079,7 +1077,7 @@ elif st.session_state.step == 3:
             key="editor_final"
         )
         
-        # 동기화 및 횟수 정제
+        # 데이터 동기화
         if not edited.equals(pd.DataFrame(st.session_state.analysis_result)):
             for idx, row in edited.iterrows():
                 raw_cnt = str(row.get('횟수', '1'))
@@ -1088,21 +1086,19 @@ elif st.session_state.step == 3:
             
             st.session_state.analysis_result = edited.to_dict('records')
             st.rerun()
-            
     else:
         st.warning("⚠️ 분석된 단어가 없습니다.")
     
     # -------------------------------------------------------------------------
-    # [3] 팝업창 정의 (기억력 강화 버전)
+    # [팝업 함수 정의] 
     # -------------------------------------------------------------------------
-    
     @st.dialog("➕ 단어 직접 추가")
     def open_add_dialog():
         with st.form("manual_add_form", clear_on_submit=True):
             col_a, col_b = st.columns(2)
             with col_a:
-                o = st.text_input("단어 (예: 학교)")
-                r = st.text_input("원형 (예: 학교)")
+                o = st.text_input("단어")
+                r = st.text_input("원형")
             with col_b:
                 org = st.selectbox("어종", ["고","한","외","혼"])
                 cnt = st.number_input("횟수", 1, 100, 1)
@@ -1114,41 +1110,30 @@ elif st.session_state.step == 3:
                         "삭제": False, "구분아이콘": "", "횟수": f"{cnt}회", 
                         "원본": f"{o}(수동)", "원형": r, "분류": org_map.get(org, org)
                     })
-                    st.toast(f"✅ '{o}' 추가됨!")
-                    time.sleep(0.5); st.rerun()
+                    st.rerun()
 
-    # -------------------------------------------------------------------------
-    # [최종 수정] 팝업창: 상태 유지형 (꺼짐 방지 완벽 적용)
-    # -------------------------------------------------------------------------
     @st.dialog("🔀 동음이의어 일괄 구분")
     def open_homonym_dialog(target_word, origin_list):
-        # 1. 재고(Inventory) 파악
         inventory = Counter(origin_list)
         total_count = len(origin_list)
-
-        # 2. 세션 상태로 그룹 관리
         dialog_key = f"h_batch_{target_word}"
+        
         if dialog_key not in st.session_state:
             most_common = inventory.most_common(1)[0][0] if inventory else "🔵 고"
-            st.session_state[dialog_key] = [
-                {"mean": "", "cnt": total_count, "org": most_common}
-            ]
+            st.session_state[dialog_key] = [{"mean": "", "cnt": total_count, "org": most_common}]
 
-        # 3. 상단 정보 표시
         st.info(f"단어 **'{target_word}'** 일괄 정리 (총 **{total_count}개**)")
         
-        with st.expander("📄 원문 문맥 확인 (참고용)", expanded=True):
+        with st.expander("📄 원문 문맥 확인", expanded=True):
             st.text_area("원문 내용", value=st.session_state.get('extracted_text', ''), height=150, disabled=True, label_visibility="collapsed")
         
         badges = [f"{k}: {v}개" for k, v in inventory.items()]
         st.caption(f"📦 현재 보유 어종:  " + "  |  ".join(badges))
         
-        known_meanings = st.session_state.homonym_dict.get(target_word, [])
-        options = known_meanings + ["+ 직접 입력"]
-
+        known = st.session_state.homonym_dict.get(target_word, [])
+        options = known + ["+ 직접 입력"]
         st.markdown("---")
 
-        # 4. 그룹 입력 UI 렌더링
         groups = st.session_state[dialog_key]
         indices_to_remove = []
 
@@ -1160,7 +1145,7 @@ elif st.session_state.step == 3:
                 final_mean = sel
                 if sel == "+ 직접 입력":
                     val_key = f"b_val_{i}_{len(groups)}"
-                    final_mean = st.text_input(f"입력 #{i+1}", value=grp['mean'] if grp['mean'] not in options else "", key=val_key, placeholder="의미 입력", label_visibility="collapsed")
+                    final_mean = st.text_input(f"입력 #{i+1}", value=grp['mean'] if grp['mean'] not in options else "", key=val_key, placeholder="입력", label_visibility="collapsed")
             with c2:
                 cnt_key = f"b_cnt_{i}_{len(groups)}"
                 cnt = st.number_input(f"횟수 #{i+1}", min_value=1, value=grp['cnt'], key=cnt_key, label_visibility="collapsed")
@@ -1170,35 +1155,23 @@ elif st.session_state.step == 3:
                 org_key = f"b_org_{i}_{len(groups)}"
                 org = st.selectbox(f"어종 #{i+1}", org_opts, index=curr_idx, key=org_key, label_visibility="collapsed")
             with c4:
-                if st.button("✖️", key=f"b_del_{i}_{len(groups)}"):
-                    indices_to_remove.append(i)
+                if st.button("✖️", key=f"b_del_{i}_{len(groups)}"): indices_to_remove.append(i)
 
             groups[i] = {"mean": final_mean, "cnt": cnt, "org": org}
 
         if indices_to_remove:
-            for idx in sorted(indices_to_remove, reverse=True):
-                groups.pop(idx)
-            st.rerun() # 삭제 시 즉시 갱신 (팝업 유지됨)
+            for idx in sorted(indices_to_remove, reverse=True): groups.pop(idx)
+            st.rerun()
 
         st.session_state[dialog_key] = groups
 
-        # 5. 하단 버튼
-        col_add, col_close, col_apply = st.columns([1.5, 1, 2])
-        
-        with col_add:
+        c_add, c_apply = st.columns([1, 2])
+        with c_add:
             if st.button("➕ 그룹 추가", use_container_width=True):
                 st.session_state[dialog_key].append({"mean": "", "cnt": 1, "org": "🔵 고"})
-                st.rerun() # 추가 시 즉시 갱신 (팝업 유지됨)
-
-        with col_close:
-            # [New] 명시적인 닫기/취소 버튼
-            if st.button("닫기", use_container_width=True):
-                st.session_state.homonym_popup_active = False # 플래그 끄기
                 st.rerun()
-
-        with col_apply:
+        with c_apply:
             if st.button("✅ 검증 및 적용", type="primary", use_container_width=True):
-                # 검증
                 user_total = Counter()
                 for g in groups: user_total[g['org']] += g['cnt']
                 
@@ -1207,21 +1180,14 @@ elif st.session_state.step == 3:
                 for org, count in inventory.items():
                     if user_total[org] != count:
                         is_valid = False
-                        error_msg += f"[{org}] 재고는 {count}개인데, {user_total[org]}개를 배정했습니다.\n"
+                        error_msg += f"[{org}] 재고 {count}개 vs 배정 {user_total[org]}개 불일치.\n"
                 
-                if not is_valid:
-                    st.error(f"⚠️ 개수가 맞지 않습니다!\n{error_msg}")
+                if not is_valid: st.error(error_msg)
                 else:
-                    # 적용 및 저장
-                    updated = False
-                    if target_word not in st.session_state.homonym_dict:
-                        st.session_state.homonym_dict[target_word] = []
-                    
+                    if target_word not in st.session_state.homonym_dict: st.session_state.homonym_dict[target_word] = []
                     for g in groups:
                         m = g['mean']
-                        if m and m not in st.session_state.homonym_dict[target_word]:
-                            st.session_state.homonym_dict[target_word].append(m)
-                            updated = True
+                        if m and m not in st.session_state.homonym_dict[target_word]: st.session_state.homonym_dict[target_word].append(m)
                     
                     st.session_state.analysis_result = [r for r in st.session_state.analysis_result if r['원형'] != target_word]
                     for g in groups:
@@ -1230,24 +1196,19 @@ elif st.session_state.step == 3:
                                 "삭제": False, "구분아이콘": "🔀", "횟수": "1회", 
                                 "원본": f"{target_word}({g['mean']})", "원형": f"{target_word}({g['mean']})", "분류": g['org']
                             })
-                    
                     del st.session_state[dialog_key]
-                    st.session_state.homonym_popup_active = False # [핵심] 성공 시 플래그 끄기
-                    st.toast(f"✅ '{target_word}' 처리 완료!"); time.sleep(0.5); st.rerun()
+                    st.session_state.homonym_popup_active = False 
+                    st.rerun()
 
     # -------------------------------------------------------------------------
-    # [4] 메인 버튼 UI
+    # [4] 메인 버튼 UI (저장 흐름 및 팝업 제어)
     # -------------------------------------------------------------------------
     st.divider()
     
+    # A. 저장 전 (편집 모드)
     if not st.session_state.get('is_finished', False):
         
         b1, b2, b3, b4 = st.columns([1, 1, 1.2, 2])
-
-        # 팝업 실행 트리거 변수 초기화
-        trigger_popup = False
-        popup_target = None
-        popup_list = None
         
         with b1: 
             if st.button("➕ 단어 추가", use_container_width=True): open_add_dialog()
@@ -1258,10 +1219,8 @@ elif st.session_state.step == 3:
                 st.rerun()
         
         with b3:
-            # [최종] 의미 구분 버튼 (상태 제어 방식)
-            if st.button("🔀 의미 구분", use_container_width=True, help="체크된 단어와 같은 글자를 모두 모아 구분합니다."):
+            if st.button("🔀 의미 구분", use_container_width=True):
                 checked = [r for r in st.session_state.analysis_result if r.get('삭제', False)]
-                
                 if len(checked) == 1:
                     target = checked[0]['원형']
                     origin_list = []
@@ -1271,18 +1230,15 @@ elif st.session_state.step == 3:
                             except: cnt = 1
                             for _ in range(cnt): origin_list.append(item['분류'])
                     
-                    if origin_list:
-                        # [핵심] 세션 상태에 '열림' 상태 저장하고 리런
-                        st.session_state.homonym_popup_active = True
-                        st.session_state.popup_target = target
-                        st.session_state.popup_list = origin_list
-                        st.rerun() # 즉시 반영 (두 번 클릭 방지)
-                    else:
-                        st.error("데이터 오류")
+                    # [핵심] 상태값 설정 후 즉시 리런으로 팝업 호출
+                    st.session_state.homonym_popup_active = True
+                    st.session_state.popup_target = target
+                    st.session_state.popup_list = origin_list
+                    st.rerun()
                 elif len(checked) > 1:
-                    st.toast("⚠️ 대표 단어 하나만 체크해주세요.", icon="🚫")
+                    st.toast("⚠️ 한 번에 하나만 선택하세요.", icon="🚫")
                 else:
-                    st.toast("⚠️ 구분할 단어를 먼저 체크(삭제박스)해주세요.", icon="👆")
+                    st.toast("⚠️ 단어를 먼저 체크하세요.", icon="👆")
 
         with b4:
             if st.button("💾 이 페이지 결과 저장", type="primary", use_container_width=True):
@@ -1291,10 +1247,11 @@ elif st.session_state.step == 3:
                 st.session_state.is_finished = True
                 st.rerun()
 
-    # [핵심] 컬럼 밖에서 상태값을 체크하여 팝업 실행 (꺼짐 방지)
-    if st.session_state.get('homonym_popup_active', False):
-        open_homonym_dialog(st.session_state.popup_target, st.session_state.popup_list)
+        # [팝업 트리거] 저장 전 상태일 때만 팝업 허용
+        if st.session_state.get('homonym_popup_active', False):
+            open_homonym_dialog(st.session_state.popup_target, st.session_state.popup_list)
 
+    # B. 저장 후 (완료 모드)
     else:
         st.success("✅ 데이터가 안전하게 저장되었습니다!")
         
@@ -1307,7 +1264,6 @@ elif st.session_state.step == 3:
                     pd.DataFrame(columns=['구분','자료','출연횟수']).to_excel(writer, index=False)
             
             c_down, c_next = st.columns([1, 1])
-            
             with c_down:
                 st.download_button("📥 엑셀 파일 다운로드", data=buf.getvalue(), file_name=f"분석결과_{datetime.now().strftime('%m%d_%H%M')}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True, type="primary")
             
@@ -1323,6 +1279,5 @@ elif st.session_state.step == 3:
                             st.rerun()
                     else:
                         st.info("마지막 페이지입니다.")
-
         except Exception as e:
              st.error(f"엑셀 생성 중 오류 발생: {e}")
