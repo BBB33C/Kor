@@ -857,6 +857,29 @@ if st.session_state.step == 0:
             reset_input_buffer()
             st.session_state.mode_key = "NORTH"; st.session_state.step = 1; st.rerun()
 
+    # ---------------------------------------------------------
+    # [추가] 메인 화면 공지사항 (유저 가이드)
+    # ---------------------------------------------------------
+    st.markdown("<br>", unsafe_allow_html=True) # 여백 추가
+    
+    with st.expander("📢 [필독] 새로 추가된 '의미 구분' 기능 사용법 (클릭해서 보기)", expanded=True):
+        st.markdown("""
+        <div style="background-color: rgba(41, 121, 255, 0.1); padding: 15px; border-radius: 10px; border: 1px solid #2979ff;">
+            <h4 style="margin-top:0; color: #2979ff;">💡 동음이의어(밤, 배 등)를 더 똑똑하게 관리하세요!</h4>
+            <p style="margin-bottom: 5px;"><b>1. 표 옆에 <span style="font-size:1.2em">🔀</span> 아이콘이 보인다면?</b></p>
+            <p style="color: #cccccc; margin-left: 15px; margin-bottom: 15px;">
+                시스템이 이미 알고 있는 단어입니다.<br> 
+                단어를 <b>체크(✅)</b>하고 <b>[🔀 의미 구분]</b> 버튼을 누르면, <b>저장된 뜻 중에서 편하게 골라</b> 쓸 수 있습니다.
+            </p>
+            <p style="margin-bottom: 5px;"><b>2. 내가 직접 뜻을 나누고 싶다면?</b></p>
+            <p style="color: #cccccc; margin-left: 15px;">
+                아직 등록되지 않은 단어라도 괜찮습니다.<br>
+                단어를 <b>체크(✅)</b>하고 <b>[🔀 의미 구분]</b> 버튼을 눌러보세요. <br>
+                <b>내 맘대로 뜻을 입력</b>해서 나누면, 다음번엔 시스템이 기억해줍니다!
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+
 # STEP 1: 데이터 소스 선택
 elif st.session_state.step == 1:
     c1, c2 = st.columns([8, 2])
