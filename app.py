@@ -1118,16 +1118,21 @@ elif st.session_state.step == 3:
                     time.sleep(0.5); st.rerun()
 
     # -------------------------------------------------------------------------
-    # [수정] 팝업창 정의 (분류 구분 추가 & 빠진 단어 추가 기능 포함)
+    # [최종 수정] 팝업창: 원형 통합 관리 (한자/고유어 한방에 해결)
     # -------------------------------------------------------------------------
     @st.dialog("🔀 동음이의어 의미 구분")
-    def open_homonym_dialog(target_word, current_count, target_origin):
-        # [핵심 1] 팝업창 키에 '분류'도 포함시켜서 꼬임 방지
-        dialog_key = f"h_slots_{target_word}_{target_origin}"
+    def open_homonym_dialog(target_word, origin_list):
+        # origin_list 예시: ['🔵 고', '🔵 고', '🔵 고', '🟢 한']
+        
+        # 1. 초기 상태 설정 (슬롯 개수 및 어종 정보 기억)
+        dialog_key = f"h_list_{target_word}"
         if dialog_key not in st.session_state:
-            st.session_state[dialog_key] = current_count
+            st.session_state[dialog_key] = origin_list.copy()
 
-        st.info(f"단어 **'{target_word}'** ({target_origin})는 현재 **{st.session_state[dialog_key]}개**로 인식되었습니다.")
+        current_origins = st.session_state[dialog_key]
+        total_count = len(current_origins)
+
+        st.info(f"단어 **'{target_word}'**는 문서 전체에서 총 **{total_count}번** 발견되었습니다.")
         
         # 기억해둔 의미 목록 가져오기
         known_meanings = st.session_state.homonym_dict.get(target_word, [])
@@ -1135,31 +1140,43 @@ elif st.session_state.step == 3:
         
         st.caption(f"학습된 의미: {', '.join(known_meanings) if known_meanings else '없음'}")
         
-        # 슬롯 렌더링
+        # 2. 슬롯 렌더링 (어종 꼬리표 표시)
         selections = []
-        for i in range(st.session_state[dialog_key]):
-            col_sel, col_val = st.columns([1, 2])
+        
+        for i, origin_tag in enumerate(current_origins):
+            col_label, col_sel, col_val = st.columns([1.5, 2, 3])
+            
+            with col_label:
+                # [핵심] 슬롯 옆에 어종(고/한/외)을 표시해줌!
+                st.markdown(f"**#{i+1} {origin_tag}**")
+            
             with col_sel:
-                sel = st.selectbox(f"{i+1}번째 의미", options, key=f"h_sel_{i}")
+                sel = st.selectbox(f"의미 선택 #{i+1}", options, key=f"h_sel_{i}", label_visibility="collapsed")
+            
             with col_val:
                 if sel == "+ 직접 입력":
-                    val = st.text_input(f"직접 입력 ({i+1})", key=f"h_val_{i}", placeholder="예: 먹는 밤")
+                    val = st.text_input(f"직접 입력 #{i+1}", key=f"h_val_{i}", placeholder="예: 의미 입력", label_visibility="collapsed")
                 else:
                     val = sel
-                    st.text_input(f"선택됨 ({i+1})", value=sel, disabled=True, key=f"h_disp_{i}")
+                    st.text_input(f"표시용 #{i+1}", value=sel, disabled=True, key=f"h_disp_{i}", label_visibility="collapsed")
+            
             selections.append(val)
         
         st.markdown("---")
         
+        # 3. 하단 버튼 (추가 / 적용)
         col_add, col_apply = st.columns([1, 1])
         with col_add:
+            # 빠진 단어 추가 시, 기본적으로 '고유어(🔵 고)'로 추가하되 추후 수정 가능하게
             if st.button("➕ 빠진 단어(슬롯) 추가", use_container_width=True):
-                st.session_state[dialog_key] += 1
+                # 리스트에 기본값 추가 (가장 흔한 어종 따라가기)
+                default_org = current_origins[0] if current_origins else "🔵 고"
+                st.session_state[dialog_key].append(default_org)
                 st.rerun()
         
         with col_apply:
-            if st.button("✅ 적용 및 분리하기", type="primary", use_container_width=True):
-                # 1. 학습 (새로운 의미 저장)
+            if st.button("✅ 통합 적용하기", type="primary", use_container_width=True):
+                # A. 학습 (새로운 의미 저장)
                 updated = False
                 if target_word not in st.session_state.homonym_dict:
                     st.session_state.homonym_dict[target_word] = []
@@ -1168,26 +1185,30 @@ elif st.session_state.step == 3:
                     if s and s not in st.session_state.homonym_dict[target_word]:
                         st.session_state.homonym_dict[target_word].append(s)
                         updated = True
-                
-                if updated: print(f"[System] '{target_word}'의 새로운 의미 학습 완료")
-                
-                # [핵심 2] 리스트 쪼개기 (원형 AND 분류가 모두 일치하는 것만 삭제)
-                # 예: '배'이고 '한자어'인 것만 지움. '배(고유어)'는 살려둠.
+                if updated: print(f"[System] '{target_word}' 의미 학습 완료")
+
+                # B. 리스트 재구성 (가장 중요!)
+                # 1. 기존 리스트에서 '원형'이 같은 단어는 싹 다 지움 (어종 불문)
                 st.session_state.analysis_result = [
                     r for r in st.session_state.analysis_result 
-                    if not (r['원형'] == target_word and r['분류'] == target_origin)
+                    if r['원형'] != target_word
                 ]
                 
-                for mean in selections:
+                # 2. 팝업에서 설정한 대로 다시 생성
+                for i, mean in enumerate(selections):
                     if not mean: continue
+                    # 해당 슬롯에 배정된 어종(origin)을 그대로 가져감
+                    assigned_origin = current_origins[i]
+                    
                     st.session_state.analysis_result.append({
                         "삭제": False, "구분아이콘": "🔀", "횟수": "1회", 
                         "원본": f"{target_word}({mean})", "원형": f"{target_word}({mean})", 
-                        "분류": target_origin # [핵심 3] 원래 분류(어종)를 그대로 승계
+                        "분류": assigned_origin # [핵심] 한자어는 한자어로, 고유어는 고유어로 유지됨
                     })
                 
+                # 청소 및 종료
                 del st.session_state[dialog_key]
-                st.toast("✅ 의미 분리 및 학습 완료!"); time.sleep(0.5); st.rerun()
+                st.toast(f"✅ '{target_word}' 통합 분리 완료!"); time.sleep(0.5); st.rerun()
 
     # -------------------------------------------------------------------------
     # [4] 메인 버튼 UI
@@ -1207,24 +1228,36 @@ elif st.session_state.step == 3:
                 st.rerun()
         
         with b3:
-            # 의미 구분 버튼
-            if st.button("🔀 의미 구분", use_container_width=True, help="체크된 단어의 동음이의어를 구분합니다."):
+            # [최종] 의미 구분 버튼 (원형 통합 검색 기능)
+            if st.button("🔀 의미 구분", use_container_width=True, help="체크된 단어와 같은 글자를 모두 모아 구분합니다."):
+                # 1. 체크된 대표 단어 찾기
                 checked = [r for r in st.session_state.analysis_result if r.get('삭제', False)]
                 
                 if len(checked) == 1:
-                    target = checked[0]['원형']
-                    target_origin = checked[0]['분류'] # [추가] 선택된 단어의 '분류' 정보 가져오기
+                    target = checked[0]['원형'] # 예: "배"
                     
-                    try: 
-                        raw_cnt = str(checked[0]['횟수'])
-                        cnt = int(''.join(filter(str.isdigit, raw_cnt)))
-                    except: cnt = 1
+                    # 2. [핵심] 리스트 전체를 뒤져서 '배'인 놈들은 싹 다 긁어모음 (한자든 고유어든)
+                    origin_list = []
                     
-                    # [수정] 팝업 열 때 분류(target_origin)도 같이 전달
-                    open_homonym_dialog(target, cnt, target_origin)
+                    for item in st.session_state.analysis_result:
+                        if item['원형'] == target:
+                            # 횟수 파싱 (예: "3회" -> 3)
+                            try: 
+                                cnt = int(''.join(filter(str.isdigit, str(item['횟수']))))
+                            except: cnt = 1
+                            
+                            # 횟수만큼 어종 리스트에 추가 (예: 3회면 ['🔵 고', '🔵 고', '🔵 고'] 추가)
+                            for _ in range(cnt):
+                                origin_list.append(item['분류'])
+                    
+                    # 3. 통합 리스트를 들고 팝업창으로 이동
+                    if origin_list:
+                        open_homonym_dialog(target, origin_list)
+                    else:
+                        st.error("데이터 오류: 단어를 찾을 수 없습니다.")
                     
                 elif len(checked) > 1:
-                    st.toast("⚠️ 한 번에 하나의 단어만 구분할 수 있습니다.", icon="🚫")
+                    st.toast("⚠️ 대표 단어 하나만 체크해주세요.", icon="🚫")
                 else:
                     st.toast("⚠️ 구분할 단어를 먼저 체크(삭제박스)해주세요.", icon="👆")
 
