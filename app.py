@@ -678,7 +678,7 @@ def apply_strict_rules(analysis_result, mode_key):
 def run_analysis_action(txt, img_bytes=None):
     if not txt.strip(): st.warning("내용이 없습니다."); return
     
-    with st.spinner("AI가 어종(고유어/한자어/외래어)을 정밀 분석 중입니다..."):
+    with st.spinner("AI가 어종을 분석중입니다. 잠시만 기다려주세요..."):
         s_data = fetch_all_rules_from_db(st.session_state.mode_key)
         
         # [핵심] 품사 분석 요청을 삭제한 프롬프트
@@ -1118,97 +1118,140 @@ elif st.session_state.step == 3:
                     time.sleep(0.5); st.rerun()
 
     # -------------------------------------------------------------------------
-    # [최종 수정] 팝업창: 원형 통합 관리 (한자/고유어 한방에 해결)
+    # [최종 진화] 팝업창: 횟수 지정형 일괄 처리 (Batch Processing)
     # -------------------------------------------------------------------------
-    @st.dialog("🔀 동음이의어 의미 구분")
+    @st.dialog("🔀 동음이의어 일괄 구분")
     def open_homonym_dialog(target_word, origin_list):
-        # origin_list 예시: ['🔵 고', '🔵 고', '🔵 고', '🟢 한']
-        
-        # 1. 초기 상태 설정 (슬롯 개수 및 어종 정보 기억)
-        dialog_key = f"h_list_{target_word}"
+        # 1. 재고(Inventory) 파악
+        # 예: {'🔵 고': 3, '🟢 한': 1}
+        inventory = Counter(origin_list)
+        total_count = len(origin_list)
+
+        # 2. 세션 상태로 그룹 관리
+        dialog_key = f"h_batch_{target_word}"
         if dialog_key not in st.session_state:
-            st.session_state[dialog_key] = origin_list.copy()
+            # 기본값: 가장 많은 어종으로 1개 그룹 생성
+            most_common = inventory.most_common(1)[0][0] if inventory else "🔵 고"
+            st.session_state[dialog_key] = [
+                {"mean": "", "cnt": total_count, "org": most_common}
+            ]
 
-        current_origins = st.session_state[dialog_key]
-        total_count = len(current_origins)
-
-        st.info(f"단어 **'{target_word}'**는 문서 전체에서 총 **{total_count}번** 발견되었습니다.")
+        # 3. 상단 정보 표시
+        st.info(f"단어 **'{target_word}'** 일괄 정리 (총 **{total_count}개**)")
         
-        # 기억해둔 의미 목록 가져오기
+        # 재고 현황 보여주기 (뱃지 스타일)
+        badges = [f"{k}: {v}개" for k, v in inventory.items()]
+        st.caption(f"📦 현재 보유 어종:  " + "  |  ".join(badges))
+        
+        # 기억된 의미 옵션
         known_meanings = st.session_state.homonym_dict.get(target_word, [])
         options = known_meanings + ["+ 직접 입력"]
-        
-        st.caption(f"학습된 의미: {', '.join(known_meanings) if known_meanings else '없음'}")
-        
-        # 2. 슬롯 렌더링 (어종 꼬리표 표시)
-        selections = []
-        
-        for i, origin_tag in enumerate(current_origins):
-            col_label, col_sel, col_val = st.columns([1.5, 2, 3])
-            
-            with col_label:
-                # [핵심] 슬롯 옆에 어종(고/한/외)을 표시해줌!
-                st.markdown(f"**#{i+1} {origin_tag}**")
-            
-            with col_sel:
-                sel = st.selectbox(f"의미 선택 #{i+1}", options, key=f"h_sel_{i}", label_visibility="collapsed")
-            
-            with col_val:
-                if sel == "+ 직접 입력":
-                    val = st.text_input(f"직접 입력 #{i+1}", key=f"h_val_{i}", placeholder="예: 의미 입력", label_visibility="collapsed")
-                else:
-                    val = sel
-                    st.text_input(f"표시용 #{i+1}", value=sel, disabled=True, key=f"h_disp_{i}", label_visibility="collapsed")
-            
-            selections.append(val)
-        
-        st.markdown("---")
-        
-        # 3. 하단 버튼 (추가 / 적용)
-        col_add, col_apply = st.columns([1, 1])
-        with col_add:
-            # 빠진 단어 추가 시, 기본적으로 '고유어(🔵 고)'로 추가하되 추후 수정 가능하게
-            if st.button("➕ 빠진 단어(슬롯) 추가", use_container_width=True):
-                # 리스트에 기본값 추가 (가장 흔한 어종 따라가기)
-                default_org = current_origins[0] if current_origins else "🔵 고"
-                st.session_state[dialog_key].append(default_org)
-                st.rerun()
-        
-        with col_apply:
-            if st.button("✅ 통합 적용하기", type="primary", use_container_width=True):
-                # A. 학습 (새로운 의미 저장)
-                updated = False
-                if target_word not in st.session_state.homonym_dict:
-                    st.session_state.homonym_dict[target_word] = []
-                
-                for s in selections:
-                    if s and s not in st.session_state.homonym_dict[target_word]:
-                        st.session_state.homonym_dict[target_word].append(s)
-                        updated = True
-                if updated: print(f"[System] '{target_word}' 의미 학습 완료")
 
-                # B. 리스트 재구성 (가장 중요!)
-                # 1. 기존 리스트에서 '원형'이 같은 단어는 싹 다 지움 (어종 불문)
-                st.session_state.analysis_result = [
-                    r for r in st.session_state.analysis_result 
-                    if r['원형'] != target_word
-                ]
+        st.markdown("---")
+
+        # 4. 그룹 입력 UI 렌더링
+        updated_groups = []
+        rows_to_delete = []
+
+        for i, grp in enumerate(st.session_state[dialog_key]):
+            c1, c2, c3, c4 = st.columns([3, 1.2, 1.5, 0.5])
+            
+            with c1:
+                # 의미 선택/입력
+                sel = st.selectbox(f"의미 #{i+1}", options, key=f"b_sel_{i}", label_visibility="collapsed")
+                final_mean = sel
+                if sel == "+ 직접 입력":
+                    final_mean = st.text_input(f"입력 #{i+1}", value=grp['mean'] if grp['mean'] not in options else "", key=f"b_val_{i}", placeholder="의미 입력", label_visibility="collapsed")
+            
+            with c2:
+                # 횟수 지정
+                cnt = st.number_input(f"횟수 #{i+1}", min_value=1, value=grp['cnt'], key=f"b_cnt_{i}", label_visibility="collapsed")
+            
+            with c3:
+                # 어종 지정 (보유한 어종 중에서만 선택 가능하게 하면 더 좋음)
+                org_opts = list(inventory.keys()) if inventory else ["🔵 고", "🟢 한", "🔴 외", "🟣 혼"]
+                # 기존 값이 옵션에 없으면 기본값으로
+                curr_idx = org_opts.index(grp['org']) if grp['org'] in org_opts else 0
+                org = st.selectbox(f"어종 #{i+1}", org_opts, index=curr_idx, key=f"b_org_{i}", label_visibility="collapsed")
+            
+            with c4:
+                # 삭제 버튼 (X)
+                if st.button("✖️", key=f"b_del_{i}"):
+                    rows_to_delete.append(i)
+
+            updated_groups.append({"mean": final_mean, "cnt": cnt, "org": org})
+
+        # 삭제 처리
+        for idx in sorted(rows_to_delete, reverse=True):
+            updated_groups.pop(idx)
+        
+        st.session_state[dialog_key] = updated_groups
+
+        # 5. 하단 액션 버튼
+        col_add, col_dummy, col_apply = st.columns([1.5, 0.5, 2])
+        
+        with col_add:
+            if st.button("➕ 그룹 추가", use_container_width=True):
+                # 새 그룹 추가 (기본값)
+                st.session_state[dialog_key].append({"mean": "", "cnt": 1, "org": "🔵 고"})
+                st.rerun()
+
+        with col_apply:
+            if st.button("✅ 검증 및 적용", type="primary", use_container_width=True):
+                # A. 검증 로직 (Validation)
+                user_total = Counter()
+                for g in updated_groups:
+                    user_total[g['org']] += g['cnt']
                 
-                # 2. 팝업에서 설정한 대로 다시 생성
-                for i, mean in enumerate(selections):
-                    if not mean: continue
-                    # 해당 슬롯에 배정된 어종(origin)을 그대로 가져감
-                    assigned_origin = current_origins[i]
+                # 재고와 비교
+                is_valid = True
+                error_msg = ""
+                for org, count in inventory.items():
+                    if user_total[org] != count:
+                        is_valid = False
+                        error_msg += f"[{org}] 재고는 {count}개인데, {user_total[org]}개를 배정했습니다.\n"
+                
+                # 없는 어종을 배정한 경우
+                for org in user_total:
+                    if org not in inventory:
+                        is_valid = False
+                        error_msg += f"[{org}]은(는) 원문에 없는 어종입니다.\n"
+
+                if not is_valid:
+                    st.error(f"⚠️ 개수가 맞지 않습니다!\n{error_msg}")
+                else:
+                    # B. 적용 로직 (Application)
+                    # 1. 학습
+                    updated = False
+                    if target_word not in st.session_state.homonym_dict:
+                        st.session_state.homonym_dict[target_word] = []
                     
-                    st.session_state.analysis_result.append({
-                        "삭제": False, "구분아이콘": "🔀", "횟수": "1회", 
-                        "원본": f"{target_word}({mean})", "원형": f"{target_word}({mean})", 
-                        "분류": assigned_origin # [핵심] 한자어는 한자어로, 고유어는 고유어로 유지됨
-                    })
-                
-                # 청소 및 종료
-                del st.session_state[dialog_key]
-                st.toast(f"✅ '{target_word}' 통합 분리 완료!"); time.sleep(0.5); st.rerun()
+                    for g in updated_groups:
+                        m = g['mean']
+                        if m and m not in st.session_state.homonym_dict[target_word]:
+                            st.session_state.homonym_dict[target_word].append(m)
+                            updated = True
+                    if updated: print(f"[System] '{target_word}' 의미 학습 완료")
+
+                    # 2. 리스트 재구성
+                    # 기존 것 삭제
+                    st.session_state.analysis_result = [
+                        r for r in st.session_state.analysis_result 
+                        if r['원형'] != target_word
+                    ]
+                    
+                    # 새 그룹대로 생성
+                    for g in updated_groups:
+                        for _ in range(g['cnt']):
+                            st.session_state.analysis_result.append({
+                                "삭제": False, "구분아이콘": "🔀", "횟수": "1회", 
+                                "원본": f"{target_word}({g['mean']})", 
+                                "원형": f"{target_word}({g['mean']})", 
+                                "분류": g['org']
+                            })
+                    
+                    del st.session_state[dialog_key]
+                    st.toast(f"✅ '{target_word}' 일괄 처리 완료!"); time.sleep(0.5); st.rerun()
 
     # -------------------------------------------------------------------------
     # [4] 메인 버튼 UI
