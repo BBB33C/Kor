@@ -1201,8 +1201,16 @@ elif st.session_state.step == 3:
                     st.toast("⚠️ 구분할 단어를 먼저 체크(삭제박스)해주세요.", icon="👆")
 
         with b4:
+            # [복구 & 기능 강화] 저장 버튼 클릭 시 '자동 체크 해제' 후 저장
             if st.button("💾 이 페이지 결과 저장", type="primary", use_container_width=True):
+                # 1. 안전장치: 모든 항목의 '삭제' 체크를 강제로 해제 (False)
+                for item in st.session_state.analysis_result:
+                    item['삭제'] = False
+                
+                # 2. 그 다음 저장 로직 실행 (이제 체크된 게 없으므로 모두 저장됨)
                 save_logic_with_learning()
+                
+                # 3. 완료 처리
                 st.session_state.is_finished = True
                 st.rerun()
 
