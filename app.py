@@ -298,47 +298,64 @@ def preprocess_loaded_excel(df):
         
     return df
 
+# [수정] 엑셀 병합 로직 (횟수 계산 오류 수정 버전)
 def merge_master_data(old_df, new_df):
-    # 1. 빈 데이터 방어 (빈 껍데기라도 반환해야 엑셀 에러 안 남)
+    # 1. 빈 데이터 방어
     if (old_df is None or old_df.empty) and (new_df is None or new_df.empty):
         return pd.DataFrame(columns=['구분', '자료', '출연횟수', '쪽수1'])
     
-    # 2. 하나만 있으면 그거 반환
     if old_df is None or old_df.empty: return new_df
     if new_df is None or new_df.empty: return old_df
     
     try:
-        # 3. 안전한 병합을 위해 문자열로 변환
+        # 문자열 변환
         old_df['자료'] = old_df['자료'].astype(str)
         new_df['자료'] = new_df['자료'].astype(str)
         old_df['구분'] = old_df['구분'].astype(str)
         new_df['구분'] = new_df['구분'].astype(str)
 
-        # 4. Melt & Concat 방식 (인덱스 충돌 방지)
+        # 쪽수 컬럼만 추출해서 녹이기 (Melt)
         page_cols_old = [c for c in old_df.columns if str(c).startswith('쪽수')]
         page_cols_new = [c for c in new_df.columns if str(c).startswith('쪽수')]
         
         melted_old = old_df.melt(id_vars=['자료', '구분'], value_vars=page_cols_old, value_name='page').dropna()
         melted_new = new_df.melt(id_vars=['자료', '구분'], value_vars=page_cols_new, value_name='page').dropna()
         
+        # 합치기
         combined = pd.concat([melted_old, melted_new], ignore_index=True)
         
-        # 5. 쪽수 정제
         combined['page'] = combined['page'].astype(str).str.strip()
         combined = combined[~combined['page'].isin(['nan', '', 'None'])]
         
-        # 6. GroupBy로 합치기
+        # 중복 제거 및 정렬
         grouped = combined.groupby(['자료', '구분'])['page'].apply(lambda x: sorted(list(set(x)))).reset_index()
         
-        # 7. 결과 생성
+        # 결과 생성
         result_rows = []
         for _, row in grouped.iterrows():
             pages = row['page']
+            
+            # [핵심 수정] 쪽수_횟수 형식에서 실제 횟수 추출하여 합산
+            total_freq = 0
+            for p in pages:
+                p_str = str(p)
+                if '_' in p_str:
+                    try:
+                        # 예: "5_3" -> 3을 더함
+                        cnt = int(p_str.split('_')[1])
+                        total_freq += cnt
+                    except:
+                        total_freq += 1
+                else:
+                    # 예: "5" -> 1을 더함
+                    total_freq += 1
+
             base_data = {
                 '구분': row['구분'],
                 '자료': row['자료'],
-                '출연횟수': len(pages)
+                '출연횟수': total_freq # 수정됨: len(pages)가 아니라 계산된 합계 사용
             }
+            # 쪽수 컬럼 펼치기
             for i, p in enumerate(pages):
                 base_data[f'쪽수{i+1}'] = p
             result_rows.append(base_data)
@@ -547,12 +564,14 @@ def api_call_direct(prompt, image_bytes=None, model_name=None):
             
     return None, "Error: 3회 재시도 실패"
 
-# [수정 2] 텍스트 추출(OCR)은 저렴한 Flash로 처리
-def extract_text_unified(file_bytes, file_type, page_idx):
+# [수정] split_mode 인자 추가 (스레드용)
+def extract_text_unified(file_bytes, file_type, page_idx, split_mode=None):
     if not file_type: return ""
     raw_text = ""
     
-    # 💰 비용 절감의 핵심: 읽기는 싸고 빠른 2.5 Flash가 담당
+    # 인자가 들어오면(스레드) 그걸 쓰고, 없으면 세션값 사용
+    is_split = st.session_state.split_mode if split_mode is None else split_mode
+    
     ocr_model = "gemini-2.5-flash"
     
     if "image" in file_type: 
@@ -561,54 +580,55 @@ def extract_text_unified(file_bytes, file_type, page_idx):
         if FITZ_AVAILABLE:
             try:
                 doc = fitz.open(stream=file_bytes, filetype="pdf")
-                total = len(doc) * 2 if st.session_state.split_mode else len(doc)
-                st.session_state.total_pages = total
+                if split_mode is None: # 메인 스레드일 때만 페이지 수 업데이트
+                    total = len(doc) * 2 if is_split else len(doc)
+                    st.session_state.total_pages = total
             except: pass
         elif PLUMBER_AVAILABLE:
             try:
                 with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
-                    total = len(pdf.pages) * 2 if st.session_state.split_mode else len(pdf.pages)
-                    st.session_state.total_pages = total
+                    if split_mode is None:
+                        total = len(pdf.pages) * 2 if is_split else len(pdf.pages)
+                        st.session_state.total_pages = total
             except: pass
             
-        page_img = get_page_image(file_bytes, file_type, page_idx)
+        # get_page_image에도 split_mode 전달
+        page_img = get_page_image(file_bytes, file_type, page_idx, is_split)
         if page_img:
             raw_text, _ = api_call_direct("이 이미지 속의 텍스트를 모두 추출하세요. 줄바꿈 유지.", page_img, model_name=ocr_model)
         else:
             if PLUMBER_AVAILABLE:
                 try:
                     with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
-                        target_idx = page_idx // 2 if st.session_state.split_mode else page_idx
+                        target_idx = page_idx // 2 if is_split else page_idx
                         if target_idx < len(pdf.pages): raw_text = pdf.pages[target_idx].extract_text()
                 except: pass
     return clean_raw_text(raw_text or "")
 
-def get_page_image(file_bytes, file_type, page_idx):
+# [수정] split_mode 인자 추가
+def get_page_image(file_bytes, file_type, page_idx, split_mode=None):
     if not file_bytes or not file_type: return None
+    
+    # 인자 우선 사용
+    is_split = st.session_state.split_mode if split_mode is None else split_mode
+    
     if "image" in file_type: return file_bytes
     if "pdf" in file_type and FITZ_AVAILABLE:
         try:
             doc = fitz.open(stream=file_bytes, filetype="pdf")
             
-            # [Update] 분할 모드 로직 적용
-            is_split = st.session_state.split_mode
             pdf_page_idx = page_idx // 2 if is_split else page_idx
             is_right_half = (page_idx % 2 == 1)
             
             if pdf_page_idx < len(doc): 
-                # PDF 화질 4배 (Vision 정확도용)
                 pix = doc[pdf_page_idx].get_pixmap(matrix=fitz.Matrix(4.0, 4.0))
                 img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
                 
                 if is_split:
-                    # 반으로 자르기 (Crop)
                     w, h = img.size
-                    if is_right_half:
-                        img = img.crop((w//2, 0, w, h)) # 오른쪽 반
-                    else:
-                        img = img.crop((0, 0, w//2, h)) # 왼쪽 반
+                    if is_right_half: img = img.crop((w//2, 0, w, h))
+                    else: img = img.crop((0, 0, w//2, h))
                 
-                # 이미지 다시 바이트로 변환
                 output = io.BytesIO()
                 img.save(output, format="PNG")
                 return output.getvalue()
@@ -676,13 +696,15 @@ def apply_strict_rules(analysis_result, mode_key):
         
     return final_result
 
-# [New] 화면 갱신 없이 분석 결과만 반환하는 순수 함수 (백그라운드용)
-def get_ai_analysis_result(txt, img_bytes=None):
+# [수정] rules_data, mode_key_arg 인자 추가 (스레드용)
+def get_ai_analysis_result(txt, img_bytes=None, rules_data=None, mode_key_arg=None):
     if not txt.strip(): return []
     
     try:
-        # 1. 족보 및 프롬프트 준비
-        s_data = fetch_all_rules_from_db(st.session_state.mode_key)
+        # 인자 우선 사용, 없으면 세션값
+        current_mode = mode_key_arg if mode_key_arg else st.session_state.mode_key
+        s_data = rules_data if rules_data is not None else fetch_all_rules_from_db(current_mode)
+        
         prompt = f"""
         당신은 국어 어종 분석 전문가입니다. 
         텍스트에서 실질적인 의미를 가진 단어(명사, 용언의 어근)만 추출하여 어종을 분류하십시오.
@@ -704,10 +726,8 @@ def get_ai_analysis_result(txt, img_bytes=None):
         ]
         """
         
-        # 2. API 호출
         raw, status = api_call_direct(prompt + f"\n\n[분석 대상]:\n{txt[:5000]}", img_bytes)
         
-        # 3. 파싱 및 정제
         if not raw: return []
         
         clean_json = raw.replace("```json", "").replace("```", "").strip()
@@ -730,13 +750,28 @@ def get_ai_analysis_result(txt, img_bytes=None):
             
             draft_items.append({'원본': o, '원형': root, '분류': orig_v})
 
-        # 4. DB 족보 적용
-        draft_items = apply_strict_rules(draft_items, st.session_state.mode_key)
+        # [중요] 스레드 내에서도 족보 규칙을 적용하기 위해 로직 내장
+        rule_map = {}
+        for row in s_data:
+            root = str(row.get('root_word', '')).strip()
+            if root: rule_map[root] = {'origin': row.get('origin', ''), 'action': row.get('action', '')}
 
-        # 5. 그룹핑 (카운팅)
+        final_result = []
+        origin_map = {'고':'🔵 고', '한':'🟢 한', '외':'🔴 외', '혼':'🟣 혼'}
+
+        for item in draft_items:
+            root = item.get('원형', '').strip()
+            if root in rule_map:
+                rule = rule_map[root]
+                if rule['action'] == 'delete': continue
+                if rule['origin']:
+                    db_val = rule['origin'].replace("🔵 ", "").replace("🟢 ", "").replace("🔴 ", "").replace("🟣 ", "").strip()
+                    item['분류'] = origin_map.get(db_val, db_val)
+            final_result.append(item)
+
         proc = []
         temp_dict = {}
-        for item in draft_items:
+        for item in final_result:
             key = (item['원형'], item['분류']) 
             if key not in temp_dict: temp_dict[key] = []
             temp_dict[key].append(item['원본'])
@@ -1325,7 +1360,7 @@ elif st.session_state.step == 3:
              st.error(f"엑셀 생성 중 오류 발생: {e}")
 
     # =========================================================================
-    # [백그라운드] 다음 페이지 미리 분석 (Pre-fetching)
+    # [백그라운드] 다음 페이지 미리 분석 (Real Pre-fetching)
     # =========================================================================
     # 현재 페이지 작업 중일 때, 다음 페이지를 몰래 분석해둠
     if st.session_state.input_type == "PDF" and not st.session_state.is_finished:
@@ -1334,27 +1369,49 @@ elif st.session_state.step == 3:
         # 아직 캐시에 없고, 마지막 페이지가 아니라면
         if next_target < st.session_state.total_pages and next_target not in st.session_state.analysis_cache:
             
-            # 스레드에서 실행할 작업 정의
-            def _background_job():
-                try:
-                    # 주의: 스레드에서는 st.* 사용 불가. 순수 로직만 수행.
-                    # 1. 텍스트 추출 (OCR) - 비용 절감을 위해 Flash 모델 사용됨
-                    # (여기서는 메인 스레드 함수를 호출하되, 세션 의존성 때문에 직접 텍스트를 넘겨줄 수 없으니
-                    #  필요한 데이터만 복사해서 워커에게 넘겨야 함. 
-                    #  하지만 복잡도를 낮추기 위해 '텍스트 추출'은 건너뛰고 '빈 껍데기'라도 만들어둘지,
-                    #  아니면 여기서 추출을 시도할지 결정해야 함.)
-                    
-                    # [현실적 타협] 스레드 내 텍스트 추출이 까다로우므로(fitz 등), 
-                    # 다음 페이지로 넘어갈 때 'Case B' 로딩을 보여주는 게 안전할 수 있음.
-                    # 하지만 '사용자 경험'을 위해 최대한 시도.
-                    pass 
-                except: pass
-
-            # 사실 Streamlit에서 완벽한 백그라운드 스레드는 'st.cache_resource' 없이는 어렵습니다.
-            # 가장 확실한 방법: 사용자가 '편집'하는 시간 동안에는 아무것도 하지 않고, 
-            # 버튼을 눌렀을 때 'Case B'로 처리하는 것이 오류 없는 최선의 방법입니다.
+            # [준비] 스레드에 넘겨줄 데이터 미리 챙기기 (세션 의존성 제거)
+            file_b = st.session_state.file_bytes
+            f_type = st.session_state.file_type
+            s_mode = st.session_state.split_mode
+            m_key = st.session_state.mode_key
             
-            # 사용자님의 "편집에 영향을 주면 안 된다"는 요청을 100% 지키기 위해,
-            # 불안정한 백그라운드 스레드 코드는 넣지 않고 
-            # [Case B] 로직(잠시만 기다려주세요)을 아주 깔끔하게 구현하는 것으로 마무리하겠습니다.
-            pass
+            # DB 규칙도 미리 가져와서 넘겨줌 (스레드에서 DB 조회하면 터질 수 있음)
+            # 주의: fetch_all_rules_from_db가 캐싱되어 있으므로 빠름
+            try:
+                rules = fetch_all_rules_from_db(m_key)
+            except:
+                rules = []
+            
+            # 캐시 저장소 (딕셔너리는 주소값이 넘어가므로 스레드에서 수정 가능)
+            cache_ref = st.session_state.analysis_cache
+            
+            def _real_worker(fb, ft, page, sm, mk, rule_data, cache):
+                try:
+                    # 1. 텍스트 추출 (Flash 모델 사용)
+                    # 수정된 extract_text_unified 호출 (split_mode 직접 전달)
+                    ocr_txt = extract_text_unified(fb, ft, page, split_mode=sm)
+                    
+                    if ocr_txt and ocr_txt.strip():
+                        # 2. AI 분석 (Pro 모델 사용)
+                        # 수정된 get_ai_analysis_result 호출 (rules_data 직접 전달)
+                        res = get_ai_analysis_result(ocr_txt, rules_data=rule_data, mode_key_arg=mk)
+                        
+                        # 3. 결과 캐시에 저장
+                        if res:
+                            cache[page] = {
+                                'text': ocr_txt,
+                                'result': res,
+                                'timestamp': datetime.now().isoformat()
+                            }
+                            # 로그는 콘솔에서만 확인 가능
+                            # print(f"[Background] {page}쪽 분석 완료!")
+                except Exception:
+                    pass
+
+            # 스레드 실행 (Daemon=True로 설정하여 앱 종료 시 같이 종료)
+            # 메인 로직에 영향 주지 않게 try-except 감쌈
+            try:
+                t = threading.Thread(target=_real_worker, args=(file_b, f_type, next_target, s_mode, m_key, rules, cache_ref))
+                t.daemon = True
+                t.start()
+            except: pass
