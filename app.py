@@ -858,24 +858,31 @@ if st.session_state.step == 0:
             st.session_state.mode_key = "NORTH"; st.session_state.step = 1; st.rerun()
 
     # ---------------------------------------------------------
-    # [추가] 메인 화면 공지사항 (유저 가이드)
+    # [추가] 메인 화면 공지사항 (유저 가이드 - 26/02/18 업데이트)
     # ---------------------------------------------------------
     st.markdown("<br>", unsafe_allow_html=True) # 여백 추가
     
     with st.expander("📢 [필독] 새로 추가된 '의미 구분' 기능 사용법 (클릭해서 보기)", expanded=True):
         st.markdown("""
-        <div style="background-color: rgba(41, 121, 255, 0.1); padding: 15px; border-radius: 10px; border: 1px solid #2979ff;">
-            <h4 style="margin-top:0; color: #2979ff;">💡 동음이의어(밤, 배 등)를 더 똑똑하게 관리하세요!</h4>
-            <p style="margin-bottom: 5px;"><b>1. 표 옆에 <span style="font-size:1.2em">🔀</span> 아이콘이 보인다면?</b></p>
+        <div style="background-color: rgba(41, 121, 255, 0.1); padding: 20px; border-radius: 10px; border: 1px solid #2979ff;">
+            <h4 style="margin-top:0; color: #2979ff;">💡 동음이의어(밤, 배 등)를 더 똑똑하게 관리하세요! <span style="font-size:0.7em; color:#888;">(26/02/18 업데이트)</span></h4>
+            
+            <p style="margin-bottom: 5px;"><b>1. 표 옆에 <span style="font-size:1.2em">🔀</span> 아이콘이 떠 있나요?</b></p>
             <p style="color: #cccccc; margin-left: 15px; margin-bottom: 15px;">
-                시스템이 이미 알고 있는 단어입니다.<br> 
-                단어를 <b>체크(✅)</b>하고 <b>[🔀 의미 구분]</b> 버튼을 누르면, <b>저장된 뜻 중에서 편하게 골라</b> 쓸 수 있습니다.
+                "이 단어는 뜻이 여러 개예요!"라는 표시입니다.<br> 
+                단어를 <b>체크(✅)</b>하고 <b>[🔀 의미 구분]</b> 버튼을 누르면, <b>저장된 뜻 중에서 쏙 골라</b> 쓰실 수 있습니다.
             </p>
-            <p style="margin-bottom: 5px;"><b>2. 내가 직접 뜻을 나누고 싶다면?</b></p>
-            <p style="color: #cccccc; margin-left: 15px;">
-                아직 등록되지 않은 단어라도 괜찮습니다.<br>
+            
+            <p style="margin-bottom: 5px;"><b>2. "어? 이 단어도 뜻이 다른데..." 싶으신가요?</b></p>
+            <p style="color: #cccccc; margin-left: 15px; margin-bottom: 20px;">
+                아직 등록되지 않은 단어라도 걱정 마세요.<br>
                 단어를 <b>체크(✅)</b>하고 <b>[🔀 의미 구분]</b> 버튼을 눌러보세요. <br>
-                <b>내 맘대로 뜻을 입력</b>해서 나누면, 다음번엔 시스템이 기억해줍니다!
+                <b>내 맘대로 뜻을 입력</b>해서 나누면, 다음번엔 시스템이 알아서 기억해줍니다!
+            </p>
+            
+            <hr style="border: 0; border-top: 1px dashed #555; margin: 10px 0;">
+            <p style="text-align: center; color: #aaa; font-size: 0.95rem; margin-bottom: 0;">
+                📞 <b>별도의 오류가 발생하거나 궁금한 점이 있으시면 언제든 바로 연락 바랍니다.</b>
             </p>
         </div>
         """, unsafe_allow_html=True)
