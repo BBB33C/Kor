@@ -1123,14 +1123,15 @@ elif st.session_state.step == 3:
             st.toast("✅ 의미 분리 완료!"); time.sleep(0.5); st.rerun()
 
     # -------------------------------------------------------------------------
-    # [4] 메인 버튼 UI (저장 흐름 단일화)
+    # [4] 메인 버튼 UI (저장 흐름 단일화 & 오류 수정)
     # -------------------------------------------------------------------------
     st.divider()
     
     # 저장 전 상태
     if not st.session_state.get('is_finished', False):
         
-        b1, b2, b3, b4 = st.columns([1, 1, 1.2, 2]) # 버튼 비율 조정
+        # [수정] 컬럼 비율 조정 및 4개 컬럼 확보
+        b1, b2, b3, b4 = st.columns([1, 1, 1.2, 2])
         
         with b1: 
             if st.button("➕ 단어 추가", use_container_width=True): open_add_dialog()
@@ -1148,15 +1149,19 @@ elif st.session_state.step == 3:
                 if len(checked) == 1:
                     target = checked[0]['원형']
                     # 횟수 파싱 (숫자만 추출)
-                    cnt = int(''.join(filter(str.isdigit, str(checked[0]['횟수']))))
+                    try:
+                        cnt = int(''.join(filter(str.isdigit, str(checked[0]['횟수']))))
+                    except: cnt = 1
                     open_homonym_dialog(target, cnt)
                 elif len(checked) > 1:
+                    # [수정] icon="🚫" (이모지 사용)
                     st.toast("⚠️ 한 번에 하나의 단어만 구분할 수 있습니다.", icon="🚫")
                 else:
-                    st.toast("⚠️ 구분할 단어를 먼저 체크(삭제박스)해주세요.", icon="point_up")
+                    # [수정] icon="👆" (문자열 point_up 대신 이모지 사용)
+                    st.toast("⚠️ 구분할 단어를 먼저 체크(삭제박스)해주세요.", icon="👆")
 
         with b4:
-            # [핵심] 저장 버튼 하나로 통일
+            # [복구] 저장 버튼이 여기 확실히 있습니다!
             if st.button("💾 이 페이지 결과 저장", type="primary", use_container_width=True):
                 save_logic_with_learning()
                 st.session_state.is_finished = True
