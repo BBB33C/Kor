@@ -1118,17 +1118,16 @@ elif st.session_state.step == 3:
                     time.sleep(0.5); st.rerun()
 
     # -------------------------------------------------------------------------
-    # [수정] 팝업창 정의 (빠진 단어 추가 기능 포함)
+    # [수정] 팝업창 정의 (분류 구분 추가 & 빠진 단어 추가 기능 포함)
     # -------------------------------------------------------------------------
     @st.dialog("🔀 동음이의어 의미 구분")
-    def open_homonym_dialog(target_word, current_count):
-        # [핵심] 팝업창 내부 상태 관리를 위한 키 생성
-        # 다이얼로그가 리런될 때 개수를 기억하기 위함
-        dialog_key = f"h_slots_{target_word}"
+    def open_homonym_dialog(target_word, current_count, target_origin):
+        # [핵심 1] 팝업창 키에 '분류'도 포함시켜서 꼬임 방지
+        dialog_key = f"h_slots_{target_word}_{target_origin}"
         if dialog_key not in st.session_state:
             st.session_state[dialog_key] = current_count
 
-        st.info(f"단어 **'{target_word}'**는 현재 **{st.session_state[dialog_key]}개**로 인식되었습니다.")
+        st.info(f"단어 **'{target_word}'** ({target_origin})는 현재 **{st.session_state[dialog_key]}개**로 인식되었습니다.")
         
         # 기억해둔 의미 목록 가져오기
         known_meanings = st.session_state.homonym_dict.get(target_word, [])
@@ -1136,7 +1135,7 @@ elif st.session_state.step == 3:
         
         st.caption(f"학습된 의미: {', '.join(known_meanings) if known_meanings else '없음'}")
         
-        # [기능 1] 슬롯 렌더링 (동적으로 늘어난 개수만큼 표시)
+        # 슬롯 렌더링
         selections = []
         for i in range(st.session_state[dialog_key]):
             col_sel, col_val = st.columns([1, 2])
@@ -1152,12 +1151,11 @@ elif st.session_state.step == 3:
         
         st.markdown("---")
         
-        # [기능 2] 빠진 단어 추가 버튼
         col_add, col_apply = st.columns([1, 1])
         with col_add:
             if st.button("➕ 빠진 단어(슬롯) 추가", use_container_width=True):
                 st.session_state[dialog_key] += 1
-                st.rerun() # 슬롯 늘리기 위해 팝업 리런
+                st.rerun()
         
         with col_apply:
             if st.button("✅ 적용 및 분리하기", type="primary", use_container_width=True):
@@ -1173,10 +1171,11 @@ elif st.session_state.step == 3:
                 
                 if updated: print(f"[System] '{target_word}'의 새로운 의미 학습 완료")
                 
-                # 2. 리스트 쪼개기 (기존 뭉텅이 삭제 -> 개별 추가)
+                # [핵심 2] 리스트 쪼개기 (원형 AND 분류가 모두 일치하는 것만 삭제)
+                # 예: '배'이고 '한자어'인 것만 지움. '배(고유어)'는 살려둠.
                 st.session_state.analysis_result = [
                     r for r in st.session_state.analysis_result 
-                    if r['원형'] != target_word
+                    if not (r['원형'] == target_word and r['분류'] == target_origin)
                 ]
                 
                 for mean in selections:
@@ -1184,10 +1183,9 @@ elif st.session_state.step == 3:
                     st.session_state.analysis_result.append({
                         "삭제": False, "구분아이콘": "🔀", "횟수": "1회", 
                         "원본": f"{target_word}({mean})", "원형": f"{target_word}({mean})", 
-                        "분류": "🔵 고" 
+                        "분류": target_origin # [핵심 3] 원래 분류(어종)를 그대로 승계
                     })
                 
-                # 사용 완료된 임시 키 삭제 (청소)
                 del st.session_state[dialog_key]
                 st.toast("✅ 의미 분리 및 학습 완료!"); time.sleep(0.5); st.rerun()
 
@@ -1212,11 +1210,19 @@ elif st.session_state.step == 3:
             # 의미 구분 버튼
             if st.button("🔀 의미 구분", use_container_width=True, help="체크된 단어의 동음이의어를 구분합니다."):
                 checked = [r for r in st.session_state.analysis_result if r.get('삭제', False)]
+                
                 if len(checked) == 1:
                     target = checked[0]['원형']
-                    try: cnt = int(''.join(filter(str.isdigit, str(checked[0]['횟수']))))
+                    target_origin = checked[0]['분류'] # [추가] 선택된 단어의 '분류' 정보 가져오기
+                    
+                    try: 
+                        raw_cnt = str(checked[0]['횟수'])
+                        cnt = int(''.join(filter(str.isdigit, raw_cnt)))
                     except: cnt = 1
-                    open_homonym_dialog(target, cnt)
+                    
+                    # [수정] 팝업 열 때 분류(target_origin)도 같이 전달
+                    open_homonym_dialog(target, cnt, target_origin)
+                    
                 elif len(checked) > 1:
                     st.toast("⚠️ 한 번에 하나의 단어만 구분할 수 있습니다.", icon="🚫")
                 else:
