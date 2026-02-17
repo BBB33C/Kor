@@ -61,6 +61,8 @@ if 'last_raw_response' not in st.session_state: st.session_state.last_raw_respon
 if 'debug_log' not in st.session_state: st.session_state.debug_log = ""
 if 'is_finished' not in st.session_state: st.session_state.is_finished = False
 if 'split_mode' not in st.session_state: st.session_state.split_mode = False # [New] 분할 모드 상태
+# [New] 동음이의어 사전 메모리 초기화
+if 'homonym_dict' not in st.session_state: st.session_state.homonym_dict = {}
 
 # [New] 입력 데이터만 초기화하는 안전 함수
 def reset_input_buffer():
@@ -232,6 +234,33 @@ def calc_freq(row):
                 except: total += 1
             elif v not in ['nan', '', 'None']: total += 1
     return total
+
+# [New] 이어하기 시 '단어(의미)' 형태를 분리하여 로드하는 전처리 함수
+def preprocess_loaded_excel(df):
+    if df is None or df.empty: return df
+    
+    # '자료' 컬럼이 있는 경우에만 처리
+    if '자료' in df.columns:
+        # 정규표현식: "단어(의미)" 형태 감지
+        # 예: "배(과일)" -> match group 1="배", group 2="과일"
+        pattern = r"(.+)\((.+)\)$"
+        
+        def split_meaning(val):
+            val = str(val).strip()
+            # 이미 수동으로 입력된 (수동) 태그는 건너뜀
+            if "(수동)" in val: return val
+            
+            match = re.search(pattern, val)
+            if match:
+                word, meaning = match.groups()
+                # 여기서 전역 사전(Session State)에 학습시켜도 됨 (선택사항)
+                return val # 일단 원본 그대로 유지 (UI에서 보여주기 위해)
+            return val
+
+        # 데이터 프레임에 적용 (현재는 패스스루, 필요 시 로직 확장 가능)
+        # df['자료'] = df['자료'].apply(split_meaning) 
+        
+    return df
 
 def merge_master_data(old_df, new_df):
     # 1. 빈 데이터 방어 (빈 껍데기라도 반환해야 엑셀 에러 안 남)
@@ -979,117 +1008,197 @@ elif st.session_state.step == 3:
         st.text_area("입력 원문 확인", value=st.session_state.extracted_text, height=250, disabled=True)
 
     st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
-    # 기존: elif st.session_state.step == 3: ... 내부
     st.markdown("### 📋 분석 결과 편집")
     
+    # [1] 데이터 프레임 준비 (동음이의어 표시 아이콘 추가)
     df_res = pd.DataFrame(st.session_state.analysis_result)
     
     if not df_res.empty:
-        # [수정] 품사 선택 설정 삭제
+        # 구분 아이콘(🔀) 열 생성 로직
+        if '구분아이콘' not in df_res.columns:
+            df_res['구분아이콘'] = df_res['원형'].apply(
+                lambda x: "🔀" if x in st.session_state.homonym_dict else ""
+            )
+
+        # [2] 데이터 에디터 설정 (횟수 수정 가능!)
         edited = st.data_editor(
             df_res, 
             column_config={
-                "삭제": st.column_config.CheckboxColumn("삭제"),
-                "횟수": st.column_config.TextColumn("횟수", disabled=True),
+                "삭제": st.column_config.CheckboxColumn("삭제", width="small"),
+                "구분아이콘": st.column_config.TextColumn("구분", width="small", disabled=True, help="동음이의어로 등록된 단어입니다."),
+                "횟수": st.column_config.TextColumn("횟수", disabled=False, help="숫자만 입력하세요 (예: 3, 3회)"), # [수정] 편집 가능
                 "원본": st.column_config.TextColumn("원본", disabled=True),
-                "원형": st.column_config.TextColumn("원형"), 
-                "분류": st.column_config.SelectboxColumn("분류", options=["🔵 고", "🟢 한", "🔴 외", "🟣 혼"])
+                "원형": st.column_config.TextColumn("원형", disabled=True), 
+                "분류": st.column_config.SelectboxColumn("분류", options=["🔵 고", "🟢 한", "🔴 외", "🟣 혼"], width="medium")
             }, 
             use_container_width=True, 
             num_rows="dynamic", 
             key="editor_final"
         )
         
-        # 동기화
-        st.session_state.analysis_result = edited.to_dict('records')
-        
-        if not edited.equals(df_res):
-            diff_mask = (edited != df_res).any(axis=1)
-            if not edited[diff_mask][[c for c in df_res.columns if c != "삭제"]].equals(df_res[diff_mask][[c for c in df_res.columns if c != "삭제"]]):
-                st.session_state.analysis_result = edited.to_dict('records')
-                st.toast("🔄 데이터 동기화 중..."); time.sleep(2.0); st.rerun()
-            else: st.session_state.analysis_result = edited.to_dict('records')
+        # 동기화 및 횟수 정제 (숫자만 남기기)
+        if not edited.equals(pd.DataFrame(st.session_state.analysis_result)):
+            # 횟수 컬럼 정제 로직
+            for idx, row in edited.iterrows():
+                raw_cnt = str(row.get('횟수', '1'))
+                clean_cnt = ''.join(filter(str.isdigit, raw_cnt))
+                edited.at[idx, '횟수'] = f"{clean_cnt}회" if clean_cnt else "1회"
+            
+            st.session_state.analysis_result = edited.to_dict('records')
+            st.rerun() # 즉시 반영
+            
     else:
-        st.warning("⚠️ 분석된 단어가 없거나 모두 필터링되었습니다. 원문을 확인하거나 직접 단어를 추가해주세요.")
+        st.warning("⚠️ 분석된 단어가 없습니다.")
+    
+    # -------------------------------------------------------------------------
+    # [3] 팝업창 정의 (단어 추가 & 의미 구분 통합)
+    # -------------------------------------------------------------------------
     
     @st.dialog("➕ 단어 직접 추가")
     def open_add_dialog():
-        with st.form("manual_add_form"):
-            o = st.text_input("원본 단어")
-            r = st.text_input("원형(기본형)")
-            org = st.selectbox("어종 분류", ["고","한","외","혼"])
-            p = st.selectbox("품사", ["명사","동사","형용사","부사","관형사","대명사","고유명사","감탄사"])
-            cnt = st.number_input("출연 횟수", 1, 100, 1)
-            if st.form_submit_button("추가 완료"):
+        with st.form("manual_add_form", clear_on_submit=True):
+            col_a, col_b = st.columns(2)
+            with col_a:
+                o = st.text_input("단어 (예: 학교)")
+                r = st.text_input("원형 (예: 학교)")
+            with col_b:
+                org = st.selectbox("어종", ["고","한","외","혼"])
+                cnt = st.number_input("횟수", 1, 100, 1)
+            
+            if st.form_submit_button("추가 완료", type="primary"):
+                if o and r:
+                    org_map = {'고':'🔵 고', '한':'🟢 한', '외':'🔴 외', '혼':'🟣 혼'}
+                    st.session_state.analysis_result.append({
+                        "삭제": False, "구분아이콘": "", "횟수": f"{cnt}회", 
+                        "원본": f"{o}(수동)", "원형": r, "분류": org_map.get(org, org)
+                    })
+                    st.toast(f"✅ '{o}' 추가됨!")
+                    time.sleep(0.5); st.rerun()
+
+    @st.dialog("🔀 동음이의어 의미 구분")
+    def open_homonym_dialog(target_word, current_count):
+        st.info(f"단어 **'{target_word}'**는 원문에서 총 **{current_count}번** 발견되었습니다.")
+        st.caption("각각의 의미를 지정해주세요. (기존에 등록된 의미는 선택 가능)")
+        
+        # 기존 학습된 의미 목록 가져오기
+        known_meanings = st.session_state.homonym_dict.get(target_word, [])
+        options = known_meanings + ["+ 직접 입력"]
+        
+        selections = []
+        for i in range(current_count):
+            col_sel, col_val = st.columns([1, 2])
+            with col_sel:
+                sel = st.selectbox(f"{i+1}번째 의미", options, key=f"h_sel_{i}")
+            with col_val:
+                if sel == "+ 직접 입력":
+                    val = st.text_input(f"직접 입력 ({i+1})", key=f"h_val_{i}", placeholder="예: 먹는 밤")
+                else:
+                    val = sel
+                    st.text_input(f"선택됨 ({i+1})", value=sel, disabled=True, key=f"h_disp_{i}")
+            selections.append(val)
+            
+        if st.button("적용 및 분리하기", type="primary"):
+            # 1. 학습 (새로운 의미 저장)
+            new_meanings = [s for s in selections if s and s not in known_meanings]
+            if new_meanings:
+                st.session_state.homonym_dict.setdefault(target_word, []).extend(new_meanings)
+            
+            # 2. 리스트 쪼개기 (기존 '밤' 삭제 -> '밤(먹는 밤)', '밤(어두운 밤)' 추가)
+            # 현재 리스트에서 해당 단어 제거
+            st.session_state.analysis_result = [
+                r for r in st.session_state.analysis_result 
+                if r['원형'] != target_word
+            ]
+            
+            # 쪼개진 단어들 추가
+            origin_map = {'고':'🔵 고', '한':'🟢 한', '외':'🔴 외', '혼':'🟣 혼'} # 기본값 가정
+            for mean in selections:
+                if not mean: continue
                 st.session_state.analysis_result.append({
-                    "삭제": False, "횟수": f"{cnt}회", "원본": f"{o}(수동)", "원형": r, 
-                    "분류": {'고':'🔵 고', '한':'🟢 한', '외':'🔴 외', '혼':'🟣 혼'}.get(org, org), 
-                    "품사": {'명사':'📦 명사', '동사':'🏃 동사', '형용사':'🎨 형용사', '부사':'⚡ 부사', '관형사':'🔍 관형사', '대명사':'👤 대명사', '감탄사':'❗ 감탄사'}.get(p, p)
+                    "삭제": False, "구분아이콘": "🔀", "횟수": "1회", 
+                    "원본": f"{target_word}({mean})", "원형": f"{target_word}({mean})", 
+                    "분류": "🔵 고" # [주의] 어종은 일단 고유어로 기본 설정 (필요시 수정)
                 })
-                st.toast("✅ 단어 추가 완료. 동기화 중...", icon="✨")
-                time.sleep(2.0)
+            
+            st.toast("✅ 의미 분리 완료!"); time.sleep(0.5); st.rerun()
+
+    # -------------------------------------------------------------------------
+    # [4] 메인 버튼 UI (저장 흐름 단일화)
+    # -------------------------------------------------------------------------
+    st.divider()
+    
+    # 저장 전 상태
+    if not st.session_state.get('is_finished', False):
+        
+        b1, b2, b3, b4 = st.columns([1, 1, 1.2, 2]) # 버튼 비율 조정
+        
+        with b1: 
+            if st.button("➕ 단어 추가", use_container_width=True): open_add_dialog()
+                
+        with b2:
+            if st.button("⛔ 선택 삭제", use_container_width=True):
+                st.session_state.analysis_result = [r for r in st.session_state.analysis_result if not r.get('삭제', False)]
+                st.rerun()
+        
+        with b3:
+            # [New] 의미 구분 버튼
+            if st.button("🔀 의미 구분", use_container_width=True, help="체크된 단어의 동음이의어를 구분합니다."):
+                # 체크된 단어 찾기 (하나만 선택해야 함)
+                checked = [r for r in st.session_state.analysis_result if r.get('삭제', False)] # 삭제 체크박스를 선택용으로 재활용
+                if len(checked) == 1:
+                    target = checked[0]['원형']
+                    # 횟수 파싱 (숫자만 추출)
+                    cnt = int(''.join(filter(str.isdigit, str(checked[0]['횟수']))))
+                    open_homonym_dialog(target, cnt)
+                elif len(checked) > 1:
+                    st.toast("⚠️ 한 번에 하나의 단어만 구분할 수 있습니다.", icon="🚫")
+                else:
+                    st.toast("⚠️ 구분할 단어를 먼저 체크(삭제박스)해주세요.", icon="point_up")
+
+        with b4:
+            # [핵심] 저장 버튼 하나로 통일
+            if st.button("💾 이 페이지 결과 저장", type="primary", use_container_width=True):
+                save_logic_with_learning()
+                st.session_state.is_finished = True
                 st.rerun()
 
-    if not st.session_state.is_finished:
-        if st.session_state.input_type in ["DIRECT", "IMAGE"]:
-            b1, b2, b3 = st.columns([1, 1, 2])
-            with b1: 
-                if st.button("➕ 단어 추가", use_container_width=True): open_add_dialog()
-            with b2:
-                if st.button("⛔ 선택 삭제", use_container_width=True):
-                    st.session_state.analysis_result = [r for r in st.session_state.analysis_result if not r.get('삭제', False)]
-                    st.toast("🗑️ 삭제 데이터 정리 중..."); time.sleep(2.0); st.rerun()
-            with b3:
-                if st.button("💾 결과 저장 및 학습", type="primary", use_container_width=True):
-                    with st.status("데이터 저장 및 학습 반영 중..."):
-                        save_logic_with_learning()
-                        st.session_state.is_finished = True
-                        st.success("✅ 저장이 완료되었습니다!")
-                        time.sleep(1.0)
-                        st.rerun()
-        else:
-            b1, b2, b3, b4 = st.columns([1, 1, 1.5, 2])
-            with b1: 
-                if st.button("➕ 단어 추가", use_container_width=True): open_add_dialog()
-            with b2:
-                if st.button("⛔ 선택 삭제", use_container_width=True):
-                    st.session_state.analysis_result = [r for r in st.session_state.analysis_result if not r.get('삭제', False)]
-                    st.toast("🗑️ 삭제 데이터 정리 중..."); time.sleep(2.0); st.rerun()
-            with b3:
-                if st.button("💾 현재 페이지만 저장", use_container_width=True):
-                    save_logic_with_learning(); st.session_state.is_finished = True; st.rerun()
-            with b4:
-                if st.button("🚀 저장하고 다음 쪽 가기", type="primary", use_container_width=True):
-                    save_logic_with_learning()
-                    if st.session_state.input_type == "PDF" and st.session_state.page_idx < st.session_state.total_pages - 1:
-                        st.toast("⏳ 다음 페이지 분석 중...", icon="📄")
-                        st.session_state.page_idx += 1; st.session_state.extracted_text = extract_text_unified(st.session_state.file_bytes, "application/pdf", st.session_state.page_idx)
-                        st.session_state.analysis_result = []; st.session_state.step = 2; st.rerun()
-                    else: st.session_state.is_finished = True; st.balloons(); st.rerun()
+    # 저장 후 상태 (다운로드 & 이동)
     else:
-        st.success("✅ 저장이 완료되었습니다!")
-        kst_now = datetime.utcnow() + timedelta(hours=9)
-        fname = f"KR 분석 결과 {kst_now.strftime('%m%d_%H%M')}.xlsx"
-        buf = io.BytesIO()
+        st.success("✅ 데이터가 안전하게 저장되었습니다!")
+        
+        # 엑셀 생성
         try:
-            with pd.ExcelWriter(buf, engine='openpyxl') as w: 
-                st.session_state.master_df.astype(str).to_excel(w, index=False)
-        except:
-            with pd.ExcelWriter(buf, engine='openpyxl') as w: 
-                st.session_state.master_df.to_excel(w, index=False)
-        
-        c_down, c_next = st.columns([1, 1])
-        with c_down:
-            st.download_button(label=f"📥 엑셀 다운로드", data=buf.getvalue(), file_name=fname, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True, type="primary")
-        
-        if st.session_state.input_type == "PDF":
-            with c_next:
-                can_go_next = st.session_state.file_type and "pdf" in st.session_state.file_type and st.session_state.page_idx < st.session_state.total_pages - 1
-                if st.button("➡️ 다음 쪽으로 이동", use_container_width=True, disabled=not can_go_next):
-                    st.toast("⏳ 다음 페이지 분석 중...", icon="📄")
-                    st.session_state.page_idx += 1
-                    st.session_state.extracted_text = extract_text_unified(st.session_state.file_bytes, st.session_state.file_type, st.session_state.page_idx)
-                    st.session_state.analysis_result = []
-                    st.session_state.step = 2
-                    st.session_state.is_finished = False
-                    st.rerun()
+            buf = io.BytesIO()
+            with pd.ExcelWriter(buf, engine='openpyxl') as writer:
+                if st.session_state.master_df is not None and not st.session_state.master_df.empty:
+                    st.session_state.master_df.to_excel(writer, index=False)
+                else:
+                    pd.DataFrame(columns=['구분','자료','출연횟수']).to_excel(writer, index=False)
+            
+            c_down, c_next = st.columns([1, 1])
+            
+            with c_down:
+                st.download_button(
+                    label="📥 엑셀 파일 다운로드",
+                    data=buf.getvalue(),
+                    file_name=f"분석결과_{datetime.now().strftime('%m%d_%H%M')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True,
+                    type="primary"
+                )
+                
+            if st.session_state.input_type == "PDF":
+                with c_next:
+                    if st.session_state.page_idx < st.session_state.total_pages - 1:
+                        if st.button("➡️ 다음 쪽으로 이동", use_container_width=True):
+                            st.session_state.page_idx += 1
+                            st.session_state.extracted_text = extract_text_unified(st.session_state.file_bytes, "application/pdf", st.session_state.page_idx)
+                            st.session_state.analysis_result = []
+                            st.session_state.step = 2
+                            st.session_state.is_finished = False
+                            st.rerun()
+                    else:
+                        st.info("마지막 페이지입니다.")
+
+        except Exception as e:
+             st.error(f"엑셀 생성 중 오류 발생: {e}")
