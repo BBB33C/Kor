@@ -840,7 +840,7 @@ with st.sidebar:
     if st.button("📋 사용 가능한 모델 목록 보기"):
         url = f"https://generativelanguage.googleapis.com/v1beta/models?key={API_KEY}"
         r = requests.get(url); st.code(r.text) # 화면에 JSON으로 쫙 보여줍니다
-    # ---------------------------------------------------------
+   # ---------------------------------------------------------
     # [Final] 시스템 실전 한계 테스트 (Real-World Execution)
     # ---------------------------------------------------------
     st.markdown("---")
@@ -849,25 +849,27 @@ with st.sidebar:
         
         if st.button("🔥 모든 기능 실전 실행 (All-In)", use_container_width=True):
             audit_log = []
-            fail_count = 0
+            # [수정 1] 정수 대신 리스트로 선언 (스코프 문제 해결)
+            fail_count = [0]
             
             def audit(category, name, func):
-                nonlocal fail_count
+                # [수정 2] nonlocal fail_count 삭제 (필요 없음)
                 try:
                     res, msg = func()
                     icon = "✅" if res else "❌"
                     audit_log.append(f"{icon} **[{category}] {name}**: {msg}")
-                    if not res: fail_count += 1
+                    # [수정 3] 리스트 인덱스로 접근하여 카운트 증가
+                    if not res: fail_count[0] += 1
                 except Exception as e:
                     audit_log.append(f"❌ **[{category}] {name}**: 💥 CRITICAL ERROR - {str(e)}")
-                    fail_count += 1
+                    # [수정 4] 리스트 인덱스로 접근
+                    fail_count[0] += 1
 
             progress = st.progress(0)
 
             # [1. API 통신] 실제 모델에게 질문 던지기 (과금 발생)
             def t_api_live():
                 if not API_KEY: return (False, "키 없음")
-                # 실제 응답이 오는지 확인 (가장 확실한 방법)
                 try:
                     res, status = api_call_direct("테스트", model_name="gemini-2.5-flash")
                     return (res is not None and "Success" in status, f"응답 수신 완료")
@@ -878,10 +880,8 @@ with st.sidebar:
             # [2. 클라우드] 구글 시트 실제 쓰기 테스트 (Write)
             def t_sheet_write():
                 try:
-                    # 쓰기 객체를 가져와서 실제로 한 줄 써봄
                     ws = get_sheet_object_for_write("SOUTH")
                     if ws:
-                        # 테스트 로그 기록 (실제 시트에 남음)
                         ws.append_row([datetime.now().isoformat(), "TEST_PING", "SYSTEM_CHECK", "-", "-", "test", "-", "-", "-"])
                         return (True, "시트 쓰기 성공 (로그 확인)")
                     return (False, "시트 객체 로드 실패")
@@ -892,12 +892,10 @@ with st.sidebar:
             # [3. PDF 엔진] 메모리에서 PDF 생성 -> 저장 -> 추출 사이클
             def t_pdf_cycle():
                 if FITZ_AVAILABLE:
-                    # 1. 생성
                     doc = fitz.open()
                     page = doc.new_page()
                     page.insert_text((10, 10), "TEST_EXTRACT_OK")
                     pdf_bytes = doc.write()
-                    # 2. 추출 함수에 주입
                     extracted = extract_text_unified(pdf_bytes, "application/pdf", 0)
                     return ("TEST_EXTRACT_OK" in extracted, "생성 및 추출 사이클 정상")
                 elif PLUMBER_AVAILABLE:
@@ -908,7 +906,6 @@ with st.sidebar:
 
             # [4. 엑셀 로직] 복합 케이스 연산 검증
             def t_excel_logic():
-                # 5쪽_3회 + 6쪽_2회 = 5회
                 old = pd.DataFrame([{'구분':'고','자료':'A','출연횟수':3,'쪽수1':'5_3'}])
                 new = pd.DataFrame([{'구분':'고','자료':'A','출연횟수':2,'쪽수1':'6_2'}])
                 res = merge_master_data(old, new)
@@ -919,13 +916,11 @@ with st.sidebar:
 
             # [5. 유틸리티] 이미지 변환 및 학습 로직
             def t_utils():
-                # 이미지
                 img = Image.new('RGB', (10, 10), color='blue')
                 buf = io.BytesIO()
                 img.save(buf, format='PNG')
                 res_img = process_image_for_api(buf.getvalue())
                 
-                # 학습
                 if 'homonym_dict' not in st.session_state: st.session_state.homonym_dict = {}
                 key = "__TEST__"
                 st.session_state.homonym_dict[key] = []
@@ -948,8 +943,9 @@ with st.sidebar:
             with col_b:
                 for log in audit_log[half:]: st.markdown(log)
             
-            if fail_count == 0: st.success("✨ 모든 실제 기능(API/DB/엔진)이 정상 작동합니다.")
-            else: st.error(f"🔥 {fail_count}개의 기능 고장 발견.")
+            # [수정 5] 결과 확인 부분도 리스트 인덱스로 수정
+            if fail_count[0] == 0: st.success("✨ 모든 실제 기능(API/DB/엔진)이 정상 작동합니다.")
+            else: st.error(f"🔥 {fail_count[0]}개의 기능 고장 발견.")
 
 
 # STEP 0: 언어 규범 선택
