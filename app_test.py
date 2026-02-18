@@ -19,20 +19,11 @@ from PIL import Image # 이미지 검증 및 재인코딩용 필수 라이브러
 # [0] 기본 설정 및 라이브러리 초기화
 # =========================================================
 st.set_page_config(
-    page_title="[TEST] 국어활동 AI 분석기",  # 제목 앞에 [TEST] 추가
-    page_icon="🧪",                         # 아이콘 변경 (선택)
+    page_title="국어활동 AI 분석기", 
+    page_icon="📚", 
     layout="wide",
     initial_sidebar_state="collapsed"
 )
-
-# ▼▼▼▼▼▼▼ [테스트 서버 전용 경고창 추가] ▼▼▼▼▼▼▼
-st.markdown("""
-    <div style='background-color: #ff4b4b; padding: 10px; border-radius: 5px; margin-bottom: 20px; text-align: center;'>
-        <h3 style='color: white; margin: 0;'>🚧 현재 '테스트 서버(Test Server)' 접속 중입니다 🚧</h3>
-        <p style='color: white; margin: 0;'>이곳에서의 작업은 실제 운영 서버에 영향을 주지 않습니다.</p>
-    </div>
-""", unsafe_allow_html=True)
-# ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
 
 # [Fix] 전역 변수 사전 초기화 (NameError 방지)
 PLUMBER_AVAILABLE = False
@@ -68,9 +59,6 @@ if 'last_raw_response' not in st.session_state: st.session_state.last_raw_respon
 if 'debug_log' not in st.session_state: st.session_state.debug_log = ""
 if 'is_finished' not in st.session_state: st.session_state.is_finished = False
 if 'split_mode' not in st.session_state: st.session_state.split_mode = False # [New] 분할 모드 상태
-if 'current_user' not in st.session_state: st.session_state.current_user = None # 현재 접속자 (아빠/엄마...)
-if 'user_sheet_name' not in st.session_state: st.session_state.user_sheet_name = None # 저장될 시트 이름
-
 
 # [New] 입력 데이터만 초기화하는 안전 함수
 def reset_input_buffer():
@@ -161,7 +149,7 @@ try:
     else: API_KEY = ""
 except: API_KEY = ""
 
-MODEL_NAME = "gemini-2.0-flash-exp"
+MODEL_NAME = "gemini-2.5-pro"
 SHEET_NAME = "Korean_DB"
 
 @st.cache_resource
@@ -209,69 +197,16 @@ def send_data_with_retry(sheet_obj, data, is_multiple=False):
         except: time.sleep(1)
     return False
 
-# [수정] 테스트 서버용 저장 함수 (시트 이름 뒤에 _TEST 강제 추가)
 def save_backup_to_cloud(mode_key, df):
     client = get_google_sheet_client()
     if not client or df is None or df.empty: return False
-    
-    # 1. 원래 이름 가져오기 (예: Backup_Dad)
-    base_name = st.session_state.get('user_sheet_name', f"Backup_{'South' if mode_key == 'SOUTH' else 'North'}")
-    
-    # 2. [핵심] 테스트 서버용 이름으로 변경 (예: Backup_Dad_TEST)
-    target_sheet = f"{base_name}_TEST"
-    
     try:
         sh = client.open(SHEET_NAME)
-        # 해당 시트가 없으면 생성, 있으면 열기
-        try: ws = sh.worksheet(target_sheet)
-        except: ws = sh.add_worksheet(title=target_sheet, rows=1000, cols=20)
-        
+        ws = sh.worksheet(f"Backup_{'South' if mode_key == 'SOUTH' else 'North'}")
         ws.clear()
-        
-        # 메타데이터 준비 (파일명 등)
-        current_file_name = "작업중인_문서" # 추후 PDF 파일명 변수 연동 가능
-        meta_info = ["METADATA", mode_key, current_file_name, datetime.now().strftime("%Y-%m-%d %H:%M:%S")]
-        
-        # 데이터 저장 (1행: 메타데이터, 2행: 헤더, 3행~: 데이터)
-        all_values = [meta_info] + [df.fillna("").astype(str).columns.tolist()] + df.fillna("").astype(str).values.tolist()
-        ws.update(all_values)
+        ws.update([df.fillna("").astype(str).columns.tolist()] + df.fillna("").astype(str).values.tolist())
         return True
     except: return False
-
-# [수정] 테스트 서버용 불러오기 함수 (_TEST 시트만 조회)
-def load_backup_from_cloud():
-    client = get_google_sheet_client()
-    if not client or not st.session_state.user_sheet_name: return None, None
-    
-    # 1. [핵심] 읽을 때도 _TEST 붙은 시트만 찾음
-    target_sheet = f"{st.session_state.user_sheet_name}_TEST"
-    
-    try:
-        sh = client.open(SHEET_NAME)
-        ws = sh.worksheet(target_sheet)
-        data = ws.get_all_values()
-        
-        if not data: return None, None
-        
-        # 메타데이터 파싱
-        meta = None
-        df_start_idx = 0
-        if data[0][0] == "METADATA":
-            meta = {
-                "mode": data[0][1], 
-                "filename": data[0][2], 
-                "time": data[0][3]
-            }
-            df_start_idx = 1 # 2번째 줄부터 데이터임
-        
-        # 데이터프레임 변환
-        if len(data) > df_start_idx + 1:
-            headers = data[df_start_idx]
-            rows = data[df_start_idx + 1:]
-            return pd.DataFrame(rows, columns=headers), meta
-            
-    except: pass # 시트가 없거나 오류 나면 빈 값 반환
-    return None, None
 
 # =========================================================
 # [3] 데이터 병합 및 비교 학습 엔진
@@ -390,36 +325,62 @@ def process_image_for_api(image_bytes):
         return output.getvalue()
     except Exception as e: return None
 
-def api_call_direct(prompt, image_bytes=None):
+# [수정 1] 모델 선택 기능이 추가된 호출 함수
+def api_call_direct(prompt, image_bytes=None, model_name=None):
     if not API_KEY: return None, "API Key Missing"
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={API_KEY.strip()}"
-    headers = {'Content-Type': 'application/json'}
-    parts = [{"text": prompt}]
     
+    # 모델 이름이 들어오면 그걸 쓰고(Flash), 없으면 기본값(Pro) 사용
+    target_model = model_name if model_name else MODEL_NAME
+    
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{target_model}:generateContent?key={API_KEY.strip()}"
+    headers = {'Content-Type': 'application/json'}
+    
+    parts = [{"text": prompt}]
     if image_bytes:
         optimized_img = process_image_for_api(image_bytes)
         if optimized_img:
             b64_img = base64.b64encode(optimized_img).decode('utf-8')
             parts.append({"inline_data": {"mime_type": "image/png", "data": b64_img}})
-            
-    try:
-        res = requests.post(url, headers=headers, json={"contents": [{"parts": parts}]}, timeout=300)
-        if res.status_code == 200: 
-            return res.json()['candidates'][0]['content']['parts'][0]['text'], "Success"
-        return None, f"Error: {res.status_code} - {res.text}"
-    except Exception as e: return None, str(e)
 
+    safety_settings = [
+        {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
+    ]
+            
+    payload = {
+        "contents": [{"parts": parts}],
+        "safetySettings": safety_settings
+    }
+    
+    for attempt in range(3):
+        try:
+            res = requests.post(url, headers=headers, json=payload, timeout=300)
+            if res.status_code == 200:
+                return res.json()['candidates'][0]['content']['parts'][0]['text'], "Success"
+            elif res.status_code in [429, 500, 503]:
+                time.sleep(2); continue
+            else:
+                return None, f"Error: {res.status_code} - {res.text}"
+        except Exception as e: time.sleep(1)
+            
+    return None, "Error: 3회 재시도 실패"
+
+# [수정 2] 텍스트 추출(OCR)은 저렴한 Flash로 처리
 def extract_text_unified(file_bytes, file_type, page_idx):
     if not file_type: return ""
     raw_text = ""
     
+    # 💰 비용 절감의 핵심: 읽기는 싸고 빠른 2.5 Flash가 담당
+    ocr_model = "gemini-2.5-flash"
+    
     if "image" in file_type: 
-        raw_text, _ = api_call_direct("이 이미지 속의 텍스트를 모두 추출하세요. 줄바꿈 유지.", file_bytes)
+        raw_text, _ = api_call_direct("이 이미지 속의 텍스트를 모두 추출하세요. 줄바꿈 유지.", file_bytes, model_name=ocr_model)
     elif "pdf" in file_type:
         if FITZ_AVAILABLE:
             try:
                 doc = fitz.open(stream=file_bytes, filetype="pdf")
-                # [Update] 분할 모드일 때 페이지 수 처리
                 total = len(doc) * 2 if st.session_state.split_mode else len(doc)
                 st.session_state.total_pages = total
             except: pass
@@ -432,12 +393,11 @@ def extract_text_unified(file_bytes, file_type, page_idx):
             
         page_img = get_page_image(file_bytes, file_type, page_idx)
         if page_img:
-            raw_text, _ = api_call_direct("이 이미지 속의 텍스트를 모두 추출하세요. 줄바꿈 유지.", page_img)
+            raw_text, _ = api_call_direct("이 이미지 속의 텍스트를 모두 추출하세요. 줄바꿈 유지.", page_img, model_name=ocr_model)
         else:
             if PLUMBER_AVAILABLE:
                 try:
                     with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
-                        # Fallback: 분할 모드 미지원 (Vision이 메인)
                         target_idx = page_idx // 2 if st.session_state.split_mode else page_idx
                         if target_idx < len(pdf.pages): raw_text = pdf.pages[target_idx].extract_text()
                 except: pass
@@ -497,100 +457,189 @@ def generate_prompt_from_sheet(sheet_data):
             
     return "\n[사용자 교정 데이터 (최우선 준수)]:\n" + "\n".join(rules) + "\n"
 
+    # ▼▼▼ [누락된 함수 추가] AI 결과를 DB 규칙대로 강제 교정하는 함수 ▼▼▼
+def apply_strict_rules(analysis_result, mode_key):
+    # 1. 시트에서 저장된 규칙을 가져옵니다.
+    db_rules = fetch_all_rules_from_db(mode_key)
+    if not db_rules: return analysis_result
+
+    # 2. 검색 속도를 위해 족보(Dictionary) 생성
+    rule_map = {}
+    for row in db_rules:
+        root = str(row.get('root_word', '')).strip()
+        if root:
+            rule_map[root] = {
+                'origin': row.get('origin', ''),
+                'pos': row.get('pos', ''),
+                'action': row.get('action', '')
+            }
+
+    # 3. 하나씩 검사하며 교체
+    final_result = []
+    origin_map = {'고':'🔵 고', '한':'🟢 한', '외':'🔴 외', '혼':'🟣 혼'}
+    pos_map = {'명사':'📦 명사', '동사':'🏃 동사', '형용사':'🎨 형용사', '부사':'⚡ 부사', '관형사':'🔍 관형사', '대명사':'👤 대명사', '감탄사':'❗ 감탄사'}
+
+    for item in analysis_result:
+        root = item.get('원형', '').strip()
+        
+        # 족보에 있는 단어라면?
+        if root in rule_map:
+            rule = rule_map[root]
+            
+            # '삭제' 규칙이면 결과에서 뺌
+            if rule['action'] == 'delete':
+                continue 
+            
+            # '수정' 규칙이면 DB 내용으로 덮어씌움
+            if rule['origin']: 
+                db_val = rule['origin'].replace("🔵 ", "").replace("🟢 ", "").replace("🔴 ", "").replace("🟣 ", "").strip()
+                item['분류'] = origin_map.get(db_val, db_val)
+                
+            if rule['pos']:
+                db_val = rule['pos'].replace("📦 ", "").replace("🏃 ", "").replace("🎨 ", "").replace("⚡ ", "").replace("🔍 ", "").replace("👤 ", "").replace("❗ ", "").strip()
+                item['품사'] = pos_map.get(db_val, db_val)
+        
+        final_result.append(item)
+        
+    return final_result
+
+# [2차 피드백 반영] 데이터 흐름 원상복구 + 빈칸 문제 해결 (Step 4에서 처리)
+# [최종 승인] 고유명사 통합 + 대명사 보호 + 필터링 완벽 적용 버전
 def run_analysis_action(txt, img_bytes=None):
     if not txt.strip(): st.warning("내용이 없습니다."); return
     
-    with st.spinner("AI가 국어학적 관점에서 정밀 분석 중입니다..."):
+    with st.spinner("AI가 사용자 규칙에 맞춰 정밀 분석 중입니다..."):
         s_data = fetch_all_rules_from_db(st.session_state.mode_key)
         
-        # [Update] 과잉 교정 방지 프롬프트 (Transcription First)
+        # 1. 프롬프트 (엄격한 규칙 주입)
         prompt = f"""
-        당신은 국어학 및 시맨틱 텍스트 분석 전문가입니다. 
-        
-        [절대 규칙 - Transcription First]
-        1. **'원본'**은 이미지나 텍스트에 있는 **'어절(Word Segment)'**을 토씨 하나 틀리지 말고 그대로 옮겨 적으십시오.
-        2. 오타, 띄어쓰기 오류, 활용된 어미, 조사 모두 **보이는 그대로** 적어야 합니다. 절대 임의로 수정하거나 기본형으로 바꾸지 마십시오.
-        3. **'원형'**과 **'품사'**는 그 '원본'을 보고 언어학적으로 분석하여 채우십시오.
-        
-        {generate_prompt_from_sheet(s_data)}
-        
-        [예시 - 반드시 이 형식을 따를 것]
-        * 텍스트: "선생님께서 말씀하셨습니다."
-          -> {{ "원본": "말씀하셨습니다", "원형": "말씀하다", "품사": "동사", "분류": "고" }}
-        * 텍스트: "친구랑 학교에 갔다"
-          -> {{ "원본": "친구랑", "원형": "친구", "품사": "명사", "분류": "고" }}
-          -> {{ "원본": "갔다", "원형": "가다", "품사": "동사", "분류": "고" }}
-        * 텍스트: "시작합니다"
-          -> {{ "원본": "시작합니다", "원형": "시작하다", "품사": "동사", "분류": "한" }} (O)
-          -> {{ "원본": "시작하다", "원형": "시작하다", ... }} (X - 원본 변형 금지)
+        당신은 국어 데이터 구축을 위한 엄격한 분석기입니다.
 
-        [1. 고유명사(Named Entity) 처리]
-        - **인명, 지명 등 고유명사**는 특별한 표시 없이 원형 그대로 출력하십시오.
-        - 품사는 반드시 **'명사'**로 통일하십시오.
-        
-        [2. 동음이의어(Homonym) 구분]
-        - 단어의 형태가 같으나 뜻이 다른 경우만 괄호로 구분. (예: 배(과일), 배(선박))
-        
-        [3. 용언(동사/형용사) 기본형]
-        - 반드시 어미 '다'를 붙일 것. (예: 했다 -> 하다, 예쁜 -> 예쁘다)
-        
-        [4. 제외 대상]
-        - 조사, 어미, 수사, 숫자, 특수기호.
-        - **의존 명사**: 것, 수, 데, 바, 만큼, 지, 등, 뿐, 따름 등 제외.
-        
-        [5. 어종] 고(순우리말), 한(한자어), 외(외래어), 혼(혼종어).
+        [분석 절대 규칙]
+        1. **원본**: 텍스트에 있는 어절을 띄어쓰기, 오타 포함하여 '보이는 그대로' 적으십시오.
+        2. **원형**: 
+           - 조사, 어미를 뗀 **순수 단어(Lexical Root)**만 적으십시오.
+           - 명사+조사(예: '학교를') -> 조사를 떼고 '학교'만 적음.
+           - 용언(예: '먹었습니다') -> 기본형 '먹다'로 적음.
+           - '+' 기호를 절대 쓰지 마십시오.
+        3. **분류(어종)**:
+           - 고유어(고), 한자어(한), 외래어(외), 혼종어(혼) 중 하나로 분류.
+           - **[중요 예외] '명사+하다' 동사**:
+             - '하다'를 제외한 앞 명사의 어종을 따릅니다.
+             - 예: '건강하다'(한자어) -> '한', '노트하다'(외래어) -> '외'
+             - 서로 다른 어종 결합 시에만 '혼'
+        4. **품사**:
+           - 문맥이 아닌 '원형'을 기준으로 판단하십시오.
+
+        {generate_prompt_from_sheet(s_data)}
         
         [출력 양식: JSON 리스트]
         [
-          {{"원본": "보이는그대로", "원형": "기본형", "분류": "고/한/외/혼", "품사": "명사/동사/..."}},
-          ...
+          {{"원본": "보이는그대로", "원형": "정제된기본형", "분류": "고/한/외/혼", "품사": "명사/동사/형용사/부사/관형사/대명사/감탄사"}}
         ]
         """
         
+        # API 호출
         raw, status = api_call_direct(prompt + f"\n\n[분석 대상]:\n{txt[:5000]}", img_bytes)
-        st.session_state.last_raw_response = raw
+        
+        # 로그 기록
+        if raw: st.session_state.last_raw_response = raw
+        else: st.session_state.last_raw_response = f"🚨 API 호출 실패! 이유: {status}"
         
         try:
-            if not raw: raise Exception("API 응답이 비어있습니다.")
+            if not raw: raise Exception(f"API 응답 실패: {status}")
+            
             clean_json = raw.replace("```json", "").replace("```", "").strip()
             match = re.search(r'\[.*\]', clean_json, re.DOTALL)
             
             if match: res = json.loads(match.group())
             else:
                 try: res = json.loads(clean_json)
-                except: 
-                    st.warning("텍스트가 인식되지 않았습니다. 다시 한번 시도해주세요.")
-                    res = []
+                except: res = []
 
-            proc = []; temp_dict = {}
-            om = {'고':'🔵 고', '한':'🟢 한', '외':'🔴 외', '혼':'🟣 혼'}
-            pm = {'명사':'📦 명사', '동사':'🏃 동사', '형용사':'🎨 형용사', '부사':'⚡ 부사', '관형사':'🔍 관형사', '대명사':'👤 대명사', '감탄사':'❗ 감탄사'}
-            
             draft_items = []
+            
+            # 2. 1차 가공 & 필터링
             for r in res:
-                o, root = str(r.get('원본') or '').strip(), str(r.get('원형') or '').strip()
-                orig_v, pos_v = str(r.get('분류') or '혼').strip(), str(r.get('품사') or '명사').strip()
+                o = str(r.get('원본') or '').strip()
+                root = str(r.get('원형') or '').strip()
+                orig_v = str(r.get('분류') or '혼').strip()
+                pos_v = str(r.get('품사') or '명사').strip()
                 
-                if re.search(r'[0-9a-zA-Z]', o) or re.search(r'[0-9a-zA-Z]', root): continue
                 if not o or not root: continue
+                
+                # [필터링 1] 영어/숫자 포함 시 제외 (아침 버전 규칙 준수)
+                if re.search(r'[0-9a-zA-Z]', o) or re.search(r'[0-9a-zA-Z]', root): continue
+
+                # [필터링 2] 제외 품사 목록 (아침 버전 규칙 준수)
                 if pos_v in ['조사', '어미', '의존명사', '의존 명사', '수사']: continue
                 if root in ['것', '수', '데', '바', '지', '리', '개', '번', '명', '쪽', '등', '따름', '뿐']: continue
                 
                 draft_items.append({'원본': o, '원형': root, '분류': orig_v, '품사': pos_v})
-                key = (root, orig_v, pos_v)
+
+            # 3. DB 족보 적용
+            draft_items = apply_strict_rules(draft_items, st.session_state.mode_key)
+            st.session_state.initial_draft = draft_items
+
+            # 4. 데이터 집계
+            proc = []
+            temp_dict = {}
+            for item in draft_items:
+                root = item['원형']
+                origin = item['분류']
+                pos = item['품사']
+                o = item['원본']
+                
+                key = (root, origin, pos)
                 if key not in temp_dict: temp_dict[key] = []
                 temp_dict[key].append(o)
-                
-            st.session_state.initial_draft = draft_items
+
+            # 5. 최종 결과 생성 및 [UI 매핑]
             for (root, origin, pos), origs in temp_dict.items():
                 cnts = Counter(origs)
-                proc.append({"삭제": False, "횟수": f"{sum(cnts.values())}회", "원본": ", ".join([f"{w}({c})" for w, c in cnts.items()]), "원형": root, "분류": om.get(origin, origin), "품사": pm.get(pos, pos)})
+                display_orig = ", ".join([f"{w}({c})" for w, c in cnts.items()])
+                total_cnt = sum(cnts.values())
+                
+                # [분류 매핑]
+                final_origin = origin
+                if not any(x in origin for x in ['🔵','🟢','🔴','🟣']):
+                    origin_lower = origin.lower()
+                    if '고' in origin_lower or 'native' in origin_lower: final_origin = '🔵 고'
+                    elif '한' in origin_lower or 'sino' in origin_lower: final_origin = '🟢 한'
+                    elif '외' in origin_lower or 'foreign' in origin_lower: final_origin = '🔴 외'
+                    elif '혼' in origin_lower or 'hybrid' in origin_lower: final_origin = '🟣 혼'
+                    else: final_origin = '🟣 혼'
+
+                # [품사 매핑] ★순서 중요: 대명사를 먼저 구출해야 함★
+                final_pos = pos
+                if not any(x in pos for x in ['📦','🏃','🎨','⚡','🔍','👤','❗']):
+                    pos_lower = pos.lower()
+                    
+                    # 1순위: 대명사 (명사보다 먼저 체크!)
+                    if '대명사' in pos_lower or 'pro' in pos_lower: final_pos = '👤 대명사'
+                    # 2순위: 명사 (여기서 '고유명사'도 '명사'로 통합됨)
+                    elif '명사' in pos_lower or 'noun' in pos_lower: final_pos = '📦 명사'
+                    elif '동사' in pos_lower or 'verb' in pos_lower: final_pos = '🏃 동사'
+                    elif '형용사' in pos_lower or 'adj' in pos_lower: final_pos = '🎨 형용사'
+                    elif '부사' in pos_lower or 'adv' in pos_lower: final_pos = '⚡ 부사'
+                    elif '관형사' in pos_lower or 'det' in pos_lower: final_pos = '🔍 관형사'
+                    elif '감탄사' in pos_lower or 'int' in pos_lower: final_pos = '❗ 감탄사'
+                    else: final_pos = '📦 명사' # 기본값
+                
+                proc.append({
+                    "삭제": False, 
+                    "횟수": f"{total_cnt}회", 
+                    "원본": display_orig, 
+                    "원형": root, 
+                    "분류": final_origin, 
+                    "품사": final_pos
+                })
             
             st.session_state.analysis_result = proc; st.session_state.step = 3; st.rerun()
             
         except Exception as e:
             st.error(f"파싱 오류: {str(e)}")
-            st.session_state.debug_log = f"Error: {str(e)}\nRaw Response:\n{raw}"
+            st.session_state.debug_log = f"Error: {str(e)}\nRaw Response Logged."
 
 # =========================================================
 # [5] UI: 메인 루프 (Wizard)
@@ -603,163 +652,60 @@ with st.sidebar:
     else:
         st.markdown("<br>"*5, unsafe_allow_html=True)
         if st.button("🛠️ 관리자/디버깅 모드 켜기"): st.session_state.debug_mode = True; st.rerun()
+        # [추가] 내 계정에서 사용 가능한 모델 목록 확인하기
+    if st.button("📋 사용 가능한 모델 목록 보기"):
+        url = f"https://generativelanguage.googleapis.com/v1beta/models?key={API_KEY}"
+        r = requests.get(url); st.code(r.text) # 화면에 JSON으로 쫙 보여줍니다
 
-# =========================================================
-# [Step 0] 가족 프로필 선택 (넷플릭스 스타일)
-# =========================================================
+
+# STEP 0: 언어 규범 선택
 if st.session_state.step == 0:
-    st.markdown("<h1 style='text-align: center; margin-bottom: 30px;'>👨‍👩‍👧‍👦 작업자를 선택해주세요</h1>", unsafe_allow_html=True)
+    st.markdown("<h1 style='text-align: center; margin-bottom: 20px;'>📚 국어활동 AI 분석기</h1>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center; color: #888; margin-bottom: 50px;'>원하는 언어 규범을 선택하여 분석을 시작하세요.</p>", unsafe_allow_html=True)
     
-    # 4인 가족 프로필 버튼
-    c1, c2, c3, c4 = st.columns(4)
-    
-    def set_user(name, sheet, icon):
-        st.session_state.current_user = name
-        st.session_state.user_sheet_name = sheet
-        st.session_state.step = 0.5 # 대시보드로 이동
-        st.rerun()
-
-    with c1:
-        if st.button("👨\n\n좋은날", use_container_width=True): set_user("좋은날", "Backup_Dad", "👨")
-    with c2:
-        if st.button("👩\n\n별랑", use_container_width=True): set_user("별랑", "Backup_Mom", "👩")
-    with c3:
-        if st.button("👧\n\n누나", use_container_width=True): set_user("누나", "Backup_Sis", "👧")
-    with c4:
-        if st.button("👦\n\n동생", use_container_width=True): set_user("동생", "Backup_Bro", "👦")
-
-# =========================================================
-# [Step 0.5] 개인 대시보드 (3단 구조: 최근 / 파일불러오기 / 신규)
-# =========================================================
-elif st.session_state.step == 0.5:
-    st.markdown(f"### 👋 안녕하세요, {st.session_state.current_user}님!")
-    
-    # 데이터 로드
-    backup_df, meta_info = load_backup_from_cloud()
-    has_backup = backup_df is not None and not backup_df.empty
-    
-    col_main, col_side = st.columns([2.5, 1])
-    
-    with col_main:
-        # ---------------------------------------------------------
-        # [Section 1] 가장 최근 작업 바로 이어하기 (Smart Resume)
-        # ---------------------------------------------------------
-        st.markdown("#### 🚀 바로 시작하기")
-        
-        # 최근 작업 정보가 있으면 버튼 활성화
-        if has_backup and meta_info:
-            last_mode = "🇰🇷 대한민국 표준어" if meta_info['mode'] == 'SOUTH' else "🏔️ 북한 문화어"
-            last_time = meta_info['time']
-            last_file = meta_info.get('filename', '작업중인_문서')
-            last_page = backup_df.iloc[-1].get('쪽수1', '1') # 마지막 작업 페이지 추적
-            
-            # 정보 카드 스타일의 버튼
-            btn_label = f"📄 **{last_file}** 이어서 작업하기\n\n(🕒 {last_time} 저장 | {last_mode} | 📍 {last_page}쪽)"
-            
-            if st.button(btn_label, use_container_width=True, type="primary"):
-                st.session_state.master_df = backup_df
-                st.session_state.mode_key = meta_info['mode'] # 저장된 모드 자동 적용
-                st.toast(f"🔄 '{last_mode}' 모드로 복구되었습니다.", icon="✅")
-                time.sleep(1)
-                st.session_state.step = 1.5 # 언어 선택 건너뛰고 바로 입력창으로!
-                st.rerun()
-        else:
-            # 최근 작업이 없을 때 보여줄 안내 메시지
-            st.info("💡 아직 클라우드에 저장된 '최근 작업'이 없습니다. 아래에서 파일을 업로드하거나 새 프로젝트를 시작하세요!")
-
-        st.markdown("---")
-
-        # ---------------------------------------------------------
-        # [Section 2] 지난 작업 불러오기 (엑셀 파일 업로드)
-        # ---------------------------------------------------------
-        with st.expander("📂 지난 작업 불러오기 (엑셀 파일 업로드)", expanded=True):
-            st.markdown("보관해둔 **분석 결과 엑셀 파일(.xlsx)**이 있다면 업로드해주세요.")
-            
-            # [기능 1] 파일 업로드 (Drag & Drop)
-            uploaded_excel = st.file_uploader("엑셀 파일 끌어다 놓기", type=['xlsx'], label_visibility="collapsed")
-            
-            # [수정] 파일이 올라오면 -> 0.5초 뒤 언어 선택(0.8)으로 자동 이동
-            if uploaded_excel:
-                try:
-                    # 1. 엑셀 읽기
-                    df = pd.read_excel(uploaded_excel, engine='openpyxl')
-                    st.session_state.master_df = df
-                    
-                    # 2. 알림 메시지
-                    st.toast(f"✅ '{uploaded_excel.name}' 파일 확인! 언어 선택 화면으로 이동합니다...", icon="🚀")
-                    
-                    # 3. 딜레이 (사용자 인식용)
-                    time.sleep(0.5)
-                    
-                    # 4. 언어 선택 단계(0.8)로 이동
-                    st.session_state.step = 0.8 
-                    st.rerun()
-                    
-                except Exception as e:
-                    st.error(f"파일을 읽는 중 오류가 발생했습니다: {str(e)}")
-            
-        # 구분선
-        st.markdown("---")
-
-        # ---------------------------------------------------------
-        # [Section 3] 새 프로젝트 시작
-        # ---------------------------------------------------------
-        st.markdown("#### ✨ 새로운 작업")
-        if st.button("📄 새 프로젝트 시작하기 (초기화)", use_container_width=True):
-            reset_input_buffer()
-            st.session_state.master_df = None
-            st.session_state.step = 0.8 # 언어 선택 단계로 이동
-            st.rerun()
-            
-    with col_side:
-        st.markdown("<br>"*2, unsafe_allow_html=True) 
-        with st.container(border=True):
-            st.markdown(f"**👤 현재 프로필: {st.session_state.current_user}**")
-            if st.button("🔒 로그아웃", use_container_width=True):
-                reset_input_buffer()
-                st.session_state.current_user = None
-                st.session_state.step = 0
-                st.rerun()
-
-# =========================================================
-# [Step 0.8] 언어 모드 선택 (이어하기/새로하기 공통)
-# =========================================================
-elif st.session_state.step == 0.8:
-    # 상단 헤더 + 뒤로가기 버튼 배치
-    c_head, c_btn = st.columns([8, 2])
-    with c_head:
-        st.markdown(f"### 🌐 분석할 언어 규범을 선택하세요 ({st.session_state.current_user}님)")
-    with c_btn:
-        # [수정] 대시보드(0.5)로 돌아가는 뒤로가기 버튼 추가
-        if st.button("⬅️ 뒤로가기", use_container_width=True):
-            st.session_state.step = 0.5 
-            st.rerun()
-
-    st.markdown("<br>", unsafe_allow_html=True) # 약간의 여백 추가
-
-    # 기존 언어 선택 버튼들
-    c_south, c_north = st.columns(2)
+    c_left, c_south, c_north, c_right = st.columns([1, 4, 4, 1])
     with c_south:
-        if st.button("🏛️ 대한민국 표준어", use_container_width=True):
-            st.session_state.mode_key = "SOUTH"
-            st.session_state.step = 1.5 # 바로 입력 방식 선택으로 점프
-            st.rerun()
+        if st.button("🏛️\n\n대한민국 표준어\n\n(표준국어대사전 기준)", use_container_width=True):
+            reset_input_buffer()
+            st.session_state.mode_key = "SOUTH"; st.session_state.step = 1; st.rerun()
     with c_north:
-        if st.button("🏔️ 북한 문화어", use_container_width=True):
-            st.session_state.mode_key = "NORTH"
-            st.session_state.step = 1.5 # 바로 입력 방식 선택으로 점프
-            st.rerun()
+        if st.button("🏔️\n\n북한 문화어\n\n(문화어 규범 기준)", use_container_width=True):
+            reset_input_buffer()
+            st.session_state.mode_key = "NORTH"; st.session_state.step = 1; st.rerun()
 
-# =========================================================
-# [Step 1.5] 입력 방식 선택 (PDF / 이미지 / 텍스트)
-# =========================================================
+# STEP 1: 데이터 소스 선택
+elif st.session_state.step == 1:
+    c1, c2 = st.columns([8, 2])
+    with c1: st.header("📂 데이터 소스 선택")
+    with c2: 
+        if st.button("⬅️ 모드 선택으로", use_container_width=True): 
+            reset_input_buffer()
+            st.session_state.step = 0; st.rerun()
+
+    col1, col2 = st.columns(2)
+    with col1:
+        with st.container(border=True):
+            st.subheader("📂 이어하기")
+            up_excel = st.file_uploader("기존 분석 엑셀 업로드", type=['xlsx'])
+            if up_excel:
+                try:
+                    st.session_state.master_df = pd.read_excel(up_excel, engine='openpyxl')
+                    st.session_state.step = 1.5; st.rerun()
+                except Exception as e:
+                    st.error(f"엑셀 파일 형식이 올바르지 않습니다. (오류: {str(e)})")
+    with col2:
+        with st.container(border=True):
+            st.subheader("🆕 새로 시작하기")
+            if st.button("새 프로젝트 생성", use_container_width=True): st.session_state.master_df = None; st.session_state.step = 1.5; st.rerun()
+
+# STEP 1.5: 입력 방식 선택
 elif st.session_state.step == 1.5:
     c1, c2 = st.columns([8, 2])
     with c1: st.header("📝 입력 방식 선택")
     with c2: 
-        # 뒤로가기: 다시 언어 선택 화면으로
-        if st.button("⬅️ 뒤로가기", use_container_width=True): 
-            st.session_state.step = 0.8; st.rerun()
+        if st.button("⬅️ 소스 선택으로", use_container_width=True): 
+            reset_input_buffer()
+            st.session_state.step = 1; st.rerun()
 
     c1, c2, c3 = st.columns(3)
     with c1:
@@ -878,6 +824,23 @@ elif st.session_state.step == 2:
     elif st.session_state.input_type == "DIRECT":
         st.session_state.extracted_text = st.text_area("분석할 텍스트를 입력하세요", value=st.session_state.extracted_text, height=450)
         if st.button("🚀 분석 실행", type="primary", use_container_width=True): run_analysis_action(st.session_state.extracted_text, None)
+        # 에러가 났을 때 입력 화면(Step 2)에서도 로그를 보여주는 코드
+        
+if st.session_state.debug_mode:
+        st.markdown("---")
+        st.markdown("### 🐞 디버그 로그 (관리자용 - 입력 화면)")
+        
+        # 1. 파이썬 내부 에러 로그
+        if st.session_state.debug_log:
+            st.error("💥 상세 에러 내용:")
+            st.code(st.session_state.debug_log, language="text")
+        else:
+            st.info("기록된 에러 로그가 없습니다.")
+            
+        # 2. 구글 AI가 보낸 원본 메시지 (이걸 봐야 거절 사유를 알 수 있음)
+        if st.session_state.last_raw_response:
+            st.warning("🤖 AI가 보낸 원본 응답 (Raw Response):")
+            st.code(st.session_state.last_raw_response, language="json")
 
 # STEP 3: 결과 확인
 elif st.session_state.step == 3:
