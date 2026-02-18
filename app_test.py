@@ -276,16 +276,19 @@ def save_logic_with_learning():
         orig = draft_row['원본']
         match = final_results[final_results['원본'] == orig]
         if match.empty or match.iloc[0]['삭제']:
-            learning_logs.append([now, orig, draft_row['원형'], draft_row['분류'], draft_row['품사'], 'delete', 'Engine-Compare', draft_row['원형'], draft_row['분류']])
+            # [수정] 품사 자리에 무조건 "-" 입력
+            learning_logs.append([now, orig, draft_row['원형'], draft_row['분류'], "-", 'delete', 'Engine-Compare', draft_row['원형'], draft_row['분류']])
         else:
             final_row = match.iloc[0]
-            if (draft_row['원형'] != final_row['원형'] or clean_val_for_save(draft_row['분류']) != clean_val_for_save(final_row['분류']) or clean_val_for_save(draft_row['품사']) != clean_val_for_save(final_row['품사'])):
-                learning_logs.append([now, orig, final_row['원형'], clean_val_for_save(final_row['분류']), clean_val_for_save(final_row['품사']), 'modify', 'Engine-Compare', draft_row['원형'], draft_row['분류']])
+            # [수정] 품사 비교 로직 삭제, 무조건 "-" 입력
+            if (draft_row['원형'] != final_row['원형'] or clean_val_for_save(draft_row['분류']) != clean_val_for_save(final_row['분류'])):
+                learning_logs.append([now, orig, final_row['원형'], clean_val_for_save(final_row['분류']), "-", 'modify', 'Engine-Compare', draft_row['원형'], draft_row['분류']])
     
     draft_originals = initial_draft['원본'].tolist()
     for _, final_row in final_results.iterrows():
         if final_row['원본'] not in draft_originals and not final_row['삭제']:
-            learning_logs.append([now, final_row['원본'], final_row['원형'], clean_val_for_save(final_row['분류']), clean_val_for_save(final_row['품사']), 'add', 'Engine-New', '', ''])
+            # [수정] 신규 추가 시에도 품사는 "-"
+            learning_logs.append([now, final_row['원본'], final_row['원형'], clean_val_for_save(final_row['분류']), "-", 'add', 'Engine-New', '', ''])
     
     if learning_logs: 
         send_data_with_retry(sheet, learning_logs, True)
@@ -293,7 +296,10 @@ def save_logic_with_learning():
     
     valid = final_results[final_results['삭제']==False].copy()
     valid['n_cnt'] = valid['횟수'].apply(lambda x: int(re.sub(r'[^0-9]', '', str(x))) if re.search(r'\d', str(x)) else 1)
-    agg = valid.groupby(['원형', '분류', '품사'], as_index=False).agg({'n_cnt': 'sum'})
+    
+    # [수정] 엑셀 집계(groupby)에서 '품사' 키 제거 -> 중복 버그 원천 차단
+    agg = valid.groupby(['원형', '분류'], as_index=False).agg({'n_cnt': 'sum'})
+    
     p_num = str(st.session_state.page_idx + st.session_state.start_offset)
     temp_rows = []
     for _, item in agg.iterrows():
@@ -437,27 +443,33 @@ def get_page_image(file_bytes, file_type, page_idx):
 
 def generate_prompt_from_sheet(sheet_data):
     if not sheet_data: return ""
-    rule_dict = {}
+    
+    # [하이브리드 전략 1단계] 
+    # AI에게는 복잡한 규칙 대신 "형태를 유지해야 할 단어 목록"만 줍니다.
+    # 이렇게 하면 '바게쯔모자'를 '바게쯔', '모자'로 쪼개는 실수를 막을 수 있습니다.
+    
+    targets = []
     for row in sheet_data:
-        orig = str(row.get('original_word', '')).strip()
-        if not orig: continue
-        rule_dict[orig] = row
-
-    rules = []
-    for orig, row in rule_dict.items():
         action = row.get('action', '')
-        root = row.get('root_word', '')
-        origin = row.get('origin', '')
-        pos = row.get('pos', '')
+        root = str(row.get('root_word', '')).strip()
         
-        if action == 'delete':
-            rules.append(f"- '{orig}'는 추출 제외.")
-        elif action in ['modify', 'add']:
-            rules.append(f"- '{orig}' 정답: 원형:'{root}', 어종:'{origin}', 품사:'{pos}'.")
-            
-    return "\n[사용자 교정 데이터 (최우선 준수)]:\n" + "\n".join(rules) + "\n"
+        # 삭제 규칙이거나 단어가 없으면 패스
+        if action == 'delete' or not root: continue
+        
+        # 리스트에 추가
+        targets.append(root)
 
-    # ▼▼▼ [누락된 함수 추가] AI 결과를 DB 규칙대로 강제 교정하는 함수 ▼▼▼
+    if not targets: return ""
+
+    # 중복 제거 및 문자열 변환
+    target_str = ", ".join([f"'{t}'" for t in sorted(list(set(targets)))])
+
+    return f"""
+    [사용자 지정 사전 (절대 분리 금지)]:
+    아래 목록에 있는 단어가 텍스트에서 발견되면, 문맥과 상관없이 절대 쪼개거나 변형하지 말고 
+    반드시 아래 표기된 형태 그대로 원형으로 추출하십시오.
+    목록: [{target_str}]
+    """
 def apply_strict_rules(analysis_result, mode_key):
     # 1. 시트에서 저장된 규칙을 가져옵니다.
     db_rules = fetch_all_rules_from_db(mode_key)
@@ -470,14 +482,13 @@ def apply_strict_rules(analysis_result, mode_key):
         if root:
             rule_map[root] = {
                 'origin': row.get('origin', ''),
-                'pos': row.get('pos', ''),
+                # 'pos': row.get('pos', ''), <-- 필요 없음
                 'action': row.get('action', '')
             }
 
     # 3. 하나씩 검사하며 교체
     final_result = []
     origin_map = {'고':'🔵 고', '한':'🟢 한', '외':'🔴 외', '혼':'🟣 혼'}
-    pos_map = {'명사':'📦 명사', '동사':'🏃 동사', '형용사':'🎨 형용사', '부사':'⚡ 부사', '관형사':'🔍 관형사', '대명사':'👤 대명사', '감탄사':'❗ 감탄사'}
 
     for item in analysis_result:
         root = item.get('원형', '').strip()
@@ -492,57 +503,70 @@ def apply_strict_rules(analysis_result, mode_key):
             
             # '수정' 규칙이면 DB 내용으로 덮어씌움
             if rule['origin']: 
-                db_val = rule['origin'].replace("🔵 ", "").replace("🟢 ", "").replace("🔴 ", "").replace("🟣 ", "").strip()
-                item['분류'] = origin_map.get(db_val, db_val)
+                raw_origin = rule['origin'].replace("🔵 ", "").replace("🟢 ", "").replace("🔴 ", "").replace("🟣 ", "").strip()
+                item['분류'] = origin_map.get(raw_origin, raw_origin)
                 
-            if rule['pos']:
-                db_val = rule['pos'].replace("📦 ", "").replace("🏃 ", "").replace("🎨 ", "").replace("⚡ ", "").replace("🔍 ", "").replace("👤 ", "").replace("❗ ", "").strip()
-                item['품사'] = pos_map.get(db_val, db_val)
+            # [수정] 품사(pos) 덮어씌우는 로직 전체 삭제
         
         final_result.append(item)
         
     return final_result
 
-# [2차 피드백 반영] 데이터 흐름 원상복구 + 빈칸 문제 해결 (Step 4에서 처리)
-# [최종 승인] 고유명사 통합 + 대명사 보호 + 필터링 완벽 적용 버전
 def run_analysis_action(txt, img_bytes=None):
     if not txt.strip(): st.warning("내용이 없습니다."); return
     
-    with st.spinner("AI가 사용자 규칙에 맞춰 정밀 분석 중입니다..."):
+    with st.spinner("AI가 분석 중입니다..."):
         s_data = fetch_all_rules_from_db(st.session_state.mode_key)
+
+        special_rule_for_north = ""
+        if st.session_state.mode_key == "NORTH":
+            special_rule_for_north = """
+            - **[북한어 특수 규칙 - 보조용언 통합]**: '웃고있었다.'처럼 본용언과 보조용언이 연결된 구성은
+              문법적으로 분리하지 말고 **'웃고있다'처럼 하나의 단어로 합쳐서** 원형을 만드십시오.
+              """
         
-        # 1. 프롬프트 (엄격한 규칙 주입)
+        # 1. 프롬프트 수정 (품사 출력 제외 + 엄격한 내부 판단 지시)
         prompt = f"""
         당신은 국어 데이터 구축을 위한 엄격한 분석기입니다.
 
         [분석 절대 규칙]
-        1. **원본**: 텍스트에 있는 어절을 띄어쓰기, 오타 포함하여 '보이는 그대로' 적으십시오.
+        1. **원본**: 
+           - 텍스트에 있는 어절을 띄어쓰기, 오타 포함하여 '보이는 그대로' 적으십시오.
+           - 물리적 줄바꿈(Enter, \n)으로 잘린 단어는 문맥을 파악하여 하나로 합쳐서 적으십시오.
+             (예: '문\n구' -> '문구', '습\n니다.' -> '습니다.')
+           - 주의 : 원본에는 조사, 어미, 문장 부호(., 등)를 절대 떼지 말고 보이는 그대로 포함해야 합니다.
+           - 중복 방지 : 합성어를 추출했다면, 그 안의 구성 요소를 별도로 쪼개서 중복 추출하지 마십시오. 가장 긴 단어를 기준으로 작업하십시오.
+
         2. **원형**: 
-           - 조사, 어미를 뗀 **순수 단어(Lexical Root)**만 적으십시오.
-           - 명사+조사(예: '학교를') -> 조사를 떼고 '학교'만 적음.
-           - 용언(예: '먹었습니다') -> 기본형 '먹다'로 적음.
-           - '+' 기호를 절대 쓰지 마십시오.
+           - 동사/형용사 : 활용된 형태를 기본형(사전 등재형)으로 바꾸십시오.
+             (예: '갔으니' -> '가다', '빠른' -> '빠르다', '예뻐' -> '예쁘다'
+           {special_rule_for_north}
+           - 명사 : 붙어있는 조사(은/는/이/가/을/를 등)만 제거하고 명사 단어만 남기십시오.
+           - '기'/'음' 명사형 : 문맥상 완전히 명사로 굳어진 단어는 그 형태를 유지하십시오.(예: '달리기','얼음')
+
+           - 부사/관형사 : '이쯤', '가장', '다시', '왜' 등
+             부사와 관형사는 조사가 아니므로 의미를 가진 단어로 취급하여 절대 누락하지 말고 원형 그대로 추출하십시오.
+
+           - 누락 방지 : '눈사람우에', '학교앞에서', '책상밑에'처럼 위치/장소 명사(위, 아래, 안, 밖, 우, 옆, 앞, 뒤 등)가 붙은 경우,
+              뒤의 위치 명사만 분리하고 앞에 있는 명사(눈사람, 학교, 책상)는 절대 삭제하지 마십시오.
+
+           - 의존명사, 조사, 단순 어미는 추출 대상에서 확실하게 제외하십시오.
+
         3. **분류(어종)**:
            - 고유어(고), 한자어(한), 외래어(외), 혼종어(혼) 중 하나로 분류.
-           - **[중요 예외] '명사+하다' 동사**:
-             - '하다'를 제외한 앞 명사의 어종을 따릅니다.
-             - 예: '건강하다'(한자어) -> '한', '노트하다'(외래어) -> '외'
-             - 서로 다른 어종 결합 시에만 '혼'
-        4. **품사**:
-           - 문맥이 아닌 '원형'을 기준으로 판단하십시오.
+           - '명사+하다' 동사: '하다'를 제외한 앞 명사의 어종을 따릅니다.
 
         {generate_prompt_from_sheet(s_data)}
         
         [출력 양식: JSON 리스트]
         [
-          {{"원본": "보이는그대로", "원형": "정제된기본형", "분류": "고/한/외/혼", "품사": "명사/동사/형용사/부사/관형사/대명사/감탄사"}}
+          {{"원본": "합쳐진원본테스트", "원형": "정제된기본형", "분류": "고/한/외/혼"}}
         ]
         """
         
         # API 호출
         raw, status = api_call_direct(prompt + f"\n\n[분석 대상]:\n{txt[:5000]}", img_bytes)
         
-        # 로그 기록
         if raw: st.session_state.last_raw_response = raw
         else: st.session_state.last_raw_response = f"🚨 API 호출 실패! 이유: {status}"
         
@@ -564,18 +588,17 @@ def run_analysis_action(txt, img_bytes=None):
                 o = str(r.get('원본') or '').strip()
                 root = str(r.get('원형') or '').strip()
                 orig_v = str(r.get('분류') or '혼').strip()
-                pos_v = str(r.get('품사') or '명사').strip()
+                # [수정] 품사(pos_v) 파싱 삭제
                 
                 if not o or not root: continue
                 
-                # [필터링 1] 영어/숫자 포함 시 제외 (아침 버전 규칙 준수)
+                # [필터링 1] 영어/숫자 포함 시 제외
                 if re.search(r'[0-9a-zA-Z]', o) or re.search(r'[0-9a-zA-Z]', root): continue
 
-                # [필터링 2] 제외 품사 목록 (아침 버전 규칙 준수)
-                if pos_v in ['조사', '어미', '의존명사', '의존 명사', '수사']: continue
+                # [필터링 2] 불용어 목록 체크 (품사 기반 필터링은 프롬프트 명령으로 대체)
                 if root in ['것', '수', '데', '바', '지', '리', '개', '번', '명', '쪽', '등', '따름', '뿐']: continue
                 
-                draft_items.append({'원본': o, '원형': root, '분류': orig_v, '품사': pos_v})
+                draft_items.append({'원본': o, '원형': root, '분류': orig_v}) # 품사 제외
 
             # 3. DB 족보 적용
             draft_items = apply_strict_rules(draft_items, st.session_state.mode_key)
@@ -587,15 +610,15 @@ def run_analysis_action(txt, img_bytes=None):
             for item in draft_items:
                 root = item['원형']
                 origin = item['분류']
-                pos = item['품사']
                 o = item['원본']
                 
-                key = (root, origin, pos)
+                # [수정] 키에서 품사 제외 -> 중복 발생 원인 제거
+                key = (root, origin)
                 if key not in temp_dict: temp_dict[key] = []
                 temp_dict[key].append(o)
 
-            # 5. 최종 결과 생성 및 [UI 매핑]
-            for (root, origin, pos), origs in temp_dict.items():
+            # 5. 최종 결과 생성
+            for (root, origin), origs in temp_dict.items():
                 cnts = Counter(origs)
                 display_orig = ", ".join([f"{w}({c})" for w, c in cnts.items()])
                 total_cnt = sum(cnts.values())
@@ -609,30 +632,16 @@ def run_analysis_action(txt, img_bytes=None):
                     elif '외' in origin_lower or 'foreign' in origin_lower: final_origin = '🔴 외'
                     elif '혼' in origin_lower or 'hybrid' in origin_lower: final_origin = '🟣 혼'
                     else: final_origin = '🟣 혼'
-
-                # [품사 매핑] ★순서 중요: 대명사를 먼저 구출해야 함★
-                final_pos = pos
-                if not any(x in pos for x in ['📦','🏃','🎨','⚡','🔍','👤','❗']):
-                    pos_lower = pos.lower()
-                    
-                    # 1순위: 대명사 (명사보다 먼저 체크!)
-                    if '대명사' in pos_lower or 'pro' in pos_lower: final_pos = '👤 대명사'
-                    # 2순위: 명사 (여기서 '고유명사'도 '명사'로 통합됨)
-                    elif '명사' in pos_lower or 'noun' in pos_lower: final_pos = '📦 명사'
-                    elif '동사' in pos_lower or 'verb' in pos_lower: final_pos = '🏃 동사'
-                    elif '형용사' in pos_lower or 'adj' in pos_lower: final_pos = '🎨 형용사'
-                    elif '부사' in pos_lower or 'adv' in pos_lower: final_pos = '⚡ 부사'
-                    elif '관형사' in pos_lower or 'det' in pos_lower: final_pos = '🔍 관형사'
-                    elif '감탄사' in pos_lower or 'int' in pos_lower: final_pos = '❗ 감탄사'
-                    else: final_pos = '📦 명사' # 기본값
+                
+                # [수정] 품사 매핑 로직 전체 삭제
                 
                 proc.append({
                     "삭제": False, 
                     "횟수": f"{total_cnt}회", 
                     "원본": display_orig, 
                     "원형": root, 
-                    "분류": final_origin, 
-                    "품사": final_pos
+                    "분류": final_origin
+                    # 품사 제외됨
                 })
             
             st.session_state.analysis_result = proc; st.session_state.step = 3; st.rerun()
@@ -879,35 +888,31 @@ elif st.session_state.step == 3:
     
     df_res = pd.DataFrame(st.session_state.analysis_result)
     if not df_res.empty:
+        # [수정] 품사(pos) 컬럼 설정 삭제
         edited = st.data_editor(df_res, column_config={
             "삭제": st.column_config.CheckboxColumn("삭제"),
             "원본": st.column_config.TextColumn("원본", disabled=True),
-            "분류": st.column_config.SelectboxColumn("분류", options=["🔵 고", "🟢 한", "🔴 외", "🟣 혼"]),
-            "품사": st.column_config.SelectboxColumn("품사", options=["📦 명사", "🏃 동사", "🎨 형용사", "⚡ 부사", "🔍 관형사", "👤 대명사", "고유명사", "❗ 감탄사"])
+            "분류": st.column_config.SelectboxColumn("분류", options=["🔵 고", "🟢 한", "🔴 외", "🟣 혼"])
         }, use_container_width=True, num_rows="dynamic", key="editor_final")
+        # 화면에서 수정한 내용(edited)을 즉시 메모리(session_state)에 반영
+        if edited is not None:
+             st.session_state.analysis_result = edited.to_dict('records')
         
-        if not edited.equals(df_res):
-            diff_mask = (edited != df_res).any(axis=1)
-            if not edited[diff_mask][[c for c in df_res.columns if c != "삭제"]].equals(df_res[diff_mask][[c for c in df_res.columns if c != "삭제"]]):
-                st.session_state.analysis_result = edited.to_dict('records')
-                st.toast("🔄 데이터 동기화 중..."); time.sleep(2.0); st.rerun()
-            else: st.session_state.analysis_result = edited.to_dict('records')
-    else:
-        st.warning("⚠️ 분석된 단어가 없거나 모두 필터링되었습니다. 원문을 확인하거나 직접 단어를 추가해주세요.")
-    
     @st.dialog("➕ 단어 직접 추가")
     def open_add_dialog():
         with st.form("manual_add_form"):
             o = st.text_input("원본 단어")
             r = st.text_input("원형(기본형)")
             org = st.selectbox("어종 분류", ["고","한","외","혼"])
-            p = st.selectbox("품사", ["명사","동사","형용사","부사","관형사","대명사","고유명사","감탄사"])
+            # [수정] 품사 입력창 삭제
+            # p = st.selectbox("품사", ...) 
+            
             cnt = st.number_input("출연 횟수", 1, 100, 1)
             if st.form_submit_button("추가 완료"):
                 st.session_state.analysis_result.append({
                     "삭제": False, "횟수": f"{cnt}회", "원본": f"{o}(수동)", "원형": r, 
-                    "분류": {'고':'🔵 고', '한':'🟢 한', '외':'🔴 외', '혼':'🟣 혼'}.get(org, org), 
-                    "품사": {'명사':'📦 명사', '동사':'🏃 동사', '형용사':'🎨 형용사', '부사':'⚡ 부사', '관형사':'🔍 관형사', '대명사':'👤 대명사', '감탄사':'❗ 감탄사'}.get(p, p)
+                    "분류": {'고':'🔵 고', '한':'🟢 한', '외':'🔴 외', '혼':'🟣 혼'}.get(org, org)
+                    # 품사 추가 없음
                 })
                 st.toast("✅ 단어 추가 완료. 동기화 중...", icon="✨")
                 time.sleep(2.0)
