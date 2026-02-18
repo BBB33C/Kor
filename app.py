@@ -4,14 +4,11 @@ import requests
 import json
 import re
 import io
-import fitz
 import os
 import time
 import base64
 import hashlib
 import gspread
-import numpy as np
-import threading
 from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime, timedelta # 시간 계산용 timedelta 추가
 from collections import Counter
@@ -62,9 +59,6 @@ if 'last_raw_response' not in st.session_state: st.session_state.last_raw_respon
 if 'debug_log' not in st.session_state: st.session_state.debug_log = ""
 if 'is_finished' not in st.session_state: st.session_state.is_finished = False
 if 'split_mode' not in st.session_state: st.session_state.split_mode = False # [New] 분할 모드 상태
-# [New] 동음이의어 사전 메모리 초기화
-if 'homonym_dict' not in st.session_state: st.session_state.homonym_dict = {}
-if 'analysis_cache' not in st.session_state: st.session_state.analysis_cache = {}
 
 # [New] 입력 데이터만 초기화하는 안전 함수
 def reset_input_buffer():
@@ -215,50 +209,14 @@ def save_backup_to_cloud(mode_key, df):
     except: return False
 
 # =========================================================
-# [3] 데이터 병합 및 비교 학습 엔진 (수정됨)
+# [3] 데이터 병합 및 비교 학습 엔진
 # =========================================================
-
-# [New] 엑셀 로드 시 동음이의어 학습(기억 복원) 함수
-def learn_homonyms_from_df(df):
-    if df is None or df.empty: return
-    
-    count = 0
-    # '자료' 혹은 '원형' 컬럼을 스캔
-    target_col = '자료' if '자료' in df.columns else '원형'
-    if target_col not in df.columns: return
-
-    # 패턴: "단어(의미)" 형태 (예: 배(과일))
-    pattern = re.compile(r"(.+)\((.+)\)$")
-    
-    for val in df[target_col].dropna().astype(str):
-        if "(수동)" in val: continue # 수동 입력 태그는 제외
-        
-        match = pattern.search(val)
-        if match:
-            word, meaning = match.groups()
-            word = word.strip()
-            meaning = meaning.strip()
-            
-            # 기억장소(사전)에 없으면 리스트 생성
-            if word not in st.session_state.homonym_dict:
-                st.session_state.homonym_dict[word] = []
-            
-            # 새로운 의미라면 추가
-            if meaning not in st.session_state.homonym_dict[word]:
-                st.session_state.homonym_dict[word].append(meaning)
-                count += 1
-    
-    if count > 0:
-        print(f"[System] 엑셀에서 {count}개의 의미를 복원했습니다.")
-
 def clean_val_for_save(v):
-    try:
-        if isinstance(v, str): 
-            chars_to_remove = ['🔵 ', '🟢 ', '🔴 ', '🟣 ', '📦 ', '🏃 ', '🎨 ', '⚡ ', '🔍 ', '👤 ', '❗ ']
-            for char in chars_to_remove: v = v.replace(char, '')
-            return v.strip()
-        return str(v)
-    except: return ""
+    if isinstance(v, str): 
+        chars_to_remove = ['🔵 ', '🟢 ', '🔴 ', '🟣 ', '📦 ', '🏃 ', '🎨 ', '⚡ ', '🔍 ', '👤 ', '❗ ']
+        for char in chars_to_remove: v = v.replace(char, '')
+        return v.strip()
+    return v
 
 def calc_freq(row):
     total = 0
@@ -271,233 +229,84 @@ def calc_freq(row):
             elif v not in ['nan', '', 'None']: total += 1
     return total
 
-# [New] 이어하기 시 '단어(의미)' 형태를 분리하여 로드하는 전처리 함수
-def preprocess_loaded_excel(df):
-    if df is None or df.empty: return df
-    
-    # '자료' 컬럼이 있는 경우에만 처리
-    if '자료' in df.columns:
-        # 정규표현식: "단어(의미)" 형태 감지
-        # 예: "배(과일)" -> match group 1="배", group 2="과일"
-        pattern = r"(.+)\((.+)\)$"
-        
-        def split_meaning(val):
-            val = str(val).strip()
-            # 이미 수동으로 입력된 (수동) 태그는 건너뜀
-            if "(수동)" in val: return val
-            
-            match = re.search(pattern, val)
-            if match:
-                word, meaning = match.groups()
-                # 여기서 전역 사전(Session State)에 학습시켜도 됨 (선택사항)
-                return val # 일단 원본 그대로 유지 (UI에서 보여주기 위해)
-            return val
-
-        # 데이터 프레임에 적용 (현재는 패스스루, 필요 시 로직 확장 가능)
-        # df['자료'] = df['자료'].apply(split_meaning) 
-        
-    return df
-
-# [수정] 엑셀 병합 로직 (횟수 계산 오류 수정 버전)
 def merge_master_data(old_df, new_df):
-    # 1. 빈 데이터 방어
-    if (old_df is None or old_df.empty) and (new_df is None or new_df.empty):
-        return pd.DataFrame(columns=['구분', '자료', '출연횟수', '쪽수1'])
-    
     if old_df is None or old_df.empty: return new_df
-    if new_df is None or new_df.empty: return old_df
+    key_cols = ['자료', '구분']
+    merged = pd.merge(old_df, new_df, on=key_cols, how='outer', suffixes=('_old', '_new'))
+    page_cols_old = [c for c in old_df.columns if c.startswith('쪽수')]
+    page_cols_new = [c for c in new_df.columns if c.startswith('쪽수')]
+    final_rows = []
+    for _, row in merged.iterrows():
+        new_row = {k: row[k] for k in key_cols}
+        pages = []
+        for c in page_cols_old:
+            val = row.get(f"{c}_old", row.get(c))
+            if pd.notna(val) and str(val).strip() not in ['nan', '', 'None']: pages.append(str(val))
+        for c in page_cols_new:
+            val = row.get(f"{c}_new", row.get(c))
+            if pd.notna(val) and str(val).strip() not in ['nan', '', 'None']: pages.append(str(val))
+        unique_pages = sorted(list(set(pages)))
+        for i, p in enumerate(unique_pages): new_row[f"쪽수{i+1}"] = p
+        final_rows.append(new_row)
+        
+    result_df = pd.DataFrame(final_rows)
+    result_df['출연횟수'] = result_df.apply(calc_freq, axis=1)
     
-    try:
-        # 문자열 변환
-        old_df['자료'] = old_df['자료'].astype(str)
-        new_df['자료'] = new_df['자료'].astype(str)
-        old_df['구분'] = old_df['구분'].astype(str)
-        new_df['구분'] = new_df['구분'].astype(str)
-
-        # 쪽수 컬럼만 추출해서 녹이기 (Melt)
-        page_cols_old = [c for c in old_df.columns if str(c).startswith('쪽수')]
-        page_cols_new = [c for c in new_df.columns if str(c).startswith('쪽수')]
-        
-        melted_old = old_df.melt(id_vars=['자료', '구분'], value_vars=page_cols_old, value_name='page').dropna()
-        melted_new = new_df.melt(id_vars=['자료', '구분'], value_vars=page_cols_new, value_name='page').dropna()
-        
-        # 합치기
-        combined = pd.concat([melted_old, melted_new], ignore_index=True)
-        
-        combined['page'] = combined['page'].astype(str).str.strip()
-        combined = combined[~combined['page'].isin(['nan', '', 'None'])]
-        
-        # 중복 제거 및 정렬
-        grouped = combined.groupby(['자료', '구분'])['page'].apply(lambda x: sorted(list(set(x)))).reset_index()
-        
-        # 결과 생성
-        result_rows = []
-        for _, row in grouped.iterrows():
-            pages = row['page']
-            
-            # [핵심 수정] 쪽수_횟수 형식에서 실제 횟수 추출하여 합산
-            total_freq = 0
-            for p in pages:
-                p_str = str(p)
-                if '_' in p_str:
-                    try:
-                        # 예: "5_3" -> 3을 더함
-                        cnt = int(p_str.split('_')[1])
-                        total_freq += cnt
-                    except:
-                        total_freq += 1
-                else:
-                    # 예: "5" -> 1을 더함
-                    total_freq += 1
-
-            base_data = {
-                '구분': row['구분'],
-                '자료': row['자료'],
-                '출연횟수': total_freq # 수정됨: len(pages)가 아니라 계산된 합계 사용
-            }
-            # 쪽수 컬럼 펼치기
-            for i, p in enumerate(pages):
-                base_data[f'쪽수{i+1}'] = p
-            result_rows.append(base_data)
-            
-        return pd.DataFrame(result_rows)
-
-    except Exception as e:
-        print(f"Merge Error: {e}")
-        return new_df
+    fixed_cols = ['구분', '자료', '출연횟수']
+    page_cols = sorted([c for c in result_df.columns if c.startswith('쪽수')], key=lambda x: int(re.sub(r'[^0-9]', '', x)) if re.search(r'\d', x) else 9999)
+    final_cols = fixed_cols + page_cols
+    remaining_cols = [c for c in result_df.columns if c not in final_cols and c != 'sk']
+    final_cols = final_cols + remaining_cols
+    
+    sort_map = {'고':1, '순':1, '한':2, '외':3, '혼':4}
+    result_df['sk'] = result_df['구분'].map(sort_map).fillna(5)
+    result_df = result_df.sort_values(['sk', '자료']).drop('sk', axis=1)
+    result_df = result_df.reindex(columns=final_cols)
+    result_df = result_df.fillna("")
+    return result_df
 
 def save_logic_with_learning():
-    # A. 구글 시트 저장 (실패 시 무시)
-    try:
-        sheet = get_sheet_object_for_write(st.session_state.mode_key)
-        now = datetime.now().isoformat()
-        learning_logs = []
-        final_results = pd.DataFrame(st.session_state.analysis_result)
-        
-        if not final_results.empty:
-            for _, row in final_results.iterrows():
-                if not row.get('삭제', False):
-                    learning_logs.append([
-                        now, 
-                        str(row.get('원본', '')).split('(')[0],
-                        str(row.get('원형', '')), 
-                        clean_val_for_save(row.get('분류', '')), 
-                        "-", 
-                        'add', 
-                        'Engine-Final', '', ''
-                    ])
-        if learning_logs and sheet: 
-            send_data_with_retry(sheet, learning_logs, True)
-            fetch_all_rules_from_db.clear()
-    except: pass
-
-    # B. 엑셀 마스터 데이터 생성
-    try:
-        final_results = pd.DataFrame(st.session_state.analysis_result)
-        
-        # 데이터가 없어도 빈 프레임 생성
-        if final_results.empty:
-            temp_df = pd.DataFrame(columns=['구분', '자료', '출연횟수', '쪽수1'])
-        else:
-            valid = final_results[final_results['삭제']==False].copy()
-            valid['n_cnt'] = valid['횟수'].apply(lambda x: int(re.sub(r'[^0-9]', '', str(x))) if re.search(r'\d', str(x)) else 1)
-            agg = valid.groupby(['원형', '분류'], as_index=False).agg({'n_cnt': 'sum'})
-            
-            p_num = str(st.session_state.page_idx + st.session_state.start_offset)
-            temp_rows = []
-            
-            for _, item in agg.iterrows():
-                val = f"{p_num}_{item['n_cnt']}" if item['n_cnt'] > 1 else p_num
-                temp_rows.append({
-                    '구분': clean_val_for_save(item['분류']), 
-                    '자료': item['원형'], 
-                    '출연횟수': item['n_cnt'], 
-                    '쪽수1': val
-                })
-            temp_df = pd.DataFrame(temp_rows)
-            
-        # 병합 및 저장
-        st.session_state.master_df = merge_master_data(st.session_state.master_df, temp_df)
-        st.toast("✅ 데이터 병합 완료!")
-                
-    except Exception as e:
-        st.error(f"Save Logic Error: {str(e)}")
-
-# [수정 2] 저장 로직 (함수 인식 오류 해결 + 데이터 무결성 보장)
-def save_logic_with_learning():
+    sheet = get_sheet_object_for_write(st.session_state.mode_key)
+    now = datetime.now().isoformat()
+    learning_logs = []
+    final_results = pd.DataFrame(st.session_state.analysis_result)
+    initial_draft = pd.DataFrame(st.session_state.initial_draft)
     
-    # [핵심] 도우미 함수 내장 (NameError 해결)
-    def clean_func(v):
-        try:
-            if isinstance(v, str): 
-                chars = ['🔵 ', '🟢 ', '🔴 ', '🟣 ', '📦 ', '🏃 ', '🎨 ', '⚡ ', '🔍 ', '👤 ', '❗ ']
-                for c in chars: v = v.replace(c, '')
-                return v.strip()
-            return str(v)
-        except: return ""
-
-    # A. 구글 시트 저장 (실패 시 무시)
-    try:
-        sheet = get_sheet_object_for_write(st.session_state.mode_key)
-        now = datetime.now().isoformat()
-        learning_logs = []
-        final_results = pd.DataFrame(st.session_state.analysis_result)
-        
-        if not final_results.empty:
-            for _, row in final_results.iterrows():
-                if not row.get('삭제', False):
-                    learning_logs.append([
-                        now, 
-                        str(row.get('원본', '')).split('(')[0],
-                        str(row.get('원형', '')), 
-                        clean_func(row.get('분류', '')), 
-                        "-", 
-                        'add', 
-                        'Engine-Final', '', ''
-                    ])
-        if learning_logs and sheet: 
-            send_data_with_retry(sheet, learning_logs, True)
-            fetch_all_rules_from_db.clear()
-    except Exception as e:
-        print(f"Google Sheet Save Error: {e}")
-
-    # B. 엑셀 마스터 데이터 생성 (핵심)
-    try:
-        final_results = pd.DataFrame(st.session_state.analysis_result)
-        
-        # 분석 결과가 없어도 빈 데이터프레임이라도 만들어야 함
-        if final_results.empty:
-            temp_df = pd.DataFrame(columns=['구분', '자료', '출연횟수', '쪽수1'])
+    for _, draft_row in initial_draft.iterrows():
+        orig = draft_row['원본']
+        match = final_results[final_results['원본'] == orig]
+        if match.empty or match.iloc[0]['삭제']:
+            # [수정] 품사 자리에 무조건 "-" 입력
+            learning_logs.append([now, orig, draft_row['원형'], draft_row['분류'], "-", 'delete', 'Engine-Compare', draft_row['원형'], draft_row['분류']])
         else:
-            valid = final_results[final_results['삭제']==False].copy()
-            # 횟수 계산
-            valid['n_cnt'] = valid['횟수'].apply(lambda x: int(re.sub(r'[^0-9]', '', str(x))) if re.search(r'\d', str(x)) else 1)
-            
-            # 합산
-            agg = valid.groupby(['원형', '분류'], as_index=False).agg({'n_cnt': 'sum'})
-            
-            p_num = str(st.session_state.page_idx + st.session_state.start_offset)
-            temp_rows = []
-            
-            for _, item in agg.iterrows():
-                val = f"{p_num}_{item['n_cnt']}" if item['n_cnt'] > 1 else p_num
-                temp_rows.append({
-                    '구분': clean_func(item['분류']), 
-                    '자료': item['원형'], 
-                    '출연횟수': item['n_cnt'], 
-                    '쪽수1': val
-                })
-            temp_df = pd.DataFrame(temp_rows)
-            
-        # 병합 실행 (여기서 master_df가 None이 되지 않게 갱신)
-        st.session_state.master_df = merge_master_data(st.session_state.master_df, temp_df)
-        
-        # [중요] 저장 완료 후 상태값 변경은 여기서 하지 않음 (버튼 클릭 이벤트 내에서 처리)
-        st.toast("✅ 데이터가 내부 저장소에 안전하게 기록되었습니다!")
-                
-    except Exception as e:
-        st.error(f"Save Logic Error: {str(e)}")
-        st.code(traceback.format_exc())
+            final_row = match.iloc[0]
+            # [수정] 품사 비교 로직 삭제, 무조건 "-" 입력
+            if (draft_row['원형'] != final_row['원형'] or clean_val_for_save(draft_row['분류']) != clean_val_for_save(final_row['분류'])):
+                learning_logs.append([now, orig, final_row['원형'], clean_val_for_save(final_row['분류']), "-", 'modify', 'Engine-Compare', draft_row['원형'], draft_row['분류']])
+    
+    draft_originals = initial_draft['원본'].tolist()
+    for _, final_row in final_results.iterrows():
+        if final_row['원본'] not in draft_originals and not final_row['삭제']:
+            # [수정] 신규 추가 시에도 품사는 "-"
+            learning_logs.append([now, final_row['원본'], final_row['원형'], clean_val_for_save(final_row['분류']), "-", 'add', 'Engine-New', '', ''])
+    
+    if learning_logs: 
+        send_data_with_retry(sheet, learning_logs, True)
+        fetch_all_rules_from_db.clear()
+    
+    valid = final_results[final_results['삭제']==False].copy()
+    valid['n_cnt'] = valid['횟수'].apply(lambda x: int(re.sub(r'[^0-9]', '', str(x))) if re.search(r'\d', str(x)) else 1)
+    
+    # [수정] 엑셀 집계(groupby)에서 '품사' 키 제거 -> 중복 버그 원천 차단
+    agg = valid.groupby(['원형', '분류'], as_index=False).agg({'n_cnt': 'sum'})
+    
+    p_num = str(st.session_state.page_idx + st.session_state.start_offset)
+    temp_rows = []
+    for _, item in agg.iterrows():
+        val = f"{p_num}_{item['n_cnt']}" if item['n_cnt'] > 1 else p_num
+        temp_rows.append({'구분': clean_val_for_save(item['분류']), '자료': item['원형'], '쪽수1': val})
+    st.session_state.master_df = merge_master_data(st.session_state.master_df, pd.DataFrame(temp_rows))
+    save_backup_to_cloud(st.session_state.mode_key, st.session_state.master_df)
 
 # =========================================================
 # [4] AI 분석 및 이미지 최적화 처리
@@ -564,14 +373,12 @@ def api_call_direct(prompt, image_bytes=None, model_name=None):
             
     return None, "Error: 3회 재시도 실패"
 
-# [수정] split_mode 인자 추가 (스레드용)
-def extract_text_unified(file_bytes, file_type, page_idx, split_mode=None):
+# [수정 2] 텍스트 추출(OCR)은 저렴한 Flash로 처리
+def extract_text_unified(file_bytes, file_type, page_idx):
     if not file_type: return ""
     raw_text = ""
     
-    # 인자가 들어오면(스레드) 그걸 쓰고, 없으면 세션값 사용
-    is_split = st.session_state.split_mode if split_mode is None else split_mode
-    
+    # 💰 비용 절감의 핵심: 읽기는 싸고 빠른 2.5 Flash가 담당
     ocr_model = "gemini-2.5-flash"
     
     if "image" in file_type: 
@@ -580,55 +387,54 @@ def extract_text_unified(file_bytes, file_type, page_idx, split_mode=None):
         if FITZ_AVAILABLE:
             try:
                 doc = fitz.open(stream=file_bytes, filetype="pdf")
-                if split_mode is None: # 메인 스레드일 때만 페이지 수 업데이트
-                    total = len(doc) * 2 if is_split else len(doc)
-                    st.session_state.total_pages = total
+                total = len(doc) * 2 if st.session_state.split_mode else len(doc)
+                st.session_state.total_pages = total
             except: pass
         elif PLUMBER_AVAILABLE:
             try:
                 with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
-                    if split_mode is None:
-                        total = len(pdf.pages) * 2 if is_split else len(pdf.pages)
-                        st.session_state.total_pages = total
+                    total = len(pdf.pages) * 2 if st.session_state.split_mode else len(pdf.pages)
+                    st.session_state.total_pages = total
             except: pass
             
-        # get_page_image에도 split_mode 전달
-        page_img = get_page_image(file_bytes, file_type, page_idx, is_split)
+        page_img = get_page_image(file_bytes, file_type, page_idx)
         if page_img:
             raw_text, _ = api_call_direct("이 이미지 속의 텍스트를 모두 추출하세요. 줄바꿈 유지.", page_img, model_name=ocr_model)
         else:
             if PLUMBER_AVAILABLE:
                 try:
                     with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
-                        target_idx = page_idx // 2 if is_split else page_idx
+                        target_idx = page_idx // 2 if st.session_state.split_mode else page_idx
                         if target_idx < len(pdf.pages): raw_text = pdf.pages[target_idx].extract_text()
                 except: pass
     return clean_raw_text(raw_text or "")
 
-# [수정] split_mode 인자 추가
-def get_page_image(file_bytes, file_type, page_idx, split_mode=None):
+def get_page_image(file_bytes, file_type, page_idx):
     if not file_bytes or not file_type: return None
-    
-    # 인자 우선 사용
-    is_split = st.session_state.split_mode if split_mode is None else split_mode
-    
     if "image" in file_type: return file_bytes
     if "pdf" in file_type and FITZ_AVAILABLE:
         try:
             doc = fitz.open(stream=file_bytes, filetype="pdf")
             
+            # [Update] 분할 모드 로직 적용
+            is_split = st.session_state.split_mode
             pdf_page_idx = page_idx // 2 if is_split else page_idx
             is_right_half = (page_idx % 2 == 1)
             
             if pdf_page_idx < len(doc): 
+                # PDF 화질 4배 (Vision 정확도용)
                 pix = doc[pdf_page_idx].get_pixmap(matrix=fitz.Matrix(4.0, 4.0))
                 img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
                 
                 if is_split:
+                    # 반으로 자르기 (Crop)
                     w, h = img.size
-                    if is_right_half: img = img.crop((w//2, 0, w, h))
-                    else: img = img.crop((0, 0, w//2, h))
+                    if is_right_half:
+                        img = img.crop((w//2, 0, w, h)) # 오른쪽 반
+                    else:
+                        img = img.crop((0, 0, w//2, h)) # 왼쪽 반
                 
+                # 이미지 다시 바이트로 변환
                 output = io.BytesIO()
                 img.save(output, format="PNG")
                 return output.getvalue()
@@ -648,32 +454,34 @@ def generate_prompt_from_sheet(sheet_data):
         action = row.get('action', '')
         root = row.get('root_word', '')
         origin = row.get('origin', '')
-        pos = row.get('pos', '')
+        # pos = row.get('pos', '') <-- 삭제됨
         
         if action == 'delete':
             rules.append(f"- '{orig}'는 추출 제외.")
         elif action in ['modify', 'add']:
-            rules.append(f"- '{orig}' 정답: 원형:'{root}', 어종:'{origin}', 품사:'{pos}'.")
+            # [수정] 예시 문장에서 품사 정보 삭제
+            rules.append(f"- '{orig}' 정답: 원형:'{root}', 어종:'{origin}'.")
             
     return "\n[사용자 교정 데이터 (최우선 준수)]:\n" + "\n".join(rules) + "\n"
-
-# [수정 1] 품사(POS) 로직 완전 제거 (어종만 교정)
+    # ▼▼▼ [누락된 함수 추가] AI 결과를 DB 규칙대로 강제 교정하는 함수 ▼▼▼
 def apply_strict_rules(analysis_result, mode_key):
+    # 1. 시트에서 저장된 규칙을 가져옵니다.
     db_rules = fetch_all_rules_from_db(mode_key)
     if not db_rules: return analysis_result
 
-    # 족보 딕셔너리 생성
+    # 2. 검색 속도를 위해 족보(Dictionary) 생성
     rule_map = {}
     for row in db_rules:
         root = str(row.get('root_word', '')).strip()
         if root:
             rule_map[root] = {
                 'origin': row.get('origin', ''),
+                # 'pos': row.get('pos', ''), <-- 필요 없음
                 'action': row.get('action', '')
             }
 
+    # 3. 하나씩 검사하며 교체
     final_result = []
-    # 어종 매핑 (이모지 포함)
     origin_map = {'고':'🔵 고', '한':'🟢 한', '외':'🔴 외', '혼':'🟣 혼'}
 
     for item in analysis_result:
@@ -683,147 +491,134 @@ def apply_strict_rules(analysis_result, mode_key):
         if root in rule_map:
             rule = rule_map[root]
             
-            # '삭제' 규칙이면 결과에서 제외
+            # '삭제' 규칙이면 결과에서 뺌
             if rule['action'] == 'delete':
                 continue 
             
-            # '수정' 규칙이면 DB 내용으로 '어종'만 덮어씌움 (품사는 무시)
+            # '수정' 규칙이면 DB 내용으로 덮어씌움
             if rule['origin']: 
                 db_val = rule['origin'].replace("🔵 ", "").replace("🟢 ", "").replace("🔴 ", "").replace("🟣 ", "").strip()
                 item['분류'] = origin_map.get(db_val, db_val)
                 
+            # [수정] 품사(pos) 덮어씌우는 로직 전체 삭제
+        
         final_result.append(item)
         
     return final_result
 
-# [수정] rules_data, mode_key_arg 인자 추가 (스레드용)
-def get_ai_analysis_result(txt, img_bytes=None, rules_data=None, mode_key_arg=None):
-    if not txt.strip(): return []
+def run_analysis_action(txt, img_bytes=None):
+    if not txt.strip(): st.warning("내용이 없습니다."); return
     
-    try:
-        # 인자 우선 사용, 없으면 세션값
-        current_mode = mode_key_arg if mode_key_arg else st.session_state.mode_key
-        s_data = rules_data if rules_data is not None else fetch_all_rules_from_db(current_mode)
+    with st.spinner("AI가 사용자 규칙에 맞춰 정밀 분석 중입니다..."):
+        s_data = fetch_all_rules_from_db(st.session_state.mode_key)
         
+        # 1. 프롬프트 수정 (품사 출력 제외 + 엄격한 내부 판단 지시)
         prompt = f"""
-        당신은 국어 어종 분석 전문가입니다. 
-        텍스트에서 실질적인 의미를 가진 단어(명사, 용언의 어근)만 추출하여 어종을 분류하십시오.
+        당신은 국어 데이터 구축을 위한 엄격한 분석기입니다.
 
         [분석 절대 규칙]
-        1. **추출 대상**: 문맥상 의미가 있는 실질 형태소만 추출하십시오.
-           - **제외 대상**: 조사, 어미, 의존명사(수/것/데/바/지/리...), 접사, 숫자, 특수기호.
+        1. **원본**: 텍스트에 있는 어절을 띄어쓰기, 오타 포함하여 '보이는 그대로' 적으십시오.
         2. **원형**: 
-           - 동사/형용사는 기본형(예: '먹다')으로, 명사는 조사를 뗀 형태로 적으십시오.
+           - 조사, 어미를 뗀 **순수 단어(Lexical Root)**만 적으십시오.
+           - 명사, 동사, 형용사, 부사, 관형사, 감탄사만 추출하십시오.
+           - 조사나 어미, 의존명사는 절대 추출하지 마십시오.
         3. **분류(어종)**:
            - 고유어(고), 한자어(한), 외래어(외), 혼종어(혼) 중 하나로 분류.
-           - '하다' 동사(예: 공부하다)는 어근(공부)의 어종을 따름.
-        
+           - '명사+하다' 동사: '하다'를 제외한 앞 명사의 어종을 따릅니다.
+
         {generate_prompt_from_sheet(s_data)}
         
         [출력 양식: JSON 리스트]
         [
-          {{"원본": "텍스트그대로", "원형": "기본형", "분류": "고/한/외/혼"}}
+          {{"원본": "보이는그대로", "원형": "정제된기본형", "분류": "고/한/외/혼"}}
         ]
         """
         
+        # API 호출
         raw, status = api_call_direct(prompt + f"\n\n[분석 대상]:\n{txt[:5000]}", img_bytes)
         
-        if not raw: return []
+        if raw: st.session_state.last_raw_response = raw
+        else: st.session_state.last_raw_response = f"🚨 API 호출 실패! 이유: {status}"
         
-        clean_json = raw.replace("```json", "").replace("```", "").strip()
         try:
+            if not raw: raise Exception(f"API 응답 실패: {status}")
+            
+            clean_json = raw.replace("```json", "").replace("```", "").strip()
             match = re.search(r'\[.*\]', clean_json, re.DOTALL)
-            res = json.loads(match.group()) if match else json.loads(clean_json)
-        except: res = []
-
-        draft_items = []
-        stop_words = ['것', '수', '데', '바', '지', '리', '개', '번', '명', '쪽', '등', '따름', '뿐', '이', '그', '저']
-
-        for r in res:
-            o = str(r.get('원본') or '').strip()
-            root = str(r.get('원형') or '').strip()
-            orig_v = str(r.get('분류') or '혼').strip()
             
-            if not o or not root: continue
-            if re.search(r'[0-9a-zA-Z]', o) or re.search(r'[0-9a-zA-Z]', root): continue
-            if root in stop_words: continue
+            if match: res = json.loads(match.group())
+            else:
+                try: res = json.loads(clean_json)
+                except: res = []
+
+            draft_items = []
             
-            draft_items.append({'원본': o, '원형': root, '분류': orig_v})
+            # 2. 1차 가공 & 필터링
+            for r in res:
+                o = str(r.get('원본') or '').strip()
+                root = str(r.get('원형') or '').strip()
+                orig_v = str(r.get('분류') or '혼').strip()
+                # [수정] 품사(pos_v) 파싱 삭제
+                
+                if not o or not root: continue
+                
+                # [필터링 1] 영어/숫자 포함 시 제외
+                if re.search(r'[0-9a-zA-Z]', o) or re.search(r'[0-9a-zA-Z]', root): continue
 
-        # [중요] 스레드 내에서도 족보 규칙을 적용하기 위해 로직 내장
-        rule_map = {}
-        for row in s_data:
-            root = str(row.get('root_word', '')).strip()
-            if root: rule_map[root] = {'origin': row.get('origin', ''), 'action': row.get('action', '')}
+                # [필터링 2] 불용어 목록 체크 (품사 기반 필터링은 프롬프트 명령으로 대체)
+                if root in ['것', '수', '데', '바', '지', '리', '개', '번', '명', '쪽', '등', '따름', '뿐']: continue
+                
+                draft_items.append({'원본': o, '원형': root, '분류': orig_v}) # 품사 제외
 
-        final_result = []
-        origin_map = {'고':'🔵 고', '한':'🟢 한', '외':'🔴 외', '혼':'🟣 혼'}
+            # 3. DB 족보 적용
+            draft_items = apply_strict_rules(draft_items, st.session_state.mode_key)
+            st.session_state.initial_draft = draft_items
 
-        for item in draft_items:
-            root = item.get('원형', '').strip()
-            if root in rule_map:
-                rule = rule_map[root]
-                if rule['action'] == 'delete': continue
-                if rule['origin']:
-                    db_val = rule['origin'].replace("🔵 ", "").replace("🟢 ", "").replace("🔴 ", "").replace("🟣 ", "").strip()
-                    item['분류'] = origin_map.get(db_val, db_val)
-            final_result.append(item)
+            # 4. 데이터 집계
+            proc = []
+            temp_dict = {}
+            for item in draft_items:
+                root = item['원형']
+                origin = item['분류']
+                o = item['원본']
+                
+                # [수정] 키에서 품사 제외 -> 중복 발생 원인 제거
+                key = (root, origin)
+                if key not in temp_dict: temp_dict[key] = []
+                temp_dict[key].append(o)
 
-        proc = []
-        temp_dict = {}
-        for item in final_result:
-            key = (item['원형'], item['분류']) 
-            if key not in temp_dict: temp_dict[key] = []
-            temp_dict[key].append(item['원본'])
-
-        for (root, origin), origs in temp_dict.items():
-            cnts = Counter(origs)
-            display_orig = ", ".join([f"{w}({c})" for w, c in cnts.items()])
-            total_cnt = sum(cnts.values())
+            # 5. 최종 결과 생성
+            for (root, origin), origs in temp_dict.items():
+                cnts = Counter(origs)
+                display_orig = ", ".join([f"{w}({c})" for w, c in cnts.items()])
+                total_cnt = sum(cnts.values())
+                
+                # [분류 매핑]
+                final_origin = origin
+                if not any(x in origin for x in ['🔵','🟢','🔴','🟣']):
+                    origin_lower = origin.lower()
+                    if '고' in origin_lower or 'native' in origin_lower: final_origin = '🔵 고'
+                    elif '한' in origin_lower or 'sino' in origin_lower: final_origin = '🟢 한'
+                    elif '외' in origin_lower or 'foreign' in origin_lower: final_origin = '🔴 외'
+                    elif '혼' in origin_lower or 'hybrid' in origin_lower: final_origin = '🟣 혼'
+                    else: final_origin = '🟣 혼'
+                
+                # [수정] 품사 매핑 로직 전체 삭제
+                
+                proc.append({
+                    "삭제": False, 
+                    "횟수": f"{total_cnt}회", 
+                    "원본": display_orig, 
+                    "원형": root, 
+                    "분류": final_origin
+                    # 품사 제외됨
+                })
             
-            final_origin = origin
-            if not any(x in origin for x in ['🔵','🟢','🔴','🟣']):
-                origin_lower = origin.lower()
-                if '고' in origin_lower: final_origin = '🔵 고'
-                elif '한' in origin_lower: final_origin = '🟢 한'
-                elif '외' in origin_lower: final_origin = '🔴 외'
-                else: final_origin = '🟣 혼'
-
-            proc.append({
-                "삭제": False, "횟수": f"{total_cnt}회", 
-                "원본": display_orig, "원형": root, "분류": final_origin
-            })
+            st.session_state.analysis_result = proc; st.session_state.step = 3; st.rerun()
             
-        return proc
-    except:
-        return []
-
-# [New] 백그라운드 워커 함수
-def prefetch_worker(file_bytes, file_type, target_page_idx, mode_key, cache_ref):
-    try:
-        # 1. 텍스트 추출 (기존 함수 재사용 불가하므로 로직 복사하거나, 필요한 부분만 수행)
-        # 스레드 안에서는 st.session_state 접근이 불안정하므로 인자로 받은 값만 사용
-        text = ""
-        # (간략화된 추출 로직: PDF/Image 분기)
-        # 실제로는 extract_text_unified가 st.session_state를 참조하므로 
-        # 여기서는 안전하게 텍스트만 추출하는 로직을 수행하거나, 
-        # 메인 스레드에서 텍스트 추출까지 끝내고 워커에게 넘기는 게 안전함.
-        # **가장 안전한 방법:** 메인 로직 참조
-        pass 
-    except: pass
-
-# [수정] 기존 함수는 이제 껍데기 역할만 하고, 실제 로직은 위 함수를 호출함
-def run_analysis_action(txt, img_bytes=None):
-    with st.spinner("AI가 어종을 분석중입니다. 잠시만 기다려주세요..."):
-        # 로직 분리된 함수 호출
-        result = get_ai_analysis_result(txt, img_bytes)
-        
-        if result:
-            st.session_state.analysis_result = result
-            st.session_state.step = 3
-            st.rerun()
-        else:
-            st.error("분석 결과가 없거나 오류가 발생했습니다.")
+        except Exception as e:
+            st.error(f"파싱 오류: {str(e)}")
+            st.session_state.debug_log = f"Error: {str(e)}\nRaw Response Logged."
 
 # =========================================================
 # [5] UI: 메인 루프 (Wizard)
@@ -840,112 +635,6 @@ with st.sidebar:
     if st.button("📋 사용 가능한 모델 목록 보기"):
         url = f"https://generativelanguage.googleapis.com/v1beta/models?key={API_KEY}"
         r = requests.get(url); st.code(r.text) # 화면에 JSON으로 쫙 보여줍니다
-   # ---------------------------------------------------------
-    # [Final] 시스템 실전 한계 테스트 (Real-World Execution)
-    # ---------------------------------------------------------
-    st.markdown("---")
-    with st.expander("💀 시스템 실전 한계 테스트 (Caution)", expanded=False):
-        st.caption("실제 API 과금 및 시트 기록이 발생하는 최종 테스트입니다.")
-        
-        if st.button("🔥 모든 기능 실전 실행 (All-In)", use_container_width=True):
-            audit_log = []
-            # [수정 1] 정수 대신 리스트로 선언 (스코프 문제 해결)
-            fail_count = [0]
-            
-            def audit(category, name, func):
-                # [수정 2] nonlocal fail_count 삭제 (필요 없음)
-                try:
-                    res, msg = func()
-                    icon = "✅" if res else "❌"
-                    audit_log.append(f"{icon} **[{category}] {name}**: {msg}")
-                    # [수정 3] 리스트 인덱스로 접근하여 카운트 증가
-                    if not res: fail_count[0] += 1
-                except Exception as e:
-                    audit_log.append(f"❌ **[{category}] {name}**: 💥 CRITICAL ERROR - {str(e)}")
-                    # [수정 4] 리스트 인덱스로 접근
-                    fail_count[0] += 1
-
-            progress = st.progress(0)
-
-            # [1. API 통신] 실제 모델에게 질문 던지기 (과금 발생)
-            def t_api_live():
-                if not API_KEY: return (False, "키 없음")
-                try:
-                    res, status = api_call_direct("테스트", model_name="gemini-2.5-flash")
-                    return (res is not None and "Success" in status, f"응답 수신 완료")
-                except: return (False, "API 호출 실패")
-            audit("AI", "실시간 응답 생성", t_api_live)
-            progress.progress(20)
-
-            # [2. 클라우드] 구글 시트 실제 쓰기 테스트 (Write)
-            def t_sheet_write():
-                try:
-                    ws = get_sheet_object_for_write("SOUTH")
-                    if ws:
-                        ws.append_row([datetime.now().isoformat(), "TEST_PING", "SYSTEM_CHECK", "-", "-", "test", "-", "-", "-"])
-                        return (True, "시트 쓰기 성공 (로그 확인)")
-                    return (False, "시트 객체 로드 실패")
-                except Exception as e: return (False, f"쓰기 에러: {e}")
-            audit("시트", "DB 실시간 쓰기", t_sheet_write)
-            progress.progress(40)
-
-            # [3. PDF 엔진] 메모리에서 PDF 생성 -> 저장 -> 추출 사이클
-            def t_pdf_cycle():
-                if FITZ_AVAILABLE:
-                    doc = fitz.open()
-                    page = doc.new_page()
-                    page.insert_text((10, 10), "TEST_EXTRACT_OK")
-                    pdf_bytes = doc.write()
-                    extracted = extract_text_unified(pdf_bytes, "application/pdf", 0)
-                    return ("TEST_EXTRACT_OK" in extracted, "생성 및 추출 사이클 정상")
-                elif PLUMBER_AVAILABLE:
-                    return (True, "Plumber 로드됨 (생성 불가)")
-                else: return (False, "PDF 엔진 없음")
-            audit("PDF", "엔진 생성/추출 사이클", t_pdf_cycle)
-            progress.progress(60)
-
-            # [4. 엑셀 로직] 복합 케이스 연산 검증
-            def t_excel_logic():
-                old = pd.DataFrame([{'구분':'고','자료':'A','출연횟수':3,'쪽수1':'5_3'}])
-                new = pd.DataFrame([{'구분':'고','자료':'A','출연횟수':2,'쪽수1':'6_2'}])
-                res = merge_master_data(old, new)
-                val = res.iloc[0]['출연횟수']
-                return (val == 5, f"로직 검증 완료 (3+2={val})")
-            audit("엑셀", "복합 연산 로직", t_excel_logic)
-            progress.progress(80)
-
-            # [5. 유틸리티] 이미지 변환 및 학습 로직
-            def t_utils():
-                img = Image.new('RGB', (10, 10), color='blue')
-                buf = io.BytesIO()
-                img.save(buf, format='PNG')
-                res_img = process_image_for_api(buf.getvalue())
-                
-                if 'homonym_dict' not in st.session_state: st.session_state.homonym_dict = {}
-                key = "__TEST__"
-                st.session_state.homonym_dict[key] = []
-                df = pd.DataFrame([{'자료': f'{key}(의미)', '구분': '고'}])
-                learn_homonyms_from_df(df)
-                res_learn = '의미' in st.session_state.homonym_dict.get(key, [])
-                if key in st.session_state.homonym_dict: del st.session_state.homonym_dict[key]
-                
-                return (res_img is not None and res_learn, "이미지/학습 유틸 정상")
-            audit("기타", "유틸리티 통합", t_utils)
-
-            progress.progress(100)
-            time.sleep(0.5)
-            progress.empty()
-            
-            col_a, col_b = st.columns(2)
-            half = len(audit_log) // 2 + 1
-            with col_a:
-                for log in audit_log[:half]: st.markdown(log)
-            with col_b:
-                for log in audit_log[half:]: st.markdown(log)
-            
-            # [수정 5] 결과 확인 부분도 리스트 인덱스로 수정
-            if fail_count[0] == 0: st.success("✨ 모든 실제 기능(API/DB/엔진)이 정상 작동합니다.")
-            else: st.error(f"🔥 {fail_count[0]}개의 기능 고장 발견.")
 
 
 # STEP 0: 언어 규범 선택
@@ -963,31 +652,6 @@ if st.session_state.step == 0:
             reset_input_buffer()
             st.session_state.mode_key = "NORTH"; st.session_state.step = 1; st.rerun()
 
-# ---------------------------------------------------------
-    # [추가] 메인 화면 공지사항 (HTML 들여쓰기 제거 버전)
-    # ---------------------------------------------------------
-    st.markdown("<br>", unsafe_allow_html=True)
-    
-    with st.expander("📢 [필독] 새로 추가된 '의미 구분' 기능 사용법 (클릭해서 보기)", expanded=True):
-        st.markdown("""<div style="background-color: rgba(41, 121, 255, 0.1); padding: 20px; border-radius: 10px; border: 1px solid #2979ff;">
-<h4 style="margin-top:0; color: #2979ff;">💡 동음이의어(밤, 배 등)를 더 똑똑하게 관리하세요! <span style="font-size:0.7em; color:#888;">(26/02/18 업데이트)</span></h4>
-<p style="margin-bottom: 5px;"><b>1. 표 옆에 <span style="font-size:1.2em">🔀</span> 아이콘이 떠 있나요?</b></p>
-<p style="color: #cccccc; margin-left: 15px; margin-bottom: 15px;">
-"이 단어는 뜻이 여러 개예요!"라는 표시입니다.<br> 
-단어를 <b>체크(✅)</b>하고 <b>[🔀 의미 구분]</b> 버튼을 누르면, <b>저장된 뜻 중에서 쏙 골라</b> 쓰실 수 있습니다.
-</p>
-<p style="margin-bottom: 5px;"><b>2. "어? 이 단어도 뜻이 다른데..." 싶으신가요?</b></p>
-<p style="color: #cccccc; margin-left: 15px; margin-bottom: 20px;">
-아직 등록되지 않은 단어라도 걱정 마세요.<br>
-단어를 <b>체크(✅)</b>하고 <b>[🔀 의미 구분]</b> 버튼을 눌러보세요. <br>
-<b>내 맘대로 뜻을 입력</b>해서 나누면, 다음번엔 시스템이 알아서 기억해줍니다!
-</p>
-<hr style="border: 0; border-top: 1px dashed #555; margin: 10px 0;">
-<p style="text-align: center; color: #aaa; font-size: 0.95rem; margin-bottom: 0;">
-📞 <b>별도의 오류가 발생하거나 궁금한 점이 있으시면 언제든 바로 연락 바랍니다.</b>
-</p>
-</div>""", unsafe_allow_html=True)
-
 # STEP 1: 데이터 소스 선택
 elif st.session_state.step == 1:
     c1, c2 = st.columns([8, 2])
@@ -998,59 +662,16 @@ elif st.session_state.step == 1:
             st.session_state.step = 0; st.rerun()
 
     col1, col2 = st.columns(2)
-    # 기존: elif st.session_state.step == 1: ... 내부의 엑셀 업로드 부분 찾아서 교체
     with col1:
         with st.container(border=True):
             st.subheader("📂 이어하기")
-            st.caption("쪽수 정보가 흩어진 파일도 자동으로 하나로 합쳐서 복구합니다.")
             up_excel = st.file_uploader("기존 분석 엑셀 업로드", type=['xlsx'])
             if up_excel:
                 try:
-                    df = pd.read_excel(up_excel, engine='openpyxl')
-                    
-                    # [핵심 추가] 1. 동음이의어 기억 복원 (학습)
-                    learn_homonyms_from_df(df)
-                    
-                    # 2. 복구 로직 (기존 기능 유지)
-                    if ('자료' in df.columns or '원형' in df.columns) and '구분' in df.columns:
-                        st.toast("파일 최적화 및 기억 복원 중...")
-                        
-                        # 컬럼명 호환성 처리 (원형 -> 자료)
-                        if '자료' not in df.columns and '원형' in df.columns:
-                            df.rename(columns={'원형': '자료'}, inplace=True)
-
-                        page_cols = [c for c in df.columns if str(c).startswith('쪽수')]
-                        
-                        # 데이터를 녹여서(Melt) 한 줄로 만듦
-                        melted = df.melt(id_vars=['자료', '구분'], value_vars=page_cols, value_name='page')
-                        melted = melted.dropna(subset=['page'])
-                        
-                        # 같은 단어끼리 묶어서 페이지 번호를 리스트로 합침
-                        grouped = melted.groupby(['자료', '구분'])['page'].apply(
-                            lambda x: sorted(list(set([str(v).strip() for v in x if str(v).strip() not in ['nan', '']])))
-                        ).reset_index(name='merged_pages')
-                        
-                        # 다시 엑셀 형태로 펼침
-                        new_rows = []
-                        for _, row in grouped.iterrows():
-                            pages = row['merged_pages']
-                            base_data = {
-                                '자료': row['자료'], 
-                                '구분': row['구분'],
-                                '출연횟수': len(pages)
-                            }
-                            for i, p in enumerate(pages):
-                                base_data[f'쪽수{i+1}'] = p
-                            new_rows.append(base_data)
-                            
-                        st.session_state.master_df = pd.DataFrame(new_rows)
-                        st.success(f"복구 완료! {len(df)}행 -> {len(new_rows)}행으로 최적화됨.")
-                        st.session_state.step = 1.5
-                        st.rerun()
-                    else:
-                        st.error("형식이 올바르지 않습니다. (필수 컬럼 누락)")
+                    st.session_state.master_df = pd.read_excel(up_excel, engine='openpyxl')
+                    st.session_state.step = 1.5; st.rerun()
                 except Exception as e:
-                    st.error(f"오류: {str(e)}")
+                    st.error(f"엑셀 파일 형식이 올바르지 않습니다. (오류: {str(e)})")
     with col2:
         with st.container(border=True):
             st.subheader("🆕 새로 시작하기")
@@ -1200,9 +821,7 @@ if st.session_state.debug_mode:
             st.warning("🤖 AI가 보낸 원본 응답 (Raw Response):")
             st.code(st.session_state.last_raw_response, language="json")
 
-# =========================================================
-# STEP 3: 결과 확인 및 편집 (최종 수정본)
-# =========================================================
+# STEP 3: 결과 확인
 elif st.session_state.step == 3:
     actual_p = st.session_state.page_idx + st.session_state.start_offset
     
@@ -1213,19 +832,20 @@ elif st.session_state.step == 3:
     with cb:
         if st.button("⬅️ 입력 \n 창으로", use_container_width=True): st.session_state.step = 2; st.rerun()
     
-    # 디버그 모드 (생략 가능하나 유지)
     if st.session_state.debug_mode:
         with st.expander("🛠️ [정밀 디버깅] 로그 확인", expanded=True):
             st.markdown(f"<div class='debug-box'>{st.session_state.get('debug_log', '로그 없음')}</div>", unsafe_allow_html=True)
+            if st.session_state.last_raw_response:
+                st.markdown("**AI Raw Response:**")
+                st.code(st.session_state.last_raw_response)
 
-    # 상단 미리보기 (PDF/이미지/텍스트)
     if st.session_state.input_type in ["PDF", "IMAGE"]:
         c1, c2 = st.columns([1, 1])
         with c1:
             try:
                 img = get_page_image(st.session_state.file_bytes, st.session_state.file_type, st.session_state.page_idx)
                 if img:
-                    cap = f"📄 PDF 총 {st.session_state.total_pages}쪽 중 현재 {st.session_state.page_idx+1}쪽" if st.session_state.input_type=="PDF" else "이미지 미리보기"
+                    cap = f"📄 PDF 총 {st.session_state.total_pages}쪽 중 현재 {st.session_state.page_idx+1}쪽 (📍 엑셀에 '{actual_p}쪽' 저장 예정)" if st.session_state.input_type=="PDF" else "이미지 미리보기"
                     st.image(img, use_container_width=True, caption=cap)
             except: pass
         with c2:
@@ -1234,243 +854,99 @@ elif st.session_state.step == 3:
         st.text_area("입력 원문 확인", value=st.session_state.extracted_text, height=250, disabled=True)
 
     st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
-    st.markdown("### 📋 분석 결과 편집")
+    st.markdown("### 📋 분석 결과 편집 <span class='guide-text'>(※ 동작 직후 데이터 동기화 중 알림이 사라지면 다음 동작을 진행해주세요)</span>", unsafe_allow_html=True)
     
-    # [1] 데이터 프레임 준비
     df_res = pd.DataFrame(st.session_state.analysis_result)
-    
     if not df_res.empty:
-        # 구분 아이콘(🔀) 자동 표시
-        if '구분아이콘' not in df_res.columns:
-            df_res['구분아이콘'] = df_res['원형'].apply(lambda x: "🔀" if x in st.session_state.homonym_dict else "")
-
-        # 데이터 에디터 설정
-        edited = st.data_editor(
-            df_res, 
-            column_config={
-                "삭제": st.column_config.CheckboxColumn("삭제", width="small"),
-                "구분아이콘": st.column_config.TextColumn("구분", width="small", disabled=True, help="이전에 의미를 구분했던 단어입니다."),
-                "횟수": st.column_config.TextColumn("횟수", disabled=False, help="숫자만 입력하세요"), 
-                "원본": st.column_config.TextColumn("원본", disabled=True),
-                "원형": st.column_config.TextColumn("원형", disabled=False), 
-                "분류": st.column_config.SelectboxColumn("분류", options=["🔵 고", "🟢 한", "🔴 외", "🟣 혼"], width="medium")
-            }, 
-            use_container_width=True, 
-            num_rows="dynamic", 
-            key="editor_final"
-        )
+        # [수정] 품사(pos) 컬럼 설정 삭제
+        edited = st.data_editor(df_res, column_config={
+            "삭제": st.column_config.CheckboxColumn("삭제"),
+            "원본": st.column_config.TextColumn("원본", disabled=True),
+            "분류": st.column_config.SelectboxColumn("분류", options=["🔵 고", "🟢 한", "🔴 외", "🟣 혼"])
+        }, use_container_width=True, num_rows="dynamic", key="editor_final")
         
-        # 데이터 동기화
-        if not edited.equals(pd.DataFrame(st.session_state.analysis_result)):
-            for idx, row in edited.iterrows():
-                raw_cnt = str(row.get('횟수', '1'))
-                clean_cnt = ''.join(filter(str.isdigit, raw_cnt))
-                edited.at[idx, '횟수'] = f"{clean_cnt}회" if clean_cnt else "1회"
-            
-            st.session_state.analysis_result = edited.to_dict('records')
-            st.rerun()
-    else:
-        st.warning("⚠️ 분석된 단어가 없습니다.")
+        # ... (생략) ...
     
-    # -------------------------------------------------------------------------
-    # [팝업 함수 정의] 
-    # -------------------------------------------------------------------------
     @st.dialog("➕ 단어 직접 추가")
     def open_add_dialog():
-        with st.form("manual_add_form", clear_on_submit=True):
-            col_a, col_b = st.columns(2)
-            with col_a:
-                o = st.text_input("단어")
-                r = st.text_input("원형")
-            with col_b:
-                org = st.selectbox("어종", ["고","한","외","혼"])
-                cnt = st.number_input("횟수", 1, 100, 1)
+        with st.form("manual_add_form"):
+            o = st.text_input("원본 단어")
+            r = st.text_input("원형(기본형)")
+            org = st.selectbox("어종 분류", ["고","한","외","혼"])
+            # [수정] 품사 입력창 삭제
+            # p = st.selectbox("품사", ...) 
             
-            if st.form_submit_button("추가 완료", type="primary"):
-                if o and r:
-                    org_map = {'고':'🔵 고', '한':'🟢 한', '외':'🔴 외', '혼':'🟣 혼'}
-                    st.session_state.analysis_result.append({
-                        "삭제": False, "구분아이콘": "", "횟수": f"{cnt}회", 
-                        "원본": f"{o}(수동)", "원형": r, "분류": org_map.get(org, org)
-                    })
-                    st.rerun()
-
-    @st.dialog("🔀 동음이의어 일괄 구분")
-    def open_homonym_dialog(target_word, origin_list):
-        inventory = Counter(origin_list)
-        total_count = len(origin_list)
-        dialog_key = f"h_batch_{target_word}"
-        
-        if dialog_key not in st.session_state:
-            most_common = inventory.most_common(1)[0][0] if inventory else "🔵 고"
-            st.session_state[dialog_key] = [{"mean": "", "cnt": total_count, "org": most_common}]
-
-        st.info(f"단어 **'{target_word}'** 일괄 정리 (총 **{total_count}개**)")
-        
-        with st.expander("📄 원문 문맥 확인", expanded=True):
-            st.text_area("원문 내용", value=st.session_state.get('extracted_text', ''), height=150, disabled=True, label_visibility="collapsed")
-        
-        badges = [f"{k}: {v}개" for k, v in inventory.items()]
-        st.caption(f"📦 현재 보유 어종:  " + "  |  ".join(badges))
-        
-        known = st.session_state.homonym_dict.get(target_word, [])
-        options = known + ["+ 직접 입력"]
-        st.markdown("---")
-
-        groups = st.session_state[dialog_key]
-        indices_to_remove = []
-
-        for i, grp in enumerate(groups):
-            c1, c2, c3, c4 = st.columns([3, 1.2, 1.5, 0.5])
-            with c1:
-                sel_key = f"b_sel_{i}_{len(groups)}" 
-                sel = st.selectbox(f"의미 #{i+1}", options, key=sel_key, label_visibility="collapsed")
-                final_mean = sel
-                if sel == "+ 직접 입력":
-                    val_key = f"b_val_{i}_{len(groups)}"
-                    final_mean = st.text_input(f"입력 #{i+1}", value=grp['mean'] if grp['mean'] not in options else "", key=val_key, placeholder="입력", label_visibility="collapsed")
-            with c2:
-                cnt_key = f"b_cnt_{i}_{len(groups)}"
-                cnt = st.number_input(f"횟수 #{i+1}", min_value=1, value=grp['cnt'], key=cnt_key, label_visibility="collapsed")
-            with c3:
-                org_opts = list(inventory.keys()) if inventory else ["🔵 고", "🟢 한", "🔴 외", "🟣 혼"]
-                curr_idx = org_opts.index(grp['org']) if grp['org'] in org_opts else 0
-                org_key = f"b_org_{i}_{len(groups)}"
-                org = st.selectbox(f"어종 #{i+1}", org_opts, index=curr_idx, key=org_key, label_visibility="collapsed")
-            with c4:
-                if st.button("✖️", key=f"b_del_{i}_{len(groups)}"): indices_to_remove.append(i)
-
-            groups[i] = {"mean": final_mean, "cnt": cnt, "org": org}
-
-        if indices_to_remove:
-            for idx in sorted(indices_to_remove, reverse=True): groups.pop(idx)
-            st.rerun()
-
-        st.session_state[dialog_key] = groups
-
-        c_add, c_apply = st.columns([1, 2])
-        with c_add:
-            if st.button("➕ 그룹 추가", use_container_width=True):
-                st.session_state[dialog_key].append({"mean": "", "cnt": 1, "org": "🔵 고"})
-                st.rerun()
-        with c_apply:
-            if st.button("✅ 검증 및 적용", type="primary", use_container_width=True):
-                user_total = Counter()
-                for g in groups: user_total[g['org']] += g['cnt']
-                
-                is_valid = True
-                error_msg = ""
-                for org, count in inventory.items():
-                    if user_total[org] != count:
-                        is_valid = False
-                        error_msg += f"[{org}] 재고 {count}개 vs 배정 {user_total[org]}개 불일치.\n"
-                
-                if not is_valid: st.error(error_msg)
-                else:
-                    if target_word not in st.session_state.homonym_dict: st.session_state.homonym_dict[target_word] = []
-                    for g in groups:
-                        m = g['mean']
-                        if m and m not in st.session_state.homonym_dict[target_word]: st.session_state.homonym_dict[target_word].append(m)
-                    
-                    st.session_state.analysis_result = [r for r in st.session_state.analysis_result if r['원형'] != target_word]
-                    for g in groups:
-                        for _ in range(g['cnt']):
-                            st.session_state.analysis_result.append({
-                                "삭제": False, "구분아이콘": "🔀", "횟수": "1회", 
-                                "원본": f"{target_word}({g['mean']})", "원형": f"{target_word}({g['mean']})", "분류": g['org']
-                            })
-                    del st.session_state[dialog_key]
-                    st.session_state.homonym_popup_active = False 
-                    st.rerun()
-
-    # -------------------------------------------------------------------------
-    # [4] 메인 버튼 UI (저장 흐름 및 팝업 제어)
-    # -------------------------------------------------------------------------
-    st.divider()
-    
-    # A. 저장 전 (편집 모드)
-    if not st.session_state.get('is_finished', False):
-        
-        b1, b2, b3, b4 = st.columns([1, 1, 1.2, 2])
-        
-        with b1: 
-            if st.button("➕ 단어 추가", use_container_width=True): open_add_dialog()
-                
-        with b2:
-            if st.button("⛔ 선택 삭제", use_container_width=True):
-                st.session_state.analysis_result = [r for r in st.session_state.analysis_result if not r.get('삭제', False)]
-                st.rerun()
-        
-        with b3:
-            if st.button("🔀 의미 구분", use_container_width=True):
-                checked = [r for r in st.session_state.analysis_result if r.get('삭제', False)]
-                if len(checked) == 1:
-                    target = checked[0]['원형']
-                    origin_list = []
-                    for item in st.session_state.analysis_result:
-                        if item['원형'] == target:
-                            try: cnt = int(''.join(filter(str.isdigit, str(item['횟수']))))
-                            except: cnt = 1
-                            for _ in range(cnt): origin_list.append(item['분류'])
-                    
-                    # [핵심] 상태값 설정 후 즉시 리런으로 팝업 호출
-                    st.session_state.homonym_popup_active = True
-                    st.session_state.popup_target = target
-                    st.session_state.popup_list = origin_list
-                    st.rerun()
-                elif len(checked) > 1:
-                    st.toast("⚠️ 한 번에 하나만 선택하세요.", icon="🚫")
-                else:
-                    st.toast("⚠️ 단어를 먼저 체크하세요.", icon="👆")
-
-        with b4:
-            if st.button("💾 이 페이지 결과 저장", type="primary", use_container_width=True):
-                for item in st.session_state.analysis_result: item['삭제'] = False
-                save_logic_with_learning()
-                st.session_state.is_finished = True
+            cnt = st.number_input("출연 횟수", 1, 100, 1)
+            if st.form_submit_button("추가 완료"):
+                st.session_state.analysis_result.append({
+                    "삭제": False, "횟수": f"{cnt}회", "원본": f"{o}(수동)", "원형": r, 
+                    "분류": {'고':'🔵 고', '한':'🟢 한', '외':'🔴 외', '혼':'🟣 혼'}.get(org, org)
+                    # 품사 추가 없음
+                })
+                st.toast("✅ 단어 추가 완료. 동기화 중...", icon="✨")
+                time.sleep(2.0)
                 st.rerun()
 
-        # [팝업 트리거] 저장 전 상태일 때만 팝업 허용
-        if st.session_state.get('homonym_popup_active', False):
-            open_homonym_dialog(st.session_state.popup_target, st.session_state.popup_list)
-
-    # B. 저장 후 (완료 모드)
+    if not st.session_state.is_finished:
+        if st.session_state.input_type in ["DIRECT", "IMAGE"]:
+            b1, b2, b3 = st.columns([1, 1, 2])
+            with b1: 
+                if st.button("➕ 단어 추가", use_container_width=True): open_add_dialog()
+            with b2:
+                if st.button("⛔ 선택 삭제", use_container_width=True):
+                    st.session_state.analysis_result = [r for r in st.session_state.analysis_result if not r.get('삭제', False)]
+                    st.toast("🗑️ 삭제 데이터 정리 중..."); time.sleep(2.0); st.rerun()
+            with b3:
+                if st.button("💾 결과 저장 및 학습", type="primary", use_container_width=True):
+                    with st.status("데이터 저장 및 학습 반영 중..."):
+                        save_logic_with_learning()
+                        st.session_state.is_finished = True
+                        st.success("✅ 저장이 완료되었습니다!")
+                        time.sleep(1.0)
+                        st.rerun()
+        else:
+            b1, b2, b3, b4 = st.columns([1, 1, 1.5, 2])
+            with b1: 
+                if st.button("➕ 단어 추가", use_container_width=True): open_add_dialog()
+            with b2:
+                if st.button("⛔ 선택 삭제", use_container_width=True):
+                    st.session_state.analysis_result = [r for r in st.session_state.analysis_result if not r.get('삭제', False)]
+                    st.toast("🗑️ 삭제 데이터 정리 중..."); time.sleep(2.0); st.rerun()
+            with b3:
+                if st.button("💾 현재 페이지만 저장", use_container_width=True):
+                    save_logic_with_learning(); st.session_state.is_finished = True; st.rerun()
+            with b4:
+                if st.button("🚀 저장하고 다음 쪽 가기", type="primary", use_container_width=True):
+                    save_logic_with_learning()
+                    if st.session_state.input_type == "PDF" and st.session_state.page_idx < st.session_state.total_pages - 1:
+                        st.toast("⏳ 다음 페이지 분석 중...", icon="📄")
+                        st.session_state.page_idx += 1; st.session_state.extracted_text = extract_text_unified(st.session_state.file_bytes, "application/pdf", st.session_state.page_idx)
+                        st.session_state.analysis_result = []; st.session_state.step = 2; st.rerun()
+                    else: st.session_state.is_finished = True; st.balloons(); st.rerun()
     else:
-        st.success("✅ 데이터가 안전하게 저장되었습니다. 잠시만 기다려주세요.")
-        
+        st.success("✅ 저장이 완료되었습니다!")
+        kst_now = datetime.utcnow() + timedelta(hours=9)
+        fname = f"KR 분석 결과 {kst_now.strftime('%m%d_%H%M')}.xlsx"
+        buf = io.BytesIO()
         try:
-            buf = io.BytesIO()
-            with pd.ExcelWriter(buf, engine='openpyxl') as writer:
-                if st.session_state.master_df is not None and not st.session_state.master_df.empty:
-                    st.session_state.master_df.to_excel(writer, index=False)
-                else:
-                    pd.DataFrame(columns=['구분','자료','출연횟수']).to_excel(writer, index=False)
-            
-            c_down, c_next = st.columns([1, 1])
-            with c_down:
-                st.download_button("📥 엑셀 파일 다운로드", data=buf.getvalue(), file_name=f"분석결과_{datetime.now().strftime('%m%d_%H%M')}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True, type="primary")
-            
-            if st.session_state.input_type == "PDF":
-                with c_next:
-                    if st.session_state.page_idx < st.session_state.total_pages - 1:
-                        
-                        # [원상복구] 다음 쪽 이동 버튼 (단순 이동 기능으로 롤백)
-                        if st.button("➡️ 다음 쪽으로 이동", use_container_width=True):
-                            # 1. 페이지 인덱스 증가
-                            st.session_state.page_idx += 1
-                            
-                            # 2. 텍스트 추출 (Step 2 화면 준비)
-                            st.session_state.extracted_text = extract_text_unified(st.session_state.file_bytes, "application/pdf", st.session_state.page_idx)
-                            
-                            # 3. 분석 결과 초기화 및 입력 화면(Step 2)으로 이동
-                            st.session_state.analysis_result = []
-                            st.session_state.step = 2 
-                            st.session_state.is_finished = False
-                            st.rerun()
-                                    
-                    else:
-                        st.info("마지막 페이지입니다.")
-
-        except Exception as e:
-             st.error(f"엑셀 생성 중 오류 발생: {e}")
-
+            with pd.ExcelWriter(buf, engine='openpyxl') as w: 
+                st.session_state.master_df.astype(str).to_excel(w, index=False)
+        except:
+            with pd.ExcelWriter(buf, engine='openpyxl') as w: 
+                st.session_state.master_df.to_excel(w, index=False)
+        
+        c_down, c_next = st.columns([1, 1])
+        with c_down:
+            st.download_button(label=f"📥 엑셀 다운로드", data=buf.getvalue(), file_name=fname, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True, type="primary")
+        
+        if st.session_state.input_type == "PDF":
+            with c_next:
+                can_go_next = st.session_state.file_type and "pdf" in st.session_state.file_type and st.session_state.page_idx < st.session_state.total_pages - 1
+                if st.button("➡️ 다음 쪽으로 이동", use_container_width=True, disabled=not can_go_next):
+                    st.toast("⏳ 다음 페이지 분석 중...", icon="📄")
+                    st.session_state.page_idx += 1
+                    st.session_state.extracted_text = extract_text_unified(st.session_state.file_bytes, st.session_state.file_type, st.session_state.page_idx)
+                    st.session_state.analysis_result = []
+                    st.session_state.step = 2
+                    st.session_state.is_finished = False
+                    st.rerun()
