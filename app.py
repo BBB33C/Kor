@@ -1146,7 +1146,7 @@ elif st.session_state.step == 3:
                 "구분아이콘": st.column_config.TextColumn("구분", width="small", disabled=True, help="이전에 의미를 구분했던 단어입니다."),
                 "횟수": st.column_config.TextColumn("횟수", disabled=False, help="숫자만 입력하세요"), 
                 "원본": st.column_config.TextColumn("원본", disabled=True),
-                "원형": st.column_config.TextColumn("원형", disabled=True), 
+                "원형": st.column_config.TextColumn("원형", disabled=False), 
                 "분류": st.column_config.SelectboxColumn("분류", options=["🔵 고", "🟢 한", "🔴 외", "🟣 혼"], width="medium")
             }, 
             use_container_width=True, 
@@ -1348,35 +1348,19 @@ elif st.session_state.step == 3:
                 with c_next:
                     if st.session_state.page_idx < st.session_state.total_pages - 1:
                         
-                        # [핵심] 다음 쪽 이동 버튼 클릭 시 로직
+                        # [원상복구] 다음 쪽 이동 버튼 (단순 이동 기능으로 롤백)
                         if st.button("➡️ 다음 쪽으로 이동", use_container_width=True):
-                            next_p = st.session_state.page_idx + 1
+                            # 1. 페이지 인덱스 증가
+                            st.session_state.page_idx += 1
                             
-                            # Case A: 이미 백그라운드 분석이 끝난 경우 (캐시 적중!)
-                            if next_p in st.session_state.analysis_cache:
-                                st.session_state.page_idx = next_p
-                                cache_data = st.session_state.analysis_cache[next_p]
-                                st.session_state.extracted_text = cache_data['text']
-                                st.session_state.analysis_result = cache_data['result']
-                                st.session_state.step = 3 # 결과 화면(Step 3)으로 직행
-                                st.session_state.is_finished = False
-                                st.rerun()
-                                
-                            # Case B: 아직 분석 안 됨 (직접 실행)
-                            else:
-                                with st.spinner("잠시만 기다려주세요."): # 요청하신 문구
-                                    # 1. 텍스트 추출
-                                    next_text = extract_text_unified(st.session_state.file_bytes, "application/pdf", next_p)
-                                    # 2. AI 분석 (위에서 만든 함수 사용)
-                                    next_result = get_ai_analysis_result(next_text)
-                                    
-                                    # 3. 상태 업데이트 및 이동
-                                    st.session_state.page_idx = next_p
-                                    st.session_state.extracted_text = next_text
-                                    st.session_state.analysis_result = next_result
-                                    st.session_state.step = 3 # 결과 화면으로 직행
-                                    st.session_state.is_finished = False
-                                    st.rerun()
+                            # 2. 텍스트 추출 (Step 2 화면 준비)
+                            st.session_state.extracted_text = extract_text_unified(st.session_state.file_bytes, "application/pdf", st.session_state.page_idx)
+                            
+                            # 3. 분석 결과 초기화 및 입력 화면(Step 2)으로 이동
+                            st.session_state.analysis_result = []
+                            st.session_state.step = 2 
+                            st.session_state.is_finished = False
+                            st.rerun()
                                     
                     else:
                         st.info("마지막 페이지입니다.")
@@ -1384,59 +1368,3 @@ elif st.session_state.step == 3:
         except Exception as e:
              st.error(f"엑셀 생성 중 오류 발생: {e}")
 
-    # =========================================================================
-    # [백그라운드] 다음 페이지 미리 분석 (Real Pre-fetching)
-    # =========================================================================
-    # 현재 페이지 작업 중일 때, 다음 페이지를 몰래 분석해둠
-    if st.session_state.input_type == "PDF" and not st.session_state.is_finished:
-        next_target = st.session_state.page_idx + 1
-        
-        # 아직 캐시에 없고, 마지막 페이지가 아니라면
-        if next_target < st.session_state.total_pages and next_target not in st.session_state.analysis_cache:
-            
-            # [준비] 스레드에 넘겨줄 데이터 미리 챙기기 (세션 의존성 제거)
-            file_b = st.session_state.file_bytes
-            f_type = st.session_state.file_type
-            s_mode = st.session_state.split_mode
-            m_key = st.session_state.mode_key
-            
-            # DB 규칙도 미리 가져와서 넘겨줌 (스레드에서 DB 조회하면 터질 수 있음)
-            # 주의: fetch_all_rules_from_db가 캐싱되어 있으므로 빠름
-            try:
-                rules = fetch_all_rules_from_db(m_key)
-            except:
-                rules = []
-            
-            # 캐시 저장소 (딕셔너리는 주소값이 넘어가므로 스레드에서 수정 가능)
-            cache_ref = st.session_state.analysis_cache
-            
-            def _real_worker(fb, ft, page, sm, mk, rule_data, cache):
-                try:
-                    # 1. 텍스트 추출 (Flash 모델 사용)
-                    # 수정된 extract_text_unified 호출 (split_mode 직접 전달)
-                    ocr_txt = extract_text_unified(fb, ft, page, split_mode=sm)
-                    
-                    if ocr_txt and ocr_txt.strip():
-                        # 2. AI 분석 (Pro 모델 사용)
-                        # 수정된 get_ai_analysis_result 호출 (rules_data 직접 전달)
-                        res = get_ai_analysis_result(ocr_txt, rules_data=rule_data, mode_key_arg=mk)
-                        
-                        # 3. 결과 캐시에 저장
-                        if res:
-                            cache[page] = {
-                                'text': ocr_txt,
-                                'result': res,
-                                'timestamp': datetime.now().isoformat()
-                            }
-                            # 로그는 콘솔에서만 확인 가능
-                            # print(f"[Background] {page}쪽 분석 완료!")
-                except Exception:
-                    pass
-
-            # 스레드 실행 (Daemon=True로 설정하여 앱 종료 시 같이 종료)
-            # 메인 로직에 영향 주지 않게 try-except 감쌈
-            try:
-                t = threading.Thread(target=_real_worker, args=(file_b, f_type, next_target, s_mode, m_key, rules, cache_ref))
-                t.daemon = True
-                t.start()
-            except: pass
