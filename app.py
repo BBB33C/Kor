@@ -382,7 +382,7 @@ def extract_text_unified(file_bytes, file_type, page_idx):
     ocr_model = "gemini-2.5-flash"
     
     if "image" in file_type: 
-        raw_text, _ = api_call_direct("이 이미지 속의 텍스트를 모두 추출하세요. 줄바꿈 유지.", file_bytes, model_name=ocr_model)
+        raw_text, _ = api_call_direct("이 이미지 속의 텍스트를 모두 추출하세요. 줄바꿈 유지. 서두와 결어, 안내 문구는 포함하지 마십시오. 오직 이미지 내에 존재하는 글자만 출력하십시오.", file_bytes, model_name=ocr_model)
     elif "pdf" in file_type:
         if FITZ_AVAILABLE:
             try:
@@ -399,7 +399,7 @@ def extract_text_unified(file_bytes, file_type, page_idx):
             
         page_img = get_page_image(file_bytes, file_type, page_idx)
         if page_img:
-            raw_text, _ = api_call_direct("이 이미지 속의 텍스트를 모두 추출하세요. 줄바꿈 유지.", page_img, model_name=ocr_model)
+            raw_text, _ = api_call_direct("이 이미지 속의 텍스트를 모두 추출하세요. 줄바꿈 유지. 서두와 결어, 안내 문구는 포함하지 마십시오. 오직 이미지 내에 존재하는 글자만 출력하십시오", page_img, model_name=ocr_model)
         else:
             if PLUMBER_AVAILABLE:
                 try:
@@ -534,6 +534,7 @@ def run_analysis_action(txt, img_bytes=None):
            - 중복 생략 금지 : 텍스트 내에 같은 단어가 여러 번 등장하면, 등장한 횟수만큼 반복해서 모두 리스트에 작성하십시오.
              (같은 단어라고 해서 하나로 요약하거나 합치지 마십시오.)
              (예시: 본문에 '만든'이 3번, '했다'가 2번 나오면 -> 결과 리스트에도 '만든' 객체가 3개, '했다' 객체가 2개 있어야 함)
+           - 특수문자, 기호 제외 : 텍스트에 포함된 ①, ②, ·, -, ●, ■ 등과 같은 단독 특수문자나 단순 기호, 글머리 기호는 분석 가치가 없으므로 추출하지 말고 제외하십시오.
 
         2. **원형**: 
            - 동사/형용사 : 활용된 형태를 기본형(사전 등재형)으로 바꾸십시오.
