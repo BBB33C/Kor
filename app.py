@@ -908,10 +908,16 @@ elif st.session_state.step == 3:
             "삭제": st.column_config.CheckboxColumn("삭제"),
             "원본": st.column_config.TextColumn("원본", disabled=True),
             "분류": st.column_config.SelectboxColumn("분류", options=["🔵 고", "🟢 한", "🔴 외", "🟣 혼"])
+            "원형": st.column_config.TextColumn("원형"), # 원형 수정 가능
+            "횟수": st.column_config.TextColumn("횟수")  # 횟수 수정 가능
         }, use_container_width=True, num_rows="dynamic", key="editor_final")
         # 화면에서 수정한 내용(edited)을 즉시 메모리(session_state)에 반영
         if edited is not None:
-             st.session_state.analysis_result = edited.to_dict('records')
+             new_data = edited.to_dict('records')
+            # 현재 저장된 데이터와 에디터의 데이터가 다르면 (즉, 수정이 일어났으면)
+            if new_data != st.session_state.analysis_result:
+                st.session_state.analysis_result = new_data
+                st.rerun() # <--- 이 코드가 있어야 '깜빡임 후 원상복구' 현상이 사라집니다.
         
     @st.dialog("➕ 단어 직접 추가")
     def open_add_dialog():
