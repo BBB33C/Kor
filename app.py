@@ -907,7 +907,7 @@ elif st.session_state.step == 3:
         edited = st.data_editor(df_res, column_config={
             "삭제": st.column_config.CheckboxColumn("삭제"),
             "원본": st.column_config.TextColumn("원본", disabled=True),
-            "분류": st.column_config.SelectboxColumn("분류", options=["🔵 고", "🟢 한", "🔴 외", "🟣 혼"])
+            "분류": st.column_config.SelectboxColumn("분류", options=["🔵 고", "🟢 한", "🔴 외", "🟣 혼"]),
             "원형": st.column_config.TextColumn("원형"), # 원형 수정 가능
             "횟수": st.column_config.TextColumn("횟수")  # 횟수 수정 가능
         }, use_container_width=True, num_rows="dynamic", key="editor_final")
