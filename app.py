@@ -803,8 +803,18 @@ elif st.session_state.step == 2:
                         st.session_state.extracted_text = extract_text_unified(st.session_state.file_bytes, "application/pdf", st.session_state.page_idx)
                         st.rerun()
             with c2:
-                st.session_state.extracted_text = st.text_area("에디터 (추출 텍스트)", value=st.session_state.extracted_text, height=520)
-                if st.button("🚀 분석 실행", type="primary", use_container_width=True): run_analysis_action(st.session_state.extracted_text, st.session_state.file_bytes)
+                # [수정] st.form으로 감싸서 입력 즉시 반영되도록 변경
+                with st.form(key="editor_form_pdf"):
+                    # value를 session_state에서 가져오되, 리턴값을 변수(user_edit)로 받습니다.
+                    user_edit = st.text_area("에디터 (추출 텍스트)", value=st.session_state.extracted_text, height=520)
+                    
+                    # 일반 button 대신 form_submit_button 사용
+                    submit = st.form_submit_button("🚀 분석 실행", type="primary", use_container_width=True)
+                    
+                    if submit:
+                        # 버튼 누르는 순간, 편집된 내용을 세션에 강제 업데이트
+                        st.session_state.extracted_text = user_edit
+                        run_analysis_action(user_edit, st.session_state.file_bytes)
 
     elif st.session_state.input_type == "IMAGE":
         file = st.file_uploader("이미지 파일 업로드", type=['png', 'jpg', 'jpeg'])
@@ -831,9 +841,14 @@ elif st.session_state.step == 2:
                 if st.button("🚀 분석 실행", type="primary", use_container_width=True): run_analysis_action(st.session_state.extracted_text, st.session_state.file_bytes)
 
     elif st.session_state.input_type == "DIRECT":
-        st.session_state.extracted_text = st.text_area("분석할 텍스트를 입력하세요", value=st.session_state.extracted_text, height=450)
-        if st.button("🚀 분석 실행", type="primary", use_container_width=True): run_analysis_action(st.session_state.extracted_text, None)
-        # 에러가 났을 때 입력 화면(Step 2)에서도 로그를 보여주는 코드
+        # [수정] st.form으로 감싸기
+        with st.form(key="editor_form_direct"):
+            user_edit = st.text_area("분석할 텍스트를 입력하세요", value=st.session_state.extracted_text, height=450)
+            submit = st.form_submit_button("🚀 분석 실행", type="primary", use_container_width=True)
+            
+            if submit:
+                st.session_state.extracted_text = user_edit
+                run_analysis_action(user_edit, None)
         
 if st.session_state.debug_mode:
         st.markdown("---")
